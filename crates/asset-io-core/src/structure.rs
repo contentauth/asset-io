@@ -15,11 +15,13 @@
 
 use crate::error::{Error, Result};
 use crate::handler::{ContainerHandler, ReadSeek, ReadWriteSeek};
+use crate::io::Io;
 use crate::item::{Extent, Item, ItemInfo, ItemKind};
 use crate::range::ByteRange;
 use crate::segment::{Name, Role, Segment};
 use crate::segment::{SegmentKind, DEFAULT_CHUNK_SIZE, MAX_SEGMENT_SIZE};
 use crate::sink::{Chunk, Sink};
+use crate::task::{block_on, Task};
 use crate::transfer::TransferEncoding;
 use crate::walk::Node;
 use std::borrow::Cow;
@@ -157,10 +159,17 @@ pub struct Structure {
     /// here on are data beyond the end of it.
     boxes: usize,
     attachment: Option<Arc<dyn Attached>>,
-    /// For a planned structure, the source offset of each subdividing segment that
-    /// was copied from the source, so its elements can be read there. Empty for a
-    /// parsed structure.
-    origins: Vec<Option<u64>>,
+    /// Where the elements of [subdividing](Segment::subdivides) segments start
+    /// after the first, in file order; see [`StructureBuilder::split`].
+    splits: Vec<Split>,
+}
+
+/// A boundary inside a subdividing segment: an element starts here.
+#[derive(Debug, Clone, Copy)]
+struct Split {
+    at: u64,
+    header_len: u32,
+    name: Name,
 }
 
 impl Structure {
@@ -249,33 +258,41 @@ impl Structure {
     /// elements. The elements tile the file exactly as the segments do.
     ///
     /// `f` receives the owning segment's id and the element. For most segments the
-    /// element is the segment itself. Expanding a subdividing segment reads its
-    /// payload once, streaming, with no allocation proportional to its size.
-    /// The same call works for every container; callers never test the format.
-    pub fn elements<R, F>(&self, src: &mut R, mut f: F) -> Result<()>
+    /// element is the segment itself. The finer elements were found when the asset
+    /// was parsed, so nothing is read. The same call works for every container;
+    /// callers never test the format.
+    pub fn elements<F>(&self, mut f: F) -> Result<()>
     where
-        R: Read + Seek,
         F: FnMut(SegmentId, &Segment) -> Result<()>,
     {
         for (i, seg) in self.segments.iter().enumerate() {
             let id = SegmentId(i as u32);
-            if seg.subdivides() {
-                self.subdivide(src, seg, &mut |e| f(id, e))?;
-            } else {
+            if !seg.subdivides() {
                 f(id, seg)?;
+                continue;
+            }
+            let range = seg.range();
+            let from = self.splits.partition_point(|s| s.at < range.offset());
+            let to = self.splits.partition_point(|s| s.at < range.end());
+            let mut start = range.offset();
+            let mut header_len = seg.header().len() as u32;
+            let mut name = seg.name();
+            for split in self.splits[from..to].iter().chain(std::iter::once(&Split {
+                at: range.end(),
+                header_len: 0,
+                name: Name::None,
+            })) {
+                let len = split.at - start;
+                f(
+                    id,
+                    &Segment::new(ByteRange::new(start, len)?, header_len, 0, seg.kind(), name)?,
+                )?;
+                start = split.at;
+                header_len = split.header_len;
+                name = split.name;
             }
         }
         Ok(())
-    }
-
-    fn subdivide<R: Read + Seek>(
-        &self,
-        src: &mut R,
-        seg: &Segment,
-        emit: &mut dyn FnMut(&Segment) -> Result<()>,
-    ) -> Result<()> {
-        let src: &mut dyn ReadSeek = src;
-        self.handler.subdivide(src, seg, emit)
     }
 
     /// Every header/payload/trailer run of the file, in order, covering all bytes once.
@@ -463,6 +480,12 @@ impl Structure {
     /// lengths, which this does not interpret). Reads at most 32 bytes of an item
     /// stored as is; an item with a [transfer encoding](Item::transfer) is decoded.
     pub fn jumbf_type<R: Read + Seek>(&self, src: &mut R, item: &Item) -> Result<Option<[u8; 16]>> {
+        block_on(self.total_size, src, |mut io| async move {
+            self.jumbf_type_in(&mut io, item).await
+        })
+    }
+
+    async fn jumbf_type_in(&self, io: &mut Io, item: &Item) -> Result<Option<[u8; 16]>> {
         if item.kind() != ItemKind::Jumbf {
             return Ok(None);
         }
@@ -477,11 +500,12 @@ impl Structure {
             for extent in item.extents() {
                 let left = STORED_HEAD - stored.len() as u64;
                 let r = extent.range();
-                self.read_into(
-                    src,
+                self.read_in(
+                    io,
                     ByteRange::new(r.offset(), r.len().min(left))?,
                     &mut stored,
-                )?;
+                )
+                .await?;
                 if stored.len() as u64 >= STORED_HEAD {
                     break;
                 }
@@ -499,13 +523,38 @@ impl Structure {
         if r.len() < 32 {
             return Ok(None);
         }
-        let head = self.read_range(src, ByteRange::new(r.offset(), 32)?)?;
-        if &head[4..8] != b"jumb" || &head[12..16] != b"jumd" {
-            return Ok(None);
+        self.check_readable(r)?;
+        let mut head = [0u8; 32];
+        io.read_at(r.offset(), &mut head).await?;
+        Ok(crate::jumbf::superbox_type(&head))
+    }
+
+    /// Append `range` to `out` through `io`, within the same bounds as
+    /// [`read_into`](Self::read_into).
+    async fn read_in(&self, io: &mut Io, range: ByteRange, out: &mut Vec<u8>) -> Result<()> {
+        self.check_readable(range)?;
+        if (out.len() as u64).saturating_add(range.len()) > MAX_SEGMENT_SIZE {
+            return Err(Error::LimitExceeded {
+                what: "read size",
+                limit: MAX_SEGMENT_SIZE,
+            });
         }
-        let mut uuid = [0u8; 16];
-        uuid.copy_from_slice(&head[16..32]);
-        Ok(Some(uuid))
+        let bytes = io.read_vec(range.offset(), range.len() as usize).await?;
+        if out.is_empty() {
+            *out = bytes;
+        } else {
+            out.extend_from_slice(&bytes);
+        }
+        Ok(())
+    }
+
+    /// An item's content, as [`read_content`](Self::read_content) reads it.
+    async fn read_content_in(&self, io: &mut Io, item: &Item) -> Result<Vec<u8>> {
+        let mut stored = Vec::new();
+        for extent in item.extents() {
+            self.read_in(io, extent.range, &mut stored).await?;
+        }
+        item.transfer().decode(stored)
     }
 
     /// The JUMBF store as a reader sees it, or `None` if the asset has none.
@@ -546,6 +595,21 @@ impl Structure {
     /// the `original`; [`c2pa_store`](Self::c2pa_store) reads the two combined. The
     /// item is what a caller excludes from a hash or patches in place.
     pub fn c2pa_item<R: Read + Seek>(&self, src: &mut R) -> Result<Option<&Item>> {
+        block_on(self.total_size, src, |mut io| async move {
+            self.c2pa_item_in(&mut io).await
+        })
+    }
+
+    /// [`c2pa_item`](Self::c2pa_item) as a [`Task`]: the caller does the reads.
+    /// There are none when the parser recorded the type of each JUMBF item, as
+    /// the built-in handlers do.
+    pub fn c2pa_item_task(&self) -> Task<'_, Option<&Item>> {
+        Task::new(self.total_size, |mut io| async move {
+            self.c2pa_item_in(&mut io).await
+        })
+    }
+
+    async fn c2pa_item_in(&self, io: &mut Io) -> Result<Option<&Item>> {
         use crate::segment::labels::UPDATE;
         let mut found = None;
         let mut count = 0;
@@ -553,7 +617,7 @@ impl Structure {
             if item.label() == Some(UPDATE) {
                 continue;
             }
-            if self.jumbf_type(src, item)? == Some(crate::jumbf::C2PA_STORE_TYPE) {
+            if self.jumbf_type_in(io, item).await? == Some(crate::jumbf::C2PA_STORE_TYPE) {
                 count += 1;
                 found.get_or_insert(item);
             }
@@ -572,14 +636,27 @@ impl Structure {
     /// encoding undone, and an `update` appended to its `original` (ISO BMFF).
     /// Only finds the store; the manifests in it are not interpreted.
     pub fn c2pa_store<R: Read + Seek>(&self, src: &mut R) -> Result<Option<Vec<u8>>> {
+        block_on(self.total_size, src, |mut io| async move {
+            self.c2pa_store_in(&mut io).await
+        })
+    }
+
+    /// [`c2pa_store`](Self::c2pa_store) as a [`Task`]: the caller does the reads.
+    pub fn c2pa_store_task(&self) -> Task<'_, Option<Vec<u8>>> {
+        Task::new(self.total_size, |mut io| async move {
+            self.c2pa_store_in(&mut io).await
+        })
+    }
+
+    async fn c2pa_store_in(&self, io: &mut Io) -> Result<Option<Vec<u8>>> {
         use crate::segment::labels::{ORIGINAL, UPDATE};
-        let Some(item) = self.c2pa_item(src)? else {
+        let Some(item) = self.c2pa_item_in(io).await? else {
             return Ok(None);
         };
-        let store = self.read_content(src, item)?;
+        let store = self.read_content_in(io, item).await?;
         if item.label() == Some(ORIGINAL) {
             if let Some(update) = self.items_labelled(ItemKind::Jumbf, UPDATE).next() {
-                let update = self.read_content(src, update)?;
+                let update = self.read_content_in(io, update).await?;
                 return crate::jumbf::extend(&store, &update).map(Some);
             }
         }
@@ -598,13 +675,30 @@ impl Structure {
     /// [`C2PA_BOX`](crate::C2PA_BOX), which the hash does not cover, and unnamed
     /// bytes at the end one box named [`AFTER_BOX`](crate::AFTER_BOX).
     ///
-    /// `src` is the asset, or for a planned structure the source it was planned
-    /// from: its boxes are known before the output exists. An element of the
+    /// `src` is the asset; a planned structure's boxes are known before the
+    /// output exists. An element of the
     /// structure without a box name, or boxes after unnamed data, are
     /// [`Error::UnsupportedFeature`]: the asset is not box-hashable.
+    ///
+    /// Only finding the store can read `src`; see
+    /// [`c2pa_boxes_with`](Self::c2pa_boxes_with).
     pub fn c2pa_boxes<R: Read + Seek>(&self, src: &mut R) -> Result<Vec<C2paBox>> {
-        let store: Vec<SegmentId> = match self.c2pa_item(src)? {
-            Some(item) => item.extents().map(|e| e.segment()).collect(),
+        self.c2pa_boxes_with(self.c2pa_item(src)?)
+    }
+
+    /// [`c2pa_boxes`](Self::c2pa_boxes) given the store's item, as
+    /// [`c2pa_item`](Self::c2pa_item) or [`c2pa_item_task`](Self::c2pa_item_task)
+    /// finds it, or `None` for an asset without one. Reads nothing.
+    pub fn c2pa_boxes_with(&self, store: Option<&Item>) -> Result<Vec<C2paBox>> {
+        let store: Vec<SegmentId> = match store {
+            Some(item) if self.items.iter().any(|e| std::ptr::eq(e, item)) => {
+                item.extents().map(|e| e.segment()).collect()
+            }
+            Some(_) => {
+                return Err(Error::InvalidFormat(
+                    "C2PA boxes require the store's item from this structure".into(),
+                ))
+            }
             None => Vec::new(),
         };
         let metadata: Vec<ByteRange> = self
@@ -616,9 +710,8 @@ impl Structure {
         let unsupported = Error::UnsupportedFeature;
         let mut boxes: Vec<C2paBox> = Vec::new();
         let mut after: Option<ByteRange> = None;
-        for (i, seg) in self.segments.iter().enumerate() {
-            let id = SegmentId(i as u32);
-            let range = seg.range();
+        self.elements(|id, element| {
+            let range = element.range();
             if store.contains(&id) {
                 match boxes.last_mut() {
                     Some(last)
@@ -633,39 +726,37 @@ impl Structure {
                         metadata: Vec::new(),
                     }),
                 }
-                continue;
+                return Ok(());
             }
-            for element in self.box_elements(src, i, seg)? {
-                let name = self.handler.c2pa_box_name(self, id, &element);
-                match (name, i < self.boxes) {
-                    (Some(_), _) if after.is_some() => {
-                        return Err(unsupported("C2PA box hash: boxes after unnamed data"));
-                    }
-                    (Some(name), _) => {
-                        let range = element.range();
-                        boxes.push(C2paBox {
-                            name,
-                            range,
-                            metadata: metadata
-                                .iter()
-                                .filter(|m| range.contains(m))
-                                .copied()
-                                .collect(),
-                        });
-                    }
-                    (None, false) => {
-                        let r = element.range();
-                        after = Some(match after {
-                            Some(a) => ByteRange::new(a.offset(), r.end() - a.offset())?,
-                            None => r,
-                        });
-                    }
-                    (None, true) => {
-                        return Err(unsupported("C2PA box hash: an element has no box name"));
-                    }
+            match (
+                self.handler.c2pa_box_name(self, id, element),
+                id.index() < self.boxes,
+            ) {
+                (Some(_), _) if after.is_some() => {
+                    Err(unsupported("C2PA box hash: boxes after unnamed data"))
                 }
+                (Some(name), _) => {
+                    boxes.push(C2paBox {
+                        name,
+                        range,
+                        metadata: metadata
+                            .iter()
+                            .filter(|m| range.contains(m))
+                            .copied()
+                            .collect(),
+                    });
+                    Ok(())
+                }
+                (None, false) => {
+                    after = Some(match after {
+                        Some(a) => ByteRange::new(a.offset(), range.end() - a.offset())?,
+                        None => range,
+                    });
+                    Ok(())
+                }
+                (None, true) => Err(unsupported("C2PA box hash: an element has no box name")),
             }
-        }
+        })?;
         if let Some(range) = after {
             boxes.push(C2paBox {
                 name: Cow::Borrowed(crate::AFTER_BOX),
@@ -674,49 +765,6 @@ impl Structure {
             });
         }
         Ok(boxes)
-    }
-
-    /// The elements of segment `i` for a box hash: the segment, or its finer
-    /// elements. A planned copy of a source segment is read in the source.
-    fn box_elements<R: Read + Seek>(
-        &self,
-        src: &mut R,
-        i: usize,
-        seg: &Segment,
-    ) -> Result<Vec<Segment>> {
-        if !seg.subdivides() {
-            return Ok(vec![*seg]);
-        }
-        let src: &mut dyn ReadSeek = src;
-        let mut out = Vec::new();
-        match self.origins.get(i).copied().flatten() {
-            None => self.handler.subdivide(src, seg, &mut |e| {
-                out.push(*e);
-                Ok(())
-            })?,
-            Some(origin) => {
-                let source = Segment::new(
-                    ByteRange::new(origin, seg.range().len())?,
-                    seg.header().len() as u32,
-                    seg.trailer().len() as u16,
-                    seg.kind(),
-                    seg.name(),
-                )?;
-                let at = seg.range().offset();
-                self.handler.subdivide(src, &source, &mut |e| {
-                    let offset = at + (e.range().offset() - origin);
-                    out.push(Segment::new(
-                        ByteRange::new(offset, e.range().len())?,
-                        e.header().len() as u32,
-                        e.trailer().len() as u16,
-                        e.kind(),
-                        e.name(),
-                    )?);
-                    Ok(())
-                })?
-            }
-        }
-        Ok(out)
     }
 
     /// Read an item's extents, concatenated: the bytes stored in the file.
@@ -1013,7 +1061,7 @@ pub struct StructureBuilder {
     /// Segment index where data beyond the container's structure starts, if declared.
     boxes: Option<usize>,
     attachment: Option<Arc<dyn Attached>>,
-    origins: Vec<Option<u64>>,
+    splits: Vec<Split>,
 }
 
 impl StructureBuilder {
@@ -1033,7 +1081,7 @@ impl StructureBuilder {
             sub_starts: Vec::new(),
             boxes: None,
             attachment: None,
-            origins: Vec::new(),
+            splits: Vec::new(),
         }
     }
 
@@ -1050,14 +1098,6 @@ impl StructureBuilder {
 
     pub(crate) fn attach_shared(&mut self, value: Option<Arc<dyn Attached>>) {
         self.attachment = value;
-    }
-
-    /// Record that pushed segment `id` is a copy of the source segment at `offset`.
-    pub(crate) fn set_origin(&mut self, id: SegmentId, offset: u64) {
-        if self.origins.len() <= id.index() {
-            self.origins.resize(id.index() + 1, None);
-        }
-        self.origins[id.index()] = Some(offset);
     }
 
     /// Declare that the container's own structure ends here: segments pushed from
@@ -1120,7 +1160,7 @@ impl StructureBuilder {
 
     /// Append a segment. It must start at the cursor and end within the asset.
     pub fn push(&mut self, seg: Segment) -> Result<SegmentId> {
-        if self.segments.len() >= MAX_SEGMENTS {
+        if self.segments.len() + self.splits.len() >= MAX_SEGMENTS {
             return Err(Error::LimitExceeded {
                 what: "segments",
                 limit: MAX_SEGMENTS as u64,
@@ -1208,14 +1248,62 @@ impl StructureBuilder {
             .ok_or(Error::NotFound { what: "segment" })
     }
 
-    /// Record that a pushed segment contains finer elements that the container
-    /// can enumerate by reading its payload.
-    pub fn mark_subdivides(&mut self, id: SegmentId) -> Result<()> {
-        let slot = self
+    /// Record that pushed segment `id` holds a finer element starting at `at`,
+    /// framed by `header_len` bytes and named `name`: the segment
+    /// [subdivides](Segment::subdivides), and its first element runs from its own
+    /// start to its first split. Splits are recorded in file order, inside the
+    /// segment's payload, and count towards [`MAX_SEGMENTS`].
+    pub fn split(&mut self, id: SegmentId, at: u64, header_len: u32, name: Name) -> Result<()> {
+        if self.segments.len() + self.splits.len() >= MAX_SEGMENTS {
+            return Err(Error::LimitExceeded {
+                what: "segment count",
+                limit: MAX_SEGMENTS as u64,
+            });
+        }
+        let seg = self
             .segments
             .get_mut(id.index())
             .ok_or(Error::NotFound { what: "segment" })?;
-        *slot = slot.with_subdivision();
+        let fits = at
+            .checked_add(u64::from(header_len))
+            .is_some_and(|end| end <= seg.range().end());
+        if at < seg.payload().offset()
+            || !fits
+            || self.splits.last().is_some_and(|last| last.at >= at)
+        {
+            return Err(Error::invalid_segment(
+                at,
+                "split out of order or outside its segment",
+            ));
+        }
+        *seg = seg.with_subdivision();
+        self.splits.push(Split {
+            at,
+            header_len,
+            name,
+        });
+        Ok(())
+    }
+
+    /// Copy the splits of `src`'s segment `from` to pushed segment `id`, which
+    /// holds the same bytes.
+    pub(crate) fn split_like(
+        &mut self,
+        id: SegmentId,
+        src: &Structure,
+        from: SegmentId,
+    ) -> Result<()> {
+        let from = src.segment(from)?.range();
+        let to = self.segment(id)?.range().offset();
+        let first = src.splits.partition_point(|s| s.at < from.offset());
+        for split in src.splits[first..].iter().take_while(|s| s.at < from.end()) {
+            self.split(
+                id,
+                to + (split.at - from.offset()),
+                split.header_len,
+                split.name,
+            )?;
+        }
         Ok(())
     }
 
@@ -1318,7 +1406,7 @@ impl StructureBuilder {
             subassets,
             boxes,
             attachment: self.attachment,
-            origins: self.origins,
+            splits: self.splits,
         })
     }
 }

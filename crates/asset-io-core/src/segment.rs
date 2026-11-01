@@ -191,10 +191,11 @@ impl Segment {
         })
     }
 
-    /// True if the payload holds finer elements that can only be found by reading
-    /// it (for example restart intervals inside a JPEG scan). Callers do not act
-    /// on this directly: [`Structure::elements`](crate::Structure::elements) expands
-    /// such segments transparently.
+    /// True if the payload holds finer elements (for example restart intervals
+    /// inside a JPEG scan), which the parser recorded as it read them; see
+    /// [`StructureBuilder::split`](crate::StructureBuilder::split). Callers do not
+    /// act on this directly: [`Structure::elements`](crate::Structure::elements)
+    /// expands such segments transparently, without reading.
     pub const fn subdivides(&self) -> bool {
         self.subdivides
     }

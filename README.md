@@ -38,8 +38,14 @@ A parsed file is a `Structure`: a gapless tiling of `Segment`s (header, payload,
   are one `C2PA` box and unnamed bytes at the end one `c2pa.after` box. Each
   box carries the ranges of asset metadata (XMP, EXIF) inside it, the only
   ranges a box hash may exclude besides the store. It works on planned
-  structures, reading copied segments in the source, so an output's boxes are
-  known before it is written.
+  structures, so an output's boxes are known before it is written. The finer elements (restart intervals) are
+  recorded when the asset is parsed, so listing boxes reads nothing beyond
+  finding the store; `c2pa_boxes_with(item)` takes the store's item and reads
+  nothing at all.
+- `c2pa_item_task()` and `c2pa_store_task()` are `c2pa_item` and `c2pa_store`
+  as a sans-I/O `Task`, like `parse_task`: the caller answers each read
+  request. Finding the item reads nothing when the parser recorded each JUMBF
+  item's type, as the built-in handlers do.
 - `Structure::c2pa_data_hash_exclusions(item)` is where C2PA embedding rules
   reach the container: the ranges a `c2pa.hash.data` excludes for a
   JUMBF item such as `c2pa_item`, on parsed or planned structures. By default it

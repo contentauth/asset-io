@@ -19,8 +19,9 @@
 //! scan-header`, payload the entropy-coded data up to the next marker that is not
 //! a restart marker. Progressive files therefore have one such segment per scan,
 //! with their DHT/DRI markers as ordinary segments between them. A scan that
-//! contains restart markers is flagged as subdividing; see
-//! [`Structure::elements`](asset_io_core::Structure::elements) and `subdivide`.
+//! contains restart markers subdivides at them: the parser records each `RSTn`
+//! as it scans, so [`Structure::elements`](asset_io_core::Structure::elements)
+//! lists the restart intervals without reading the file again.
 //!
 //! JUMBF is carried in JPEG XT APP11 segments. A manifest larger than one
 //! segment spans several; they form a single multi-extent [`Item`](asset_io_core::Item)
@@ -62,11 +63,11 @@ use asset_io_core::plan::WritePlan;
 use asset_io_core::{
     BoxFuture, ByteRange, ContainerHandler, Encoding, Error, Existing, Extent, FormatSpec, Io,
     ItemInfo, ItemKind, MetadataSlot, Name, PlanBuilder, ReadSeek, Result, Role, Segment,
-    SegmentId, SegmentKind, Structure, StructureBuilder, Updates,
+    SegmentId, SegmentKind, Structure, StructureBuilder, Updates, MAX_SEGMENTS,
 };
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek};
 use std::sync::Arc;
 
 const SOI: u8 = 0xD8;
@@ -220,15 +221,6 @@ impl ContainerHandler for JpegHandler {
         mut src: &mut dyn ReadSeek,
     ) -> Result<Option<Vec<u8>>> {
         read_xmp(structure, &mut src)
-    }
-
-    fn subdivide(
-        &self,
-        mut src: &mut dyn ReadSeek,
-        segment: &Segment,
-        emit: &mut dyn FnMut(&Segment) -> Result<()>,
-    ) -> Result<()> {
-        subdivide(&mut src, segment, emit)
     }
 }
 
@@ -410,7 +402,7 @@ async fn scan_image(
             // The entropy-coded data is read in large windows, straight from the
             // window of `io`, and scanned in place.
             let mut entropy = Entropy::default();
-            let mut has_restarts = false;
+            let mut restarts = Vec::new();
             let mut at = data_start;
             let stop = 'scan: loop {
                 if at >= total {
@@ -421,9 +413,16 @@ async fn scan_image(
                 let mut idx = 0;
                 while let Some(event) = entropy.next_in(chunk, at, &mut idx) {
                     match event {
-                        Event::Rst(..) => has_restarts = true,
+                        Event::Rst(at, m) => {
+                            if restarts.len() >= MAX_SEGMENTS {
+                                return Err(Error::LimitExceeded {
+                                    what: "segment count",
+                                    limit: MAX_SEGMENTS as u64,
+                                });
+                            }
+                            restarts.push((at, m));
+                        }
                         Event::Marker(found) => break 'scan found,
-                        Event::Eof => {}
                     }
                 }
                 at += chunk.len() as u64;
@@ -435,8 +434,8 @@ async fn scan_image(
                 stop - data_start,
                 0,
             )?;
-            if has_restarts {
-                b.mark_subdivides(id)?;
+            for (at, m) in restarts {
+                b.split(id, at, 2, Name::Marker(m))?;
             }
             // The marker that ended the scan (DHT, SOS, EOI, ...) is handled by the
             // main loop, so later scans and metadata after the first scan are seen.
@@ -862,8 +861,6 @@ enum Event {
     Rst(u64, u8),
     /// The first marker that is not a restart marker: offset of its `FF`.
     Marker(u64),
-    /// End of the scanned range.
-    Eof,
 }
 
 /// The state of a scan of entropy-coded data, which sees it in chunks. `FF 00` is
@@ -907,101 +904,6 @@ impl Entropy {
             }
         }
         None
-    }
-}
-
-/// Blocking scan of a range of entropy-coded data, for [`subdivide`]. Fixed
-/// buffer, no allocation.
-struct EntropyScan {
-    next_read: u64,
-    end: u64,
-    base: u64,
-    idx: usize,
-    len: usize,
-    core: Entropy,
-    buf: [u8; SCAN_BUF],
-}
-
-impl EntropyScan {
-    fn new(start: u64, end: u64) -> Self {
-        Self {
-            next_read: start,
-            end,
-            base: start,
-            idx: 0,
-            len: 0,
-            core: Entropy::default(),
-            buf: [0; SCAN_BUF],
-        }
-    }
-
-    fn next<R: Read + Seek>(&mut self, src: &mut R) -> Result<Event> {
-        loop {
-            if let Some(event) = self
-                .core
-                .next_in(&self.buf[..self.len], self.base, &mut self.idx)
-            {
-                return Ok(event);
-            }
-            if self.next_read >= self.end {
-                return Ok(Event::Eof);
-            }
-            src.seek(SeekFrom::Start(self.next_read))?;
-            let want = (self.end - self.next_read).min(self.buf.len() as u64) as usize;
-            let n = src.read(&mut self.buf[..want])?;
-            if n == 0 {
-                return Ok(Event::Eof);
-            }
-            self.base = self.next_read;
-            self.next_read += n as u64;
-            self.idx = 0;
-            self.len = n;
-        }
-    }
-}
-
-/// Split a scan segment at its restart markers.
-///
-/// Yields the scan itself (marker, length, scan header and entropy data up to the
-/// first restart marker), then one element per restart marker (`RSTn`, its two
-/// bytes and the entropy data that follows). The elements tile the segment.
-/// Called through [`Structure::elements`](asset_io_core::Structure::elements).
-pub(crate) fn subdivide<R: Read + Seek>(
-    src: &mut R,
-    seg: &Segment,
-    emit: &mut dyn FnMut(&Segment) -> Result<()>,
-) -> Result<()> {
-    let payload = seg.payload();
-    let end = seg.range().end();
-    let kind = seg.kind();
-    let mut start = seg.range().offset();
-    let mut name = seg.name();
-    let mut header_len = seg.header().len() as u32;
-    let mut scan = EntropyScan::new(payload.offset(), payload.end());
-    loop {
-        let (boundary, next) = match scan.next(src)? {
-            Event::Rst(at, m) => (at, Some(m)),
-            Event::Eof => (end, None),
-            Event::Marker(at) => return Err(Error::invalid_segment(at, "marker inside scan")),
-        };
-        let len = boundary
-            .checked_sub(start)
-            .ok_or_else(|| Error::invalid_segment(start, "restart marker before scan start"))?;
-        emit(&Segment::new(
-            ByteRange::new(start, len)?,
-            header_len,
-            0,
-            kind,
-            name,
-        )?)?;
-        match next {
-            Some(m) => {
-                start = boundary;
-                name = Name::Marker(m);
-                header_len = 2;
-            }
-            None => return Ok(()),
-        }
     }
 }
 
@@ -1618,9 +1520,9 @@ mod tests {
         j
     }
 
-    fn elements_of(s: &Structure, j: &[u8]) -> Vec<(Name, ByteRange)> {
+    fn elements_of(s: &Structure) -> Vec<(Name, ByteRange)> {
         let mut els = Vec::new();
-        s.elements(&mut Cursor::new(j.to_vec()), |_, e| {
+        s.elements(|_, e| {
             els.push((e.name(), e.range()));
             Ok(())
         })
@@ -1667,7 +1569,7 @@ mod tests {
         assert_eq!(s.items_of(ItemKind::Jumbf).count(), 1);
 
         // elements() expands the scan and tiles the file.
-        let els = elements_of(&s, &j);
+        let els = elements_of(&s);
         let names: Vec<Name> = els.iter().map(|(n, _)| *n).collect();
         let m = Name::Marker;
         assert_eq!(
@@ -1722,14 +1624,28 @@ mod tests {
         let s = parse(&mut Cursor::new(j.clone())).unwrap();
         assert!(s.segments().len() <= 4, "{} segments", s.segments().len());
         // SOI, the scan up to its first restart marker, 20 000 restart elements, EOI.
-        assert_eq!(elements_of(&s, &j).len(), 1 + 1 + 20_000 + 1);
+        assert_eq!(elements_of(&s).len(), 1 + 1 + 20_000 + 1);
+    }
+
+    #[test]
+    fn a_restart_marker_may_open_the_entropy_data() {
+        let mut j = vec![0xFF, SOI];
+        j.extend(marker(SOS, &[1, 1, 0, 0, 0x3F, 0]));
+        let sos_end = j.len() as u64;
+        j.extend_from_slice(&[0xFF, 0xD0, 0x01, 0xFF, 0xD1, 0x02, 0xFF, EOI]);
+        let s = parse(&mut Cursor::new(j.clone())).unwrap();
+        let els = elements_of(&s);
+        let names: Vec<Name> = els.iter().map(|(n, _)| *n).collect();
+        let m = Name::Marker;
+        assert_eq!(names, [m(SOI), m(SOS), m(0xD0), m(0xD1), m(EOI)]);
+        assert_eq!(els[1].1.end(), sos_end, "the scan box is its header");
     }
 
     #[test]
     fn elements_pass_through_when_nothing_subdivides() {
         let j = sample_jpeg();
         let s = parse(&mut Cursor::new(j.clone())).unwrap();
-        let els = elements_of(&s, &j);
+        let els = elements_of(&s);
         assert_eq!(els.len(), s.segments().len());
         for ((_, r), g) in els.iter().zip(s.segments()) {
             assert_eq!(*r, g.range());

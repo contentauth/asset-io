@@ -279,7 +279,7 @@ mod tests {
 
         let mut names = Vec::new();
         let mut next = 0;
-        s.elements(&mut Cursor::new(bytes.clone()), |_, e| {
+        s.elements(|_, e| {
             assert_eq!(e.range().offset(), next);
             next = e.range().end();
             names.push(s.box_name(e.name()).map(|n| n.into_owned()));

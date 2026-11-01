@@ -166,3 +166,103 @@ fn planned_stores_are_identified_without_reading_the_output() {
         }
     }
 }
+
+/// Run `task` against `source`, answering each request from the slice. Returns the
+/// result and how many requests were made.
+fn drive<T>(mut task: asset_io::Task<'_, T>, source: &[u8]) -> (asset_io::Result<T>, usize) {
+    let mut requests = 0;
+    loop {
+        match task.resume() {
+            Ok(asset_io::Progress::Read(mut req)) => {
+                requests += 1;
+                let from = (req.offset() as usize).min(source.len());
+                let to = (from + req.window_len()).min(source.len());
+                req.buffer().extend_from_slice(&source[from..to]);
+            }
+            Ok(asset_io::Progress::Done(v)) => return (Ok(v), requests),
+            Ok(_) => unreachable!("a progress this driver does not know"),
+            Err(e) => return (Err(e), requests),
+        }
+    }
+}
+
+/// The store and its item are found through tasks, with the caller doing the I/O,
+/// as the blocking calls find them. Recorded JUMBF types mean finding the item
+/// reads nothing.
+#[test]
+fn tasks_find_the_store_as_the_blocking_calls_do() {
+    let registry = HandlerRegistry::builtin();
+    let c2pa = superbox(C2PA_STORE_TYPE, &[b"manifest"]);
+    let mut assets = vec![
+        (
+            "jpg",
+            write(
+                "jpg",
+                &[0xff, 0xd8, 0xff, 0xd9],
+                &Updates::new().set_jumbf(c2pa.clone()),
+            ),
+        ),
+        ("jpg", vec![0xff, 0xd8, 0xff, 0xd9]),
+        (
+            "svg",
+            write(
+                "svg",
+                br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#,
+                &Updates::new().set_jumbf(c2pa.clone()),
+            ),
+        ),
+    ];
+    let heic = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample1.heic");
+    if let Ok(fixture) = fs::read(heic) {
+        let none = write("heic", &fixture, &Updates::remove_all());
+        let original = write("heic", &none, &Updates::new().set_jumbf(c2pa.clone()));
+        let update = superbox(C2PA_STORE_TYPE, &[b"manifest", b"more"]);
+        let updated = write(
+            "heic",
+            &original,
+            &Updates::new().set_jumbf(update).as_update(),
+        );
+        assets.push(("heic", updated));
+    }
+    for (format, bytes) in &assets {
+        let mut source = Cursor::new(bytes);
+        let structure = registry.parse(format, &mut source).unwrap();
+        let want_item = structure.c2pa_item(&mut source).unwrap();
+        let want_store = structure.c2pa_store(&mut source).unwrap();
+
+        let (item, requests) = drive(structure.c2pa_item_task(), bytes);
+        let item = item.unwrap();
+        assert_eq!(
+            item.map(|i| i as *const _),
+            want_item.map(|i| i as *const _)
+        );
+        if *format != "svg" {
+            assert_eq!(requests, 0, "{format}: the item type was recorded");
+        }
+        let (store, _) = drive(structure.c2pa_store_task(), bytes);
+        assert_eq!(store.unwrap(), want_store, "{format}");
+        assert_eq!(
+            structure.c2pa_boxes_with(item).ok(),
+            structure.c2pa_boxes(&mut source).ok(),
+            "{format}"
+        );
+    }
+}
+
+#[test]
+fn boxes_need_the_store_item_of_the_same_structure() {
+    let registry = HandlerRegistry::builtin();
+    let c2pa = superbox(C2PA_STORE_TYPE, &[b"manifest"]);
+    let bytes = write(
+        "jpg",
+        &[0xff, 0xd8, 0xff, 0xd9],
+        &Updates::new().set_jumbf(c2pa),
+    );
+    let a = registry.parse("jpg", &mut Cursor::new(&bytes)).unwrap();
+    let b = registry.parse("jpg", &mut Cursor::new(&bytes)).unwrap();
+    let item = b.c2pa_item(&mut Cursor::new(&bytes)).unwrap();
+    assert!(matches!(
+        a.c2pa_boxes_with(item),
+        Err(Error::InvalidFormat(_))
+    ));
+}

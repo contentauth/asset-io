@@ -102,7 +102,7 @@ fn real_files_parse_and_tile() {
         // The element traversal (restart intervals expanded) tiles the file too.
         let mut next = 0;
         let mut count = 0usize;
-        s.elements(&mut Cursor::new(bytes.clone()), |_, e| {
+        s.elements(|_, e| {
             assert_eq!(e.range().offset(), next, "{}: element gap", path.display());
             next = e.range().end();
             count += 1;

@@ -384,11 +384,8 @@ impl<'s, 'a> PlanBuilder<'s, 'a> {
                 b.begin_subasset(media)?;
             }
             let id = b.push_span(s.kind, s.name, s.header_len, s.payload_len, s.trailer_len)?;
-            if s.subdivides {
-                b.mark_subdivides(id)?;
-                if let Some(from) = s.from {
-                    b.set_origin(id, src.segment(from)?.range().offset());
-                }
+            if let Some(from) = s.from.filter(|_| s.subdivides) {
+                b.split_like(id, src, from)?;
             }
         }
         if !subs.is_empty() {

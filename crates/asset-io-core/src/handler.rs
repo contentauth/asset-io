@@ -324,19 +324,6 @@ pub trait ContainerHandler: std::fmt::Debug + Send + Sync {
         Ok(())
     }
 
-    /// Split a segment flagged [`Segment::subdivides`] into its finer elements, in
-    /// order, tiling the segment. Called through
-    /// [`Structure::elements`](crate::Structure::elements); never needed unless the
-    /// parser flags a segment.
-    fn subdivide(
-        &self,
-        _src: &mut dyn ReadSeek,
-        _segment: &Segment,
-        _emit: &mut dyn FnMut(&Segment) -> Result<()>,
-    ) -> Result<()> {
-        Err(Error::UnsupportedFormat)
-    }
-
     /// Visit the container's element hierarchy in file order, parents before
     /// children. Called through [`Structure::walk`](crate::Structure::walk).
     ///
