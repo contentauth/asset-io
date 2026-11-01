@@ -21,7 +21,7 @@ use crate::range::ByteRange;
 use crate::segment::{Name, Role, Segment};
 use crate::segment::{SegmentKind, DEFAULT_CHUNK_SIZE, MAX_SEGMENT_SIZE};
 use crate::sink::{Chunk, Sink};
-use crate::task::{block_on, Task};
+use crate::task::block_on;
 use crate::transfer::TransferEncoding;
 use crate::walk::Node;
 use std::borrow::Cow;
@@ -481,11 +481,12 @@ impl Structure {
     /// stored as is; an item with a [transfer encoding](Item::transfer) is decoded.
     pub fn jumbf_type<R: Read + Seek>(&self, src: &mut R, item: &Item) -> Result<Option<[u8; 16]>> {
         block_on(self.total_size, src, |mut io| async move {
-            self.jumbf_type_in(&mut io, item).await
+            self.jumbf_type_async(&mut io, item).await
         })
     }
 
-    async fn jumbf_type_in(&self, io: &mut Io, item: &Item) -> Result<Option<[u8; 16]>> {
+    /// [`jumbf_type`](Self::jumbf_type), reading through `io`.
+    pub async fn jumbf_type_async(&self, io: &mut Io, item: &Item) -> Result<Option<[u8; 16]>> {
         if item.kind() != ItemKind::Jumbf {
             return Ok(None);
         }
@@ -548,13 +549,19 @@ impl Structure {
         Ok(())
     }
 
-    /// An item's content, as [`read_content`](Self::read_content) reads it.
-    async fn read_content_in(&self, io: &mut Io, item: &Item) -> Result<Vec<u8>> {
+    /// [`read_item`](Self::read_item), reading through `io`.
+    pub async fn read_item_async(&self, io: &mut Io, item: &Item) -> Result<Vec<u8>> {
         let mut stored = Vec::new();
         for extent in item.extents() {
             self.read_in(io, extent.range, &mut stored).await?;
         }
-        item.transfer().decode(stored)
+        Ok(stored)
+    }
+
+    /// [`read_content`](Self::read_content), reading through `io`.
+    pub async fn read_content_async(&self, io: &mut Io, item: &Item) -> Result<Vec<u8>> {
+        item.transfer()
+            .decode(self.read_item_async(io, item).await?)
     }
 
     /// The JUMBF store as a reader sees it, or `None` if the asset has none.
@@ -596,20 +603,14 @@ impl Structure {
     /// item is what a caller excludes from a hash or patches in place.
     pub fn c2pa_item<R: Read + Seek>(&self, src: &mut R) -> Result<Option<&Item>> {
         block_on(self.total_size, src, |mut io| async move {
-            self.c2pa_item_in(&mut io).await
+            self.c2pa_item_async(&mut io).await
         })
     }
 
-    /// [`c2pa_item`](Self::c2pa_item) as a [`Task`]: the caller does the reads.
-    /// There are none when the parser recorded the type of each JUMBF item, as
-    /// the built-in handlers do.
-    pub fn c2pa_item_task(&self) -> Task<'_, Option<&Item>> {
-        Task::new(self.total_size, |mut io| async move {
-            self.c2pa_item_in(&mut io).await
-        })
-    }
-
-    async fn c2pa_item_in(&self, io: &mut Io) -> Result<Option<&Item>> {
+    /// [`c2pa_item`](Self::c2pa_item), reading through `io`, for a [`Task`](crate::Task) where
+    /// the caller does the reads. There are none when the parser recorded the
+    /// type of each JUMBF item, as the built-in handlers do.
+    pub async fn c2pa_item_async(&self, io: &mut Io) -> Result<Option<&Item>> {
         use crate::segment::labels::UPDATE;
         let mut found = None;
         let mut count = 0;
@@ -617,7 +618,7 @@ impl Structure {
             if item.label() == Some(UPDATE) {
                 continue;
             }
-            if self.jumbf_type_in(io, item).await? == Some(crate::jumbf::C2PA_STORE_TYPE) {
+            if self.jumbf_type_async(io, item).await? == Some(crate::jumbf::C2PA_STORE_TYPE) {
                 count += 1;
                 found.get_or_insert(item);
             }
@@ -637,26 +638,21 @@ impl Structure {
     /// Only finds the store; the manifests in it are not interpreted.
     pub fn c2pa_store<R: Read + Seek>(&self, src: &mut R) -> Result<Option<Vec<u8>>> {
         block_on(self.total_size, src, |mut io| async move {
-            self.c2pa_store_in(&mut io).await
+            self.c2pa_store_async(&mut io).await
         })
     }
 
-    /// [`c2pa_store`](Self::c2pa_store) as a [`Task`]: the caller does the reads.
-    pub fn c2pa_store_task(&self) -> Task<'_, Option<Vec<u8>>> {
-        Task::new(self.total_size, |mut io| async move {
-            self.c2pa_store_in(&mut io).await
-        })
-    }
-
-    async fn c2pa_store_in(&self, io: &mut Io) -> Result<Option<Vec<u8>>> {
+    /// [`c2pa_store`](Self::c2pa_store), reading through `io`, for a [`Task`](crate::Task)
+    /// where the caller does the reads.
+    pub async fn c2pa_store_async(&self, io: &mut Io) -> Result<Option<Vec<u8>>> {
         use crate::segment::labels::{ORIGINAL, UPDATE};
-        let Some(item) = self.c2pa_item_in(io).await? else {
+        let Some(item) = self.c2pa_item_async(io).await? else {
             return Ok(None);
         };
-        let store = self.read_content_in(io, item).await?;
+        let store = self.read_content_async(io, item).await?;
         if item.label() == Some(ORIGINAL) {
             if let Some(update) = self.items_labelled(ItemKind::Jumbf, UPDATE).next() {
-                let update = self.read_content_in(io, update).await?;
+                let update = self.read_content_async(io, update).await?;
                 return crate::jumbf::extend(&store, &update).map(Some);
             }
         }
@@ -687,7 +683,7 @@ impl Structure {
     }
 
     /// [`c2pa_boxes`](Self::c2pa_boxes) given the store's item, as
-    /// [`c2pa_item`](Self::c2pa_item) or [`c2pa_item_task`](Self::c2pa_item_task)
+    /// [`c2pa_item`](Self::c2pa_item) or [`c2pa_item_async`](Self::c2pa_item_async)
     /// finds it, or `None` for an asset without one. Reads nothing.
     pub fn c2pa_boxes_with(&self, store: Option<&Item>) -> Result<Vec<C2paBox>> {
         let store: Vec<SegmentId> = match store {

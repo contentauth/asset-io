@@ -84,6 +84,33 @@ impl Io {
         self.total == 0
     }
 
+    /// Another `Io` over the same stream and driver, with an empty window, for
+    /// code that takes an `Io` by value (a handler's
+    /// [`parse_async`](crate::ContainerHandler::parse_async)) inside a longer task.
+    /// The callee owns the fork, leaving this `Io` available after it finishes.
+    /// This does not create a new task, thread, or independent I/O driver.
+    ///
+    /// The fork shares the stream length and read-request channel, but not this
+    /// `Io`'s cached bytes. It starts with an empty window and may request bytes
+    /// already cached here. Its window is not transferred back when it finishes;
+    /// dropping it discards that window. Creating a fork only clones the channel's
+    /// `Arc`, without allocating another channel or copying bytes.
+    ///
+    /// # Sequential use only
+    ///
+    /// Finish the operation using the fork before reading through this `Io` or
+    /// another fork, for example by immediately awaiting the callee. The shared
+    /// channel holds only one outstanding request and response buffer: concurrent
+    /// reads can overwrite requests or consume another reader's response. Its
+    /// mutex protects memory access, not concurrent-reader correctness. The owned
+    /// fork does not borrow this `Io`, so Rust does not enforce this sequencing.
+    ///
+    /// A fork is neither a substream nor a snapshot: offsets still address the
+    /// same complete stream, whose bytes must remain unchanged while cached.
+    pub fn fork(&self) -> Io {
+        Io::new(self.total, self.link.clone())
+    }
+
     fn covers(&self, offset: u64, len: usize) -> bool {
         offset >= self.start
             && offset

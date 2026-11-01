@@ -54,6 +54,7 @@ asset-io-svg = { workspace = true, optional = true }
 asset-io-pdf = { workspace = true, optional = true }
 asset-io-tiff = { workspace = true, optional = true }
 asset-io-c2pa = { workspace = true, optional = true }
+tokio = { version = "1", features = ["io-util"], optional = true }
 
 [dev-dependencies]
 sha2 = "0.11"
@@ -78,6 +79,7 @@ exif = ["asset-io-core/exif", "asset-io-bmff?/exif"]
 xmp = ["asset-io-core/xmp"]
 memory-mapped = ["asset-io-core/memory-mapped", "asset-io-pdf?/memory-mapped"]
 all-formats = ["jpeg", "png", "bmff", "riff", "svg", "pdf", "tiff", "c2pa"]
+tokio = ["dep:tokio"]
 
 [[example]]
 name = "inspect"
@@ -85,7 +87,7 @@ required-features = ["all-formats", "exif"]
 
 [[example]]
 name = "tokio_client"
-required-features = ["all-formats"]
+required-features = ["all-formats", "tokio"]
 
 [[bench]]
 name = "io"

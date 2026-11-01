@@ -42,9 +42,12 @@ A parsed file is a `Structure`: a gapless tiling of `Segment`s (header, payload,
   recorded when the asset is parsed, so listing boxes reads nothing beyond
   finding the store; `c2pa_boxes_with(item)` takes the store's item and reads
   nothing at all.
-- `c2pa_item_task()` and `c2pa_store_task()` are `c2pa_item` and `c2pa_store`
-  as a sans-I/O `Task`, like `parse_task`: the caller answers each read
-  request. Finding the item reads nothing when the parser recorded each JUMBF
+- The reads have `async` forms over an `Io` — `c2pa_item_async`,
+  `c2pa_store_async`, `jumbf_type_async`, `read_item_async`,
+  `read_content_async`, and `HandlerRegistry::parse_async` /
+  `parse_detect_async` — so a caller composes parsing, finding the store and
+  its own work into one sans-I/O `Task` and answers its read requests in one
+  place. Finding the item reads nothing when the parser recorded each JUMBF
   item's type, as the built-in handlers do.
 - `Structure::c2pa_data_hash_exclusions(item)` is where C2PA embedding rules
   reach the container: the ranges a `c2pa.hash.data` excludes for a
@@ -172,6 +175,44 @@ let updates = Updates::new().set_xmp(xmp_bytes).remove_jumbf();
 structure.write(&mut src, &mut out, &updates, &mut NullSink)?;
 ```
 
+### Tokio
+
+Enable `tokio` alongside the container features to use `asset_io::tokio` with
+Tokio's `AsyncRead + AsyncSeek` sources and `AsyncWrite` destinations:
+
+```rust,no_run
+# async fn example() -> asset_io::Result<()> {
+use asset_io::{tokio as asset, HandlerRegistry, ItemKind, NullSink, Updates};
+
+let registry = HandlerRegistry::builtin();
+let mut src = tokio::fs::File::open("image.jpg").await?;
+let structure = asset::parse_detect(&registry, &mut src).await?;
+if let Some(item) = structure.item(ItemKind::Xmp)? {
+    let xmp = asset::read_content(&structure, &mut src, item).await?;
+    println!("{} bytes of XMP", xmp.len());
+}
+let updates = Updates::new().remove_jumbf();
+let mut out = tokio::fs::File::create("out.jpg").await?;
+asset::write(&structure, &mut src, &mut out, &updates, &mut NullSink).await?;
+# Ok(())
+# }
+```
+
+The adapters hide task requests and write steps; the core remains sans-I/O.
+`write_plan` and `execute` expose planning and execution separately when callers
+need the output layout before writing. `c2pa_item` and `c2pa_store` provide async
+store access, and `run` drives custom tasks composed from the core async methods.
+Sources must remain unchanged after parsing. Writes start at the destination's
+current position, flush on success, and may leave partial output on errors or
+cancellation. Sink callbacks are synchronous and should not block.
+
+The [Tokio example](examples/tokio_client.rs) uses these adapters; the
+[synchronous inspect example](examples/inspect.rs) uses the blocking APIs.
+
+```sh
+cargo run --example tokio_client --features all-formats,tokio -- inspect image.jpg
+```
+
 ## Sinks
 
 `write(src, out, updates, sink)` and `read(src, sink)` both end with a `Sink`. It receives every byte, in order, tagged with its segment and role, so a caller can hash while reading or writing. Runs the sink doesn't `want` are not read.
@@ -225,7 +266,11 @@ Parsing and planning are `async` code that does no I/O: a `Task` runs it, and wh
 
 A `WritePlan` runs the same way: `WritePlan::start` gives an `Execution` whose `step` returns `Action::Read { offset, buf }`, `Action::Write(bytes)` or `Action::Done`, and does the sink calls, the checking and the read coalescing itself, so every way of running a plan behaves like `execute`. The blocking calls (`HandlerRegistry::parse`, `Structure::write`) are these drivers over a `Read + Seek` and a `Write`.
 
-`examples/tokio_client.rs` drives parsing, planning and writing with `tokio::fs`, one spawned task per file, hashing the output as it is written; `tests/tokio_driver.rs` checks that what it writes matches the blocking API byte for byte.
+`examples/tokio_client.rs` uses the feature-gated `asset_io::tokio` adapters with
+`tokio::fs`, one spawned task per file, hashing the output as it is written.
+`tests/tokio_adapter.rs` checks adapter parity with the blocking API and error
+propagation; `tests/tokio_driver.rs` also checks low-level task driving and writes
+against the blocking API byte for byte.
 
 Its `edit` command reports wall-clock times for parsing, planning, writing with SHA-256, and the total edit. Writing includes output creation and flushing, but not an explicit disk sync. The total excludes loading the replacement XMP, task spawning, and compilation.
 

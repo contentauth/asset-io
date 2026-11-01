@@ -186,11 +186,11 @@ fn drive<T>(mut task: asset_io::Task<'_, T>, source: &[u8]) -> (asset_io::Result
     }
 }
 
-/// The store and its item are found through tasks, with the caller doing the I/O,
-/// as the blocking calls find them. Recorded JUMBF types mean finding the item
+/// One task parses the asset and finds its store and boxes, with the caller doing
+/// the I/O, as the blocking calls do. Recorded JUMBF types mean finding the item
 /// reads nothing.
 #[test]
-fn tasks_find_the_store_as_the_blocking_calls_do() {
+fn one_task_finds_the_store_as_the_blocking_calls_do() {
     let registry = HandlerRegistry::builtin();
     let c2pa = superbox(C2PA_STORE_TYPE, &[b"manifest"]);
     let mut assets = vec![
@@ -227,25 +227,33 @@ fn tasks_find_the_store_as_the_blocking_calls_do() {
     for (format, bytes) in &assets {
         let mut source = Cursor::new(bytes);
         let structure = registry.parse(format, &mut source).unwrap();
-        let want_item = structure.c2pa_item(&mut source).unwrap();
         let want_store = structure.c2pa_store(&mut source).unwrap();
+        let want_boxes = structure.c2pa_boxes(&mut source).ok();
 
-        let (item, requests) = drive(structure.c2pa_item_task(), bytes);
-        let item = item.unwrap();
-        assert_eq!(
-            item.map(|i| i as *const _),
-            want_item.map(|i| i as *const _)
-        );
+        let registry = &registry;
+        let task = asset_io::Task::new(bytes.len() as u64, |mut io| async move {
+            let structure = registry.parse_async(format, &mut io).await?;
+            let item = structure.c2pa_item_async(&mut io).await?;
+            let boxes = structure.c2pa_boxes_with(item).ok();
+            let store = structure.c2pa_store_async(&mut io).await?;
+            Ok((store, boxes))
+        });
+        let (got, _) = drive(task, bytes);
+        let (store, boxes) = got.unwrap();
+        assert_eq!(store, want_store, "{format}");
+        assert_eq!(boxes, want_boxes, "{format}");
+
+        let task = asset_io::Task::new(bytes.len() as u64, |mut io| async move {
+            structure
+                .c2pa_item_async(&mut io)
+                .await
+                .map(|i| i.is_some())
+        });
+        let (found, requests) = drive(task, bytes);
+        assert_eq!(found.unwrap(), want_store.is_some(), "{format}");
         if *format != "svg" {
             assert_eq!(requests, 0, "{format}: the item type was recorded");
         }
-        let (store, _) = drive(structure.c2pa_store_task(), bytes);
-        assert_eq!(store.unwrap(), want_store, "{format}");
-        assert_eq!(
-            structure.c2pa_boxes_with(item).ok(),
-            structure.c2pa_boxes(&mut source).ok(),
-            "{format}"
-        );
     }
 }
 

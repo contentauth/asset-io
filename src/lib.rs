@@ -28,5 +28,7 @@ pub use asset_io_core::*;
 
 pub mod containers;
 mod registry;
+#[cfg(feature = "tokio")]
+pub mod tokio;
 
 pub use registry::HandlerRegistry;

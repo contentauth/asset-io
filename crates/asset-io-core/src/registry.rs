@@ -20,6 +20,7 @@
 
 use crate::error::{Error, Result};
 use crate::handler::{ContainerHandler, FormatSpec, ReadSeek, DETECT_LEN};
+use crate::io::Io;
 use crate::structure::Structure;
 use crate::task::Task;
 use std::collections::HashMap;
@@ -158,11 +159,24 @@ impl HandlerRegistry {
     /// leading bytes of the stream, which the task asks for first.
     pub fn parse_detect_task(&self, total: u64) -> Task<'_, Structure> {
         Task::new(total, move |mut io| async move {
-            let n = (DETECT_LEN as u64).min(total) as usize;
-            let head = io.fetch(0, n).await?.to_vec();
-            let h = Arc::clone(self.detect(&head).ok_or(Error::UnsupportedFormat)?);
-            h.parse_async(io).await
+            self.parse_detect_async(&mut io).await
         })
+    }
+
+    /// Parse the stream `io` reads as `format`, inside a longer task: `io` can be
+    /// read again afterwards. [`parse_task`](Self::parse_task) is this as a task.
+    pub async fn parse_async(&self, format: &str, io: &mut Io) -> Result<Structure> {
+        let h = Arc::clone(self.handler(format).ok_or(Error::UnsupportedFormat)?);
+        h.parse_async(io.fork()).await
+    }
+
+    /// Detect the format of the stream `io` reads and parse it, inside a longer
+    /// task. [`parse_detect_task`](Self::parse_detect_task) is this as a task.
+    pub async fn parse_detect_async(&self, io: &mut Io) -> Result<Structure> {
+        let n = (DETECT_LEN as u64).min(io.len()) as usize;
+        let head = io.fetch(0, n).await?.to_vec();
+        let h = Arc::clone(self.detect(&head).ok_or(Error::UnsupportedFormat)?);
+        h.parse_async(io.fork()).await
     }
 
     /// Parse a stream, identifying the container from its leading bytes. The stream
