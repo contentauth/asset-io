@@ -49,11 +49,11 @@ fn builtin_registry_contains_exactly_the_enabled_families() {
         assert!(registry.formats().is_empty());
         assert!(registry.detect(b"\xff\xd8\xff\xe0").is_none());
         assert!(matches!(
-            registry.parse("jpg", &mut Cursor::new([])),
+            asset_io::parse(&registry, &mut Cursor::new([]), Some("jpg")),
             Err(Error::UnsupportedFormat)
         ));
         assert!(matches!(
-            registry.parse_detect(&mut Cursor::new(b"%PDF-1.7\n")),
+            asset_io::parse(&registry, &mut Cursor::new(b"%PDF-1.7\n"), None),
             Err(Error::UnsupportedFormat)
         ));
     }
@@ -84,7 +84,7 @@ fn custom_registration_and_fallback_preserve_core_interoperability() {
     let core: &asset_io_core::HandlerRegistry = &fallback;
     assert_eq!(core.container_for("custom"), Some("custom"));
     assert!(matches!(
-        core.parse("custom", &mut Cursor::new([])),
+        asset_io::parse(core, &mut Cursor::new([]), Some("custom")),
         Err(Error::UnsupportedFeature("test handler"))
     ));
 }
@@ -103,9 +103,12 @@ fn an_existing_fallback_is_not_changed_by_later_mutations() {
 fn sidecars_work_through_the_feature_selected_registry() {
     let registry = HandlerRegistry::builtin();
     let mut source = Cursor::new(b"raw manifest-store bytes");
-    let structure = registry
-        .parse("application/x-c2pa-manifest-store", &mut source)
-        .unwrap();
+    let structure = asset_io::parse(
+        &registry,
+        &mut source,
+        Some("application/x-c2pa-manifest-store"),
+    )
+    .unwrap();
     assert_eq!(structure.container_id(), asset_io::containers::c2pa::ID);
     assert_eq!(
         structure.store(&mut source).unwrap().unwrap(),
@@ -113,7 +116,9 @@ fn sidecars_work_through_the_feature_selected_registry() {
     );
     assert_eq!(
         registry
-            .compose("c2pa", asset_io::ItemKind::Jumbf, b"replacement")
+            .handler("c2pa")
+            .unwrap()
+            .compose(asset_io::ItemKind::Jumbf, b"replacement")
             .unwrap(),
         b"replacement"
     );

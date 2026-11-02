@@ -144,7 +144,7 @@ fn registry() -> HandlerRegistry {
 
 fn write(updates: &Updates, bytes: &[u8]) -> (Vec<u8>, Structure) {
     let mut src = Cursor::new(bytes.to_vec());
-    let s = registry().parse("toy", &mut src).unwrap();
+    let s = asset_io_core::parse(&registry(), &mut src, Some("toy")).unwrap();
     let mut out = Cursor::new(Vec::new());
     let structure = s
         .write(&mut src, &mut out, updates, &mut |_: Chunk<'_>| Ok(()))
@@ -172,7 +172,7 @@ fn set_replaces_in_place_and_remove_drops() {
 fn plan_is_data_that_can_be_checked_and_inspected() {
     let bytes = toy_bytes();
     let mut src = Cursor::new(bytes.clone());
-    let s = registry().parse("toy", &mut src).unwrap();
+    let s = asset_io_core::parse(&registry(), &mut src, Some("toy")).unwrap();
     let updates = Updates::new().set_xmp(b"zz".to_vec());
     let plan = s.write_plan(&mut src, &updates).unwrap();
     validate(&plan, bytes.len() as u64).unwrap();
@@ -234,7 +234,7 @@ fn conformance_catches_a_handler_that_ignores_updates() {
 fn executor_rejects_steps_that_do_not_match_the_structure() {
     let bytes = toy_bytes();
     let mut src = Cursor::new(bytes.clone());
-    let s = registry().parse("toy", &mut src).unwrap();
+    let s = asset_io_core::parse(&registry(), &mut src, Some("toy")).unwrap();
     let id = |i| SegmentId::from_index(i).unwrap();
 
     // A plan for the same structure, but one record's payload is left out.
@@ -287,14 +287,19 @@ fn a_third_party_handler_runs_under_a_task_with_no_changes() {
     let reg = registry();
 
     // Parsing, with the I/O done here.
-    let (parsed, requests) =
-        run_by_hand(reg.parse_task("toy", bytes.len() as u64).unwrap(), &bytes);
+    let (parsed, requests) = run_by_hand(
+        asset_io_core::parse_task(&reg, bytes.len() as u64, Some("toy")),
+        &bytes,
+    );
     let s = parsed.unwrap();
     assert_eq!(s.total_size(), bytes.len() as u64);
     assert_eq!(requests, 1); // the whole of a small stream, in one window
 
     // Detection by content, then the same parse.
-    let (parsed, _) = run_by_hand(reg.parse_detect_task(bytes.len() as u64), &bytes);
+    let (parsed, _) = run_by_hand(
+        asset_io_core::parse_task(&reg, bytes.len() as u64, None),
+        &bytes,
+    );
     assert_eq!(parsed.unwrap().segments().len(), s.segments().len());
 
     // Planning a write, and running the plan step by step.

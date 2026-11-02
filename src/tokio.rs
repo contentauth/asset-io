@@ -16,7 +16,7 @@
 //! # async fn example() -> asset_io::Result<()> {
 //! let registry = asset_io::HandlerRegistry::builtin();
 //! let mut src = tokio::fs::File::open("image.jpg").await?;
-//! let structure = asset_io::tokio::parse_detect(&registry, &mut src).await?;
+//! let structure = asset_io::tokio::parse(&registry, &mut src, None).await?;
 //! let updates = asset_io::Updates::new().remove_jumbf();
 //! let mut out = tokio::fs::File::create("out.jpg").await?;
 //! asset_io::tokio::write(
@@ -61,24 +61,21 @@ where
     }
 }
 
-/// Parse `src` as `format`. Stream length is determined by seeking to its end;
-/// parsing uses absolute offsets from the beginning, not its current position.
-pub async fn parse<R>(registry: &HandlerRegistry, format: &str, src: &mut R) -> Result<Structure>
+/// Parse `src` using an explicit extension or MIME type, or detect it with `None`.
+///
+/// An unsupported explicit format fails without falling back to detection.
+/// Stream length is determined by seeking to its end; parsing uses absolute
+/// offsets from the beginning, not its current position.
+pub async fn parse<R>(
+    registry: &HandlerRegistry,
+    src: &mut R,
+    format: Option<&str>,
+) -> Result<Structure>
 where
     R: AsyncRead + AsyncSeek + Unpin + ?Sized,
 {
     let total = src.seek(SeekFrom::End(0)).await?;
-    run(registry.parse_task(format, total)?, src).await
-}
-
-/// Detect the format and parse `src`, determining its length by seeking to its
-/// end. Parsing uses absolute offsets from the beginning.
-pub async fn parse_detect<R>(registry: &HandlerRegistry, src: &mut R) -> Result<Structure>
-where
-    R: AsyncRead + AsyncSeek + Unpin + ?Sized,
-{
-    let total = src.seek(SeekFrom::End(0)).await?;
-    run(registry.parse_detect_task(total), src).await
+    run(crate::parse_task(registry, total, format), src).await
 }
 
 /// Read an item's stored bytes, concatenating its extents without decoding.

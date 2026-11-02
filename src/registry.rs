@@ -8,8 +8,10 @@ use std::sync::{Arc, OnceLock};
 ///
 /// [`new`](Self::new) and [`default`](Self::default) are always empty.
 /// [`builtin`](Self::builtin) includes only the explicitly enabled container
-/// features. All lookup, parsing and registration operations are supplied by the
+/// features. All lookup and registration operations are supplied by the
 /// underlying [`asset_io_core::HandlerRegistry`].
+/// Parsing is provided by [`crate::parse`] and the optional `asset_io::tokio`
+/// adapters, not by the registry.
 #[derive(Debug, Default)]
 pub struct HandlerRegistry {
     inner: Arc<asset_io_core::HandlerRegistry>,

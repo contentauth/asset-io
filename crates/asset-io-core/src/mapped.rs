@@ -33,7 +33,7 @@ use std::ops::Deref;
 /// let map = unsafe { MappedFile::map(&file)? };
 /// // Register an application-provided handler before parsing.
 /// let registry = HandlerRegistry::new();
-/// let structure = map.parse_detect(&registry)?;
+/// let structure = map.parse(&registry, None)?;
 /// if let Some(xmp) = structure.item(ItemKind::Xmp)? {
 ///     let bytes = structure.slice_item(&map, xmp)?; // borrowed from the map
 ///     println!("{} bytes of XMP", bytes.len());
@@ -66,14 +66,10 @@ impl MappedFile {
         &self.map
     }
 
-    /// Parse the mapped file, identifying the container from its content.
-    pub fn parse_detect(&self, registry: &HandlerRegistry) -> Result<Structure> {
-        registry.parse_detect(&mut Cursor::new(self.as_bytes()))
-    }
-
-    /// Parse the mapped file as `format` (extension or MIME type).
-    pub fn parse(&self, registry: &HandlerRegistry, format: &str) -> Result<Structure> {
-        registry.parse(format, &mut Cursor::new(self.as_bytes()))
+    /// Parse the mapped file using an explicit extension or MIME type, or detect
+    /// its container from the leading bytes with `None`.
+    pub fn parse(&self, registry: &HandlerRegistry, format: Option<&str>) -> Result<Structure> {
+        crate::parse(registry, &mut Cursor::new(self.as_bytes()), format)
     }
 }
 

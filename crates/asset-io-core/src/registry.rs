@@ -14,17 +14,16 @@
 //! Registry of container handlers.
 //!
 //! Handlers are looked up by format string (a file extension or MIME type) or by
-//! sniffing the first bytes of a stream. A registry can extend another one: a
+//! matching caller-supplied header bytes. A registry can extend another one: a
 //! caller's custom handlers are consulted first and the fallback only for formats
 //! they do not claim. The core includes no built-in handlers.
+//!
+//! A registry only resolves handlers and format metadata; it never reads or
+//! parses a stream. Use [`crate::parse`], [`crate::parse_async`] or
+//! [`crate::parse_task`] to select a handler and run its parser.
 
-use crate::error::{Error, Result};
-use crate::handler::{ContainerHandler, FormatSpec, ReadSeek, DETECT_LEN};
-use crate::io::Io;
-use crate::structure::Structure;
-use crate::task::Task;
+use crate::handler::{ContainerHandler, FormatSpec, DETECT_LEN};
 use std::collections::HashMap;
-use std::io::SeekFrom;
 use std::sync::Arc;
 
 /// Matching is case-insensitive and ignores surrounding whitespace and a leading dot.
@@ -121,14 +120,6 @@ impl HandlerRegistry {
         self.format_for(format).map(|spec| spec.extension)
     }
 
-    /// The container's own encoding of one metadata item for a format string; see
-    /// [`ContainerHandler::compose`].
-    pub fn compose(&self, format: &str, kind: crate::ItemKind, data: &[u8]) -> Result<Vec<u8>> {
-        self.handler(format)
-            .ok_or(Error::UnsupportedFormat)?
-            .compose(kind, data)
-    }
-
     /// The handler that recognises `header` (the leading bytes of a stream). Handlers
     /// registered here are tried most-recent first, then the fallback's.
     pub fn detect(&self, header: &[u8]) -> Option<&Arc<dyn ContainerHandler>> {
@@ -139,62 +130,6 @@ impl HandlerRegistry {
             .rev()
             .find(|h| h.detect(header))
             .or_else(|| self.fallback.as_deref().and_then(|f| f.detect(header)))
-    }
-
-    /// Parse a stream as `format`.
-    pub fn parse(&self, format: &str, src: &mut dyn ReadSeek) -> Result<Structure> {
-        let h = self.handler(format).ok_or(Error::UnsupportedFormat)?;
-        Arc::clone(h).parse(src)
-    }
-
-    /// A task that parses a stream of `total` bytes as `format`, for a caller that
-    /// does its own I/O; see [`Task`]. Reports [`Error::UnsupportedFormat`] for a
-    /// format nobody claims.
-    pub fn parse_task(&self, format: &str, total: u64) -> Result<Task<'static, Structure>> {
-        let h = Arc::clone(self.handler(format).ok_or(Error::UnsupportedFormat)?);
-        Ok(Task::new(total, move |io| h.parse_async(io)))
-    }
-
-    /// Like [`parse_task`](Self::parse_task), identifying the container from the
-    /// leading bytes of the stream, which the task asks for first.
-    pub fn parse_detect_task(&self, total: u64) -> Task<'_, Structure> {
-        Task::new(total, move |mut io| async move {
-            self.parse_detect_async(&mut io).await
-        })
-    }
-
-    /// Parse the stream `io` reads as `format`, inside a longer task: `io` can be
-    /// read again afterwards. [`parse_task`](Self::parse_task) is this as a task.
-    pub async fn parse_async(&self, format: &str, io: &mut Io) -> Result<Structure> {
-        let h = Arc::clone(self.handler(format).ok_or(Error::UnsupportedFormat)?);
-        h.parse_async(io.fork()).await
-    }
-
-    /// Detect the format of the stream `io` reads and parse it, inside a longer
-    /// task. [`parse_detect_task`](Self::parse_detect_task) is this as a task.
-    pub async fn parse_detect_async(&self, io: &mut Io) -> Result<Structure> {
-        let n = (DETECT_LEN as u64).min(io.len()) as usize;
-        let head = io.fetch(0, n).await?.to_vec();
-        let h = Arc::clone(self.detect(&head).ok_or(Error::UnsupportedFormat)?);
-        h.parse_async(io.fork()).await
-    }
-
-    /// Parse a stream, identifying the container from its leading bytes. The stream
-    /// is rewound before parsing.
-    pub fn parse_detect(&self, src: &mut dyn ReadSeek) -> Result<Structure> {
-        let mut head = [0u8; DETECT_LEN];
-        src.seek(SeekFrom::Start(0))?;
-        let mut n = 0;
-        while n < head.len() {
-            let k = src.read(&mut head[n..])?;
-            if k == 0 {
-                break;
-            }
-            n += k;
-        }
-        src.seek(SeekFrom::Start(0))?;
-        let h = self.detect(&head[..n]).ok_or(Error::UnsupportedFormat)?;
-        Arc::clone(h).parse(src)
     }
 
     /// Every format string this registry (and its fallback) serves, sorted.
@@ -217,7 +152,10 @@ mod tests {
     use super::*;
     use crate::segment::SegmentKind;
     use crate::Updates;
-    use crate::{BoxFuture, ContainerHandler, Io, Name, Sink, StructureBuilder};
+    use crate::{
+        BoxFuture, ContainerHandler, Error, Io, Name, ReadSeek, Result, Sink, Structure,
+        StructureBuilder,
+    };
     use std::borrow::Cow;
     use std::io::Cursor;
 
@@ -287,7 +225,7 @@ mod tests {
     fn custom_handler_parses_names_and_tiles() {
         let reg = HandlerRegistry::new().with_handler(Toy);
         let bytes = toy_bytes();
-        let s = reg.parse("TOY", &mut Cursor::new(bytes.clone())).unwrap();
+        let s = crate::parse(&reg, &mut Cursor::new(bytes.clone()), Some("TOY")).unwrap();
         assert_eq!(s.total_size(), bytes.len() as u64);
         assert_eq!(s.media_type(), "application/x-toy");
 
@@ -320,10 +258,10 @@ mod tests {
         assert!(reg.handler(" .Toy ").is_some());
         assert!(reg.handler("APPLICATION/X-TOY").is_some());
         assert_eq!(reg.container_for("application/x-toy"), Some("toy"));
-        let s = reg.parse_detect(&mut Cursor::new(toy_bytes())).unwrap();
+        let s = crate::parse(&reg, &mut Cursor::new(toy_bytes()), None).unwrap();
         assert_eq!(s.container_id(), "toy");
         assert!(matches!(
-            reg.parse("xyz", &mut Cursor::new(toy_bytes())),
+            crate::parse(&reg, &mut Cursor::new(toy_bytes()), Some("xyz")),
             Err(Error::UnsupportedFormat)
         ));
     }
@@ -360,13 +298,16 @@ mod tests {
         // The override shadows the fallback for "toy"; the fallback still serves
         // the format string the override does not claim.
         assert!(matches!(
-            over.parse("toy", &mut Cursor::new(toy_bytes())),
+            crate::parse(&over, &mut Cursor::new(toy_bytes()), Some("toy")),
             Err(Error::InvalidFormat(_))
         ));
-        assert!(over
-            .parse("application/x-toy", &mut Cursor::new(toy_bytes()))
-            .is_ok());
+        assert!(crate::parse(
+            &over,
+            &mut Cursor::new(toy_bytes()),
+            Some("application/x-toy")
+        )
+        .is_ok());
         // The fallback itself is untouched.
-        assert!(base.parse("toy", &mut Cursor::new(toy_bytes())).is_ok());
+        assert!(crate::parse(&base, &mut Cursor::new(toy_bytes()), Some("toy")).is_ok());
     }
 }

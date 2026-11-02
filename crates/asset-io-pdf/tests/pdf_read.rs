@@ -830,7 +830,10 @@ fn mmap_exposes_borrowed_metadata_bytes() {
     let file = std::fs::File::open(&path).unwrap();
     let mapped = unsafe { asset_io_core::MappedFile::map(&file) }.unwrap();
     let structure = mapped
-        .parse_detect(&HandlerRegistry::new().with_handler(asset_io_pdf::PdfHandler))
+        .parse(
+            &HandlerRegistry::new().with_handler(asset_io_pdf::PdfHandler),
+            None,
+        )
         .unwrap();
     let xmp = structure.require_item(ItemKind::Xmp).unwrap();
     assert_eq!(

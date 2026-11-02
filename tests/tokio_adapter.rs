@@ -34,7 +34,8 @@ async fn spawned_adapters_match_blocking_reads_writes_and_sink_bytes() {
         tokio::spawn(async move {
             let registry = HandlerRegistry::builtin();
             let updates = Updates::new().set_jumbf(store());
-            let blocking = registry.parse(format, &mut Cursor::new(&input)).unwrap();
+            let blocking =
+                asset_io::parse(&registry, &mut Cursor::new(&input), Some(format)).unwrap();
             let mut expected = Cursor::new(Vec::new());
             let expected_layout = blocking
                 .write(
@@ -48,7 +49,9 @@ async fn spawned_adapters_match_blocking_reads_writes_and_sink_bytes() {
             // Parsing is independent of the stream's initial position.
             let mut src = Cursor::new(input);
             src.set_position(1);
-            let structure = asset::parse(&registry, format, &mut src).await.unwrap();
+            let structure = asset::parse(&registry, &mut src, Some(format))
+                .await
+                .unwrap();
             assert_eq!(structure.total_size(), blocking.total_size());
             let plan = asset::write_plan(&structure, &mut src, &updates)
                 .await
@@ -68,9 +71,11 @@ async fn spawned_adapters_match_blocking_reads_writes_and_sink_bytes() {
 
             let parsed = if format == "svg" {
                 // SVG has no built-in content detector.
-                asset::parse(&registry, format, &mut output).await.unwrap()
+                asset::parse(&registry, &mut output, Some(format))
+                    .await
+                    .unwrap()
             } else {
-                asset::parse_detect(&registry, &mut output).await.unwrap()
+                asset::parse(&registry, &mut output, None).await.unwrap()
             };
             let item = asset::c2pa_item(&parsed, &mut output)
                 .await
@@ -120,7 +125,7 @@ async fn spawned_adapters_match_blocking_reads_writes_and_sink_bytes() {
 async fn writes_respect_output_position_and_do_not_truncate() {
     let registry = HandlerRegistry::builtin();
     let mut src = Cursor::new(inputs()[0].1.clone());
-    let structure = asset::parse_detect(&registry, &mut src).await.unwrap();
+    let structure = asset::parse(&registry, &mut src, None).await.unwrap();
     let mut output = Cursor::new(b"prefix........tail".to_vec());
     output.seek(std::io::SeekFrom::Start(6)).await.unwrap();
     let written = asset::write(
@@ -142,15 +147,20 @@ async fn writes_respect_output_position_and_do_not_truncate() {
 async fn adapters_propagate_parse_read_and_sink_errors() {
     let registry = HandlerRegistry::builtin();
     assert!(matches!(
-        asset::parse(&registry, "unknown", &mut Cursor::new(Vec::<u8>::new())).await,
+        asset::parse(
+            &registry,
+            &mut Cursor::new(Vec::<u8>::new()),
+            Some("unknown")
+        )
+        .await,
         Err(Error::UnsupportedFormat)
     ));
-    assert!(asset::parse_detect(&registry, &mut Cursor::new(b"invalid"))
+    assert!(asset::parse(&registry, &mut Cursor::new(b"invalid"), None)
         .await
         .is_err());
 
     let mut src = Cursor::new(inputs()[0].1.clone());
-    let structure = asset::parse_detect(&registry, &mut src).await.unwrap();
+    let structure = asset::parse(&registry, &mut src, None).await.unwrap();
     assert!(asset::c2pa_item(&structure, &mut src)
         .await
         .unwrap()
@@ -164,7 +174,7 @@ async fn adapters_propagate_parse_read_and_sink_errors() {
     asset::write(&structure, &mut src, &mut signed, &updates, &mut NullSink)
         .await
         .unwrap();
-    let parsed = asset::parse_detect(&registry, &mut signed).await.unwrap();
+    let parsed = asset::parse(&registry, &mut signed, None).await.unwrap();
     let item = asset::c2pa_item(&parsed, &mut signed)
         .await
         .unwrap()

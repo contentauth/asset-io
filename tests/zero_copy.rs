@@ -34,8 +34,7 @@ fn load() -> Vec<(&'static str, Vec<u8>, Structure)> {
         .iter()
         .filter_map(|p| {
             let bytes = std::fs::read(p).ok()?;
-            let s = HandlerRegistry::builtin()
-                .parse_detect(&mut Cursor::new(&bytes))
+            let s = asset_io::parse(&HandlerRegistry::builtin(), &mut Cursor::new(&bytes), None)
                 .ok()?;
             Some((*p, bytes, s))
         })
@@ -148,7 +147,7 @@ fn mapped_file_parses_and_slices() {
     // SAFETY: the fixture is not modified during the test.
     let map = unsafe { asset_io::MappedFile::map(&file).unwrap() };
     assert_eq!(&*map, &std::fs::read(path).unwrap()[..]);
-    let s = map.parse_detect(&HandlerRegistry::builtin()).unwrap();
+    let s = map.parse(&HandlerRegistry::builtin(), None).unwrap();
     let streamed = rebuild(&s, |k| s.read_slice(&map, k));
     assert_eq!(&streamed, &*map);
 }

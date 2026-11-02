@@ -121,7 +121,7 @@ fn stepping_gives_the_bytes_and_sink_calls_of_write() {
     let mut checked = 0;
     for (name, ext) in FILES {
         let Some(bytes) = fixture(name) else { continue };
-        let s = reg.parse(ext, &mut Cursor::new(&bytes)).unwrap();
+        let s = asset_io::parse(&reg, &mut Cursor::new(&bytes), Some(ext)).unwrap();
         for (n, u) in updates().iter().enumerate() {
             // What write does.
             let mut want_sink = Seen::default();
@@ -166,9 +166,12 @@ fn copies_are_read_in_large_windows_not_per_segment() {
     let Some(bytes) = fixture("GreenCat.png") else {
         return;
     };
-    let s = HandlerRegistry::builtin()
-        .parse("png", &mut Cursor::new(&bytes))
-        .unwrap();
+    let s = asset_io::parse(
+        &HandlerRegistry::builtin(),
+        &mut Cursor::new(&bytes),
+        Some("png"),
+    )
+    .unwrap();
     let keep = Updates::new();
     let plan = s.write_plan(&mut Cursor::new(&bytes), &keep).unwrap();
     let (out, t) = drive(&plan, &bytes, None, &mut NullSink).unwrap();
@@ -187,9 +190,12 @@ fn a_short_source_is_the_callers_error_to_report() {
     let Some(bytes) = fixture("sample1.png") else {
         return;
     };
-    let s = HandlerRegistry::builtin()
-        .parse("png", &mut Cursor::new(&bytes))
-        .unwrap();
+    let s = asset_io::parse(
+        &HandlerRegistry::builtin(),
+        &mut Cursor::new(&bytes),
+        Some("png"),
+    )
+    .unwrap();
     let keep = Updates::new();
     let plan = s.write_plan(&mut Cursor::new(&bytes), &keep).unwrap();
     let short = &bytes[..bytes.len() - 100];
@@ -201,9 +207,12 @@ fn a_sink_can_cancel_and_the_run_ends() {
     let Some(bytes) = fixture("sample1.png") else {
         return;
     };
-    let s = HandlerRegistry::builtin()
-        .parse("png", &mut Cursor::new(&bytes))
-        .unwrap();
+    let s = asset_io::parse(
+        &HandlerRegistry::builtin(),
+        &mut Cursor::new(&bytes),
+        Some("png"),
+    )
+    .unwrap();
     let keep = Updates::new();
     let plan = s.write_plan(&mut Cursor::new(&bytes), &keep).unwrap();
     let mut n = 0;
@@ -225,7 +234,7 @@ fn steps_that_do_not_match_the_structure_fail_while_stepping() {
         return;
     };
     let reg = HandlerRegistry::builtin();
-    let s = reg.parse("png", &mut Cursor::new(&bytes)).unwrap();
+    let s = asset_io::parse(&reg, &mut Cursor::new(&bytes), Some("png")).unwrap();
     let id = asset_io::SegmentId::from_index;
 
     // A header copied as if it were a payload.
@@ -244,9 +253,12 @@ fn stepping_past_the_end_keeps_saying_done() {
     let Some(bytes) = fixture("sample1.png") else {
         return;
     };
-    let s = HandlerRegistry::builtin()
-        .parse("png", &mut Cursor::new(&bytes))
-        .unwrap();
+    let s = asset_io::parse(
+        &HandlerRegistry::builtin(),
+        &mut Cursor::new(&bytes),
+        Some("png"),
+    )
+    .unwrap();
     let keep = Updates::new();
     let plan = s.write_plan(&mut Cursor::new(&bytes), &keep).unwrap();
     let mut run = plan.start();

@@ -63,10 +63,12 @@ fn items_survive_a_write_and_stay_readable() {
             continue;
         };
         ran += 1;
-        let s = HandlerRegistry::new()
-            .with_handler(asset_io_bmff::BmffHandler)
-            .parse_detect(&mut Cursor::new(&bytes))
-            .unwrap_or_else(|e| panic!("{path}: {e}"));
+        let s = asset_io_core::parse(
+            &HandlerRegistry::new().with_handler(asset_io_bmff::BmffHandler),
+            &mut Cursor::new(&bytes),
+            None,
+        )
+        .unwrap_or_else(|e| panic!("{path}: {e}"));
         let before = items(&s, &bytes);
         eprintln!(
             "{path}: {} exif, {} thumbnail",
@@ -86,10 +88,12 @@ fn items_survive_a_write_and_stay_readable() {
             )
             .unwrap();
         let out = out.into_inner();
-        let again = HandlerRegistry::new()
-            .with_handler(asset_io_bmff::BmffHandler)
-            .parse_detect(&mut Cursor::new(&out))
-            .unwrap();
+        let again = asset_io_core::parse(
+            &HandlerRegistry::new().with_handler(asset_io_bmff::BmffHandler),
+            &mut Cursor::new(&out),
+            None,
+        )
+        .unwrap();
         assert_eq!(items(&dest, &out), before, "{path}: returned structure");
         assert_eq!(items(&again, &out), before, "{path}: reparsed output");
 

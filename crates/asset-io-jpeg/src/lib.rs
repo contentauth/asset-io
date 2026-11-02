@@ -2171,10 +2171,10 @@ mod tests {
     fn mpo_is_served_by_the_jpeg_handler() {
         let f = mpf_file(&second_image(), b"", 0, false);
         let reg = asset_io_core::HandlerRegistry::new().with_handler(JpegHandler);
-        let s = reg.parse("mpo", &mut Cursor::new(f.clone())).unwrap();
+        let s = asset_io_core::parse(&reg, &mut Cursor::new(f.clone()), Some("mpo")).unwrap();
         assert_eq!(s.media_type(), "image/jpeg");
         assert_eq!(s.subassets().len(), 2);
-        let s = reg.parse_detect(&mut Cursor::new(f)).unwrap();
+        let s = asset_io_core::parse(&reg, &mut Cursor::new(f), None).unwrap();
         assert_eq!(s.subassets().len(), 2);
     }
 

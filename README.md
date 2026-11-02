@@ -44,8 +44,8 @@ A parsed file is a `Structure`: a gapless tiling of `Segment`s (header, payload,
   nothing at all.
 - The reads have `async` forms over an `Io` — `c2pa_item_async`,
   `c2pa_store_async`, `jumbf_type_async`, `read_item_async`,
-  `read_content_async`, and `HandlerRegistry::parse_async` /
-  `parse_detect_async` — so a caller composes parsing, finding the store and
+  `read_content_async`, and the free `parse_async(registry, io, format)` —
+  so a caller composes parsing, finding the store and
   its own work into one sans-I/O `Task` and answers its read requests in one
   place. Finding the item reads nothing when the parser recorded each JUMBF
   item's type, as the built-in handlers do.
@@ -62,7 +62,7 @@ asset-io exposes what each format's own specifications define, including compani
 
 ## Upgrading from 0.1
 
-0.2 is a redesign, not a drop-in update. The 0.1 `Asset` type and its per-format `*_io` modules are gone. Parsing, reading and writing now go through `HandlerRegistry` and `Structure`, and hashing or other byte-level work goes through a `Sink`. The `parallel`, `c2pa`, `embed-fixtures` and `test-utils` features and the `rayon`, `c2pa`, `atree`, `fs2`, `byteorder` and `log` dependencies were removed. No handlers are enabled by default; enable individual container features or `all-formats`. Existing JPEG/PNG-default consumers must now select `features = ["jpeg", "png"]`. The 0.1 examples (`parallel_hash`, `progress_cancel`, `c2pa_embeddable`) do not exist in 0.2.
+0.2 is a redesign, not a drop-in update. The 0.1 `Asset` type and its per-format `*_io` modules are gone. The registry resolves handlers, free parsing functions produce a `Structure`, and reading and writing operate on that structure. Hashing or other byte-level work goes through a `Sink`. The `parallel`, `c2pa`, `embed-fixtures` and `test-utils` features and the `rayon`, `c2pa`, `atree`, `fs2`, `byteorder` and `log` dependencies were removed. No handlers are enabled by default; enable individual container features or `all-formats`. Existing JPEG/PNG-default consumers must now select `features = ["jpeg", "png"]`. The 0.1 examples (`parallel_hash`, `progress_cancel`, `c2pa_embeddable`) do not exist in 0.2.
 
 The `c2pa` feature now selects raw sidecar handling only; it does not restore the
 0.1 signing or verification integration.
@@ -156,12 +156,27 @@ Containers implement `ContainerHandler` and are found through `HandlerRegistry`,
 
 Enable the `jpeg` feature for this example.
 
+The API separates resolution, format behavior, and I/O execution:
+
+| Component | Role |
+|-----------|------|
+| `HandlerRegistry` | Register handlers, resolve format strings, match supplied header bytes, and query format metadata; no stream I/O |
+| `ContainerHandler` | Implement container-specific parsing, planning, and format rules |
+| `parse`, `parse_async`, `parse_task` | Select a handler and run its parser with blocking I/O, inside a sans-I/O computation, or as a caller-driven task |
+| `Structure` | Describe a parsed asset and operate through its retained handler |
+| `asset_io::tokio` | Drive parsing, reads, and writes with Tokio streams |
+
+The parsing orchestration functions take an optional format: `Some("jpg")` or
+`Some("image/jpeg")` selects the named handler, while `None` detects the format.
+An unsupported explicit format is an error, never a request to try detection.
+Handlers without a detector (such as SVG) require an explicit format.
+
 ```rust
 use asset_io::{HandlerRegistry, ItemKind, NullSink, Updates};
 
 let registry = HandlerRegistry::builtin();
 let mut src = std::fs::File::open("image.jpg")?;
-let structure = registry.parse_detect(&mut src)?;
+let structure = asset_io::parse(&registry, &mut src, None)?;
 
 if let Some(jumbf) = structure.item(ItemKind::Jumbf)? {
     let bytes = structure.read_item(&mut src, jumbf)?;
@@ -186,7 +201,7 @@ use asset_io::{tokio as asset, HandlerRegistry, ItemKind, NullSink, Updates};
 
 let registry = HandlerRegistry::builtin();
 let mut src = tokio::fs::File::open("image.jpg").await?;
-let structure = asset::parse_detect(&registry, &mut src).await?;
+let structure = asset::parse(&registry, &mut src, None).await?;
 if let Some(item) = structure.item(ItemKind::Xmp)? {
     let xmp = asset::read_content(&structure, &mut src, item).await?;
     println!("{} bytes of XMP", xmp.len());
@@ -231,7 +246,7 @@ The `Updates` API is deliberately specific to XMP and JUMBF, whose placement eac
 
 `Structure::store(src)` reads the JUMBF store as a reader sees it. For ISO BMFF that combines an original store and its update; `jumbf::{addition_to, extend}` convert between the two forms.
 
-`HandlerRegistry::compose(format, kind, data)` returns the container's own encoding of an item (JPEG APP11 segments, a PNG `caBX` chunk, a BMFF C2PA box), for callers that insert it into an asset themselves. Callers that use `write` don't need it.
+`ContainerHandler::compose(kind, data)` returns the container's own encoding of an item (JPEG APP11 segments, a PNG `caBX` chunk, a BMFF C2PA box), for callers that insert it into an asset themselves. Resolve the handler with `registry.handler(format)`, or use `structure.handler()` for a parsed asset. Callers that use `write` don't need it.
 
 Each handler has an `id()` (`"jpeg"`, `"png"`, `"bmff"`, `"riff"`, `"svg"`, `"pdf"`, `"tiff"`, `"c2pa"`) and declares the formats it serves as `FormatSpec`s: a media type, a preferred extension, and any other accepted media types and extensions. `HandlerRegistry::media_type_for("heic")` gives `image/heic` and `extension_for("image/jpeg")` gives `jpg`; aliases resolve to the preferred values (`image/x-webp` gives `image/webp`).
 
@@ -262,9 +277,9 @@ Register a handler with `HandlerRegistry::with_handler`; the last handler regist
 
 ## Running with your own I/O
 
-Parsing and planning are `async` code that does no I/O: a `Task` runs it, and when it needs bytes it does not hold (`Io` keeps a 4 KiB window, so a run of tiny reads is one request) `Task::resume` returns a `ReadRequest` with the offset, how much, and the buffer to fill. Fill it however you like (blocking, `async`, from a buffer you already have) and resume. No runtime is involved, and a task is `Send`. Get one from `HandlerRegistry::parse_task(format, total)` or `parse_detect_task(total)` for a parse, or `Structure::write_plan_task(&updates)` for a plan.
+Parsing and planning are `async` code that does no I/O: a `Task` runs it, and when it needs bytes it does not hold (`Io` keeps a 4 KiB window, so a run of tiny reads is one request) `Task::resume` returns a `ReadRequest` with the offset, how much, and the buffer to fill. Fill it however you like (blocking, `async`, from a buffer you already have) and resume. No runtime is involved, and a task is `Send`. Get one from `parse_task(&registry, total, format)` for a parse, or `Structure::write_plan_task(&updates)` for a plan. `parse_task` borrows the registry and optional format, and reports selection errors when driven. For a known handler, `Task::new(total, move |io| handler.parse_async(io))` can create a task independent of the registry.
 
-A `WritePlan` runs the same way: `WritePlan::start` gives an `Execution` whose `step` returns `Action::Read { offset, buf }`, `Action::Write(bytes)` or `Action::Done`, and does the sink calls, the checking and the read coalescing itself, so every way of running a plan behaves like `execute`. The blocking calls (`HandlerRegistry::parse`, `Structure::write`) are these drivers over a `Read + Seek` and a `Write`.
+A `WritePlan` runs the same way: `WritePlan::start` gives an `Execution` whose `step` returns `Action::Read { offset, buf }`, `Action::Write(bytes)` or `Action::Done`, and does the sink calls, the checking and the read coalescing itself, so every way of running a plan behaves like `execute`. The blocking calls (`parse`, `Structure::write`) are these drivers over a `Read + Seek` and a `Write`.
 
 `examples/tokio_client.rs` uses the feature-gated `asset_io::tokio` adapters with
 `tokio::fs`, one spawned task per file, hashing the output as it is written.
@@ -308,7 +323,7 @@ use asset_io::{Encoding, HandlerRegistry, ScanLimits};
 # fn main() -> asset_io::Result<()> {
 let registry = HandlerRegistry::builtin();
 let mut src = std::fs::File::open("photo.heic")?;
-let structure = registry.parse_detect(&mut src)?;
+let structure = asset_io::parse(&registry, &mut src, None)?;
 let embedded = structure.scan_embedded(&mut src, &registry, ScanLimits::default())?;
 for asset in &embedded {
     match &asset.structure {

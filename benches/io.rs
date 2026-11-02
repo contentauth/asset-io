@@ -138,9 +138,12 @@ fn cases() -> Vec<Case> {
 }
 
 fn parse(c: &Case) -> Structure {
-    HandlerRegistry::builtin()
-        .parse(c.format, &mut Cursor::new(&c.bytes))
-        .unwrap_or_else(|e| panic!("{}: {e}", c.name))
+    asset_io::parse(
+        &HandlerRegistry::builtin(),
+        &mut Cursor::new(&c.bytes),
+        Some(c.format),
+    )
+    .unwrap_or_else(|e| panic!("{}: {e}", c.name))
 }
 
 fn group<'a>(
@@ -319,9 +322,12 @@ fn bench_items(c: &mut Criterion) {
     let Some(bytes) = fixture("FireflyTrain.jpg") else {
         return;
     };
-    let s = HandlerRegistry::builtin()
-        .parse("jpg", &mut Cursor::new(&bytes))
-        .unwrap();
+    let s = asset_io::parse(
+        &HandlerRegistry::builtin(),
+        &mut Cursor::new(&bytes),
+        Some("jpg"),
+    )
+    .unwrap();
     let Some(e) = s.items_of(ItemKind::Xmp).next() else {
         return;
     };
@@ -348,8 +354,7 @@ fn bench_mmap(c: &mut Criterion) {
         g.bench_function(BenchmarkId::new("file_stream", &case.name), |b| {
             b.iter(|| {
                 let mut file = std::fs::File::open(f.path()).unwrap();
-                let s = HandlerRegistry::builtin()
-                    .parse(case.format, &mut file)
+                let s = asset_io::parse(&HandlerRegistry::builtin(), &mut file, Some(case.format))
                     .unwrap();
                 let mut h = Sha256::new();
                 {
@@ -367,7 +372,9 @@ fn bench_mmap(c: &mut Criterion) {
                 let file = std::fs::File::open(f.path()).unwrap();
                 // SAFETY: the temp file is not touched while mapped.
                 let map = unsafe { asset_io::MappedFile::map(&file).unwrap() };
-                let s = map.parse(&HandlerRegistry::builtin(), case.format).unwrap();
+                let s = map
+                    .parse(&HandlerRegistry::builtin(), Some(case.format))
+                    .unwrap();
                 let mut h = Sha256::new();
                 {
                     let mut sink = |c: Chunk<'_>| -> Result<()> {

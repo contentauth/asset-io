@@ -34,7 +34,7 @@ fn superbox(ty: [u8; 16], children: &[&[u8]]) -> Vec<u8> {
 
 fn write(format: &str, input: &[u8], updates: &Updates) -> Vec<u8> {
     let registry = HandlerRegistry::builtin();
-    let structure = registry.parse(format, &mut Cursor::new(input)).unwrap();
+    let structure = asset_io::parse(&registry, &mut Cursor::new(input), Some(format)).unwrap();
     let mut out = Cursor::new(Vec::new());
     structure
         .write(&mut Cursor::new(input), &mut out, updates, &mut NullSink)
@@ -54,14 +54,14 @@ fn jpeg_store_is_found_beside_other_jumbf() {
 
     let registry = HandlerRegistry::builtin();
     let mut source = Cursor::new(&with_other);
-    let structure = registry.parse("jpg", &mut source).unwrap();
+    let structure = asset_io::parse(&registry, &mut source, Some("jpg")).unwrap();
     assert_eq!(structure.c2pa_item(&mut source).unwrap().map(|_| ()), None);
     assert_eq!(structure.c2pa_store(&mut source).unwrap(), None);
 
     // A store of another type is kept when a C2PA store is added.
     let both = write("jpg", &with_other, &Updates::new().set_jumbf(c2pa.clone()));
     let mut source = Cursor::new(&both);
-    let structure = registry.parse("jpg", &mut source).unwrap();
+    let structure = asset_io::parse(&registry, &mut source, Some("jpg")).unwrap();
     assert_eq!(structure.items_of(ItemKind::Jumbf).count(), 2);
     assert!(matches!(
         structure.store(&mut source),
@@ -81,9 +81,7 @@ fn svg_store_is_found_through_its_base64_transfer_encoding() {
         &Updates::new().set_jumbf(c2pa.clone()),
     );
     let mut source = Cursor::new(&svg);
-    let structure = HandlerRegistry::builtin()
-        .parse("svg", &mut source)
-        .unwrap();
+    let structure = asset_io::parse(&HandlerRegistry::builtin(), &mut source, Some("svg")).unwrap();
     assert!(structure.c2pa_item(&mut source).unwrap().is_some());
     assert_eq!(structure.c2pa_store(&mut source).unwrap(), Some(c2pa));
 }
@@ -109,11 +107,11 @@ fn bmff_original_and_update_read_as_one_c2pa_store() {
         (&updated, Some(second)),
     ] {
         let mut source = Cursor::new(bytes);
-        let structure = registry.parse("heic", &mut source).unwrap();
+        let structure = asset_io::parse(&registry, &mut source, Some("heic")).unwrap();
         assert_eq!(structure.c2pa_store(&mut source).unwrap(), expected);
     }
     let mut source = Cursor::new(&updated);
-    let structure = registry.parse("heic", &mut source).unwrap();
+    let structure = asset_io::parse(&registry, &mut source, Some("heic")).unwrap();
     let item = structure.c2pa_item(&mut source).unwrap().unwrap();
     assert_eq!(item.label(), Some(asset_io::labels::ORIGINAL));
 }
@@ -149,14 +147,14 @@ fn planned_stores_are_identified_without_reading_the_output() {
             (&signed, Updates::new()),
         ] {
             let mut file = Cursor::new(source);
-            let structure = registry.parse(format, &mut file).unwrap();
+            let structure = asset_io::parse(&registry, &mut file, Some(format)).unwrap();
             let planned = structure.plan(&mut file, &updates).unwrap();
             let item = planned.c2pa_item(&mut Cursor::new([])).unwrap();
             assert!(item.is_some(), "{format}");
         }
         if format == "heic" {
             let mut file = Cursor::new(&signed);
-            let structure = registry.parse(format, &mut file).unwrap();
+            let structure = asset_io::parse(&registry, &mut file, Some(format)).unwrap();
             let update = superbox(C2PA_STORE_TYPE, &[b"manifest", b"more"]);
             let planned = structure
                 .plan(&mut file, &Updates::new().set_jumbf(update).as_update())
@@ -226,13 +224,13 @@ fn one_task_finds_the_store_as_the_blocking_calls_do() {
     }
     for (format, bytes) in &assets {
         let mut source = Cursor::new(bytes);
-        let structure = registry.parse(format, &mut source).unwrap();
+        let structure = asset_io::parse(&registry, &mut source, Some(format)).unwrap();
         let want_store = structure.c2pa_store(&mut source).unwrap();
         let want_boxes = structure.c2pa_boxes(&mut source).ok();
 
         let registry = &registry;
         let task = asset_io::Task::new(bytes.len() as u64, |mut io| async move {
-            let structure = registry.parse_async(format, &mut io).await?;
+            let structure = asset_io::parse_async(registry, &mut io, Some(format)).await?;
             let item = structure.c2pa_item_async(&mut io).await?;
             let boxes = structure.c2pa_boxes_with(item).ok();
             let store = structure.c2pa_store_async(&mut io).await?;
@@ -266,8 +264,8 @@ fn boxes_need_the_store_item_of_the_same_structure() {
         &[0xff, 0xd8, 0xff, 0xd9],
         &Updates::new().set_jumbf(c2pa),
     );
-    let a = registry.parse("jpg", &mut Cursor::new(&bytes)).unwrap();
-    let b = registry.parse("jpg", &mut Cursor::new(&bytes)).unwrap();
+    let a = asset_io::parse(&registry, &mut Cursor::new(&bytes), Some("jpg")).unwrap();
+    let b = asset_io::parse(&registry, &mut Cursor::new(&bytes), Some("jpg")).unwrap();
     let item = b.c2pa_item(&mut Cursor::new(&bytes)).unwrap();
     assert!(matches!(
         a.c2pa_boxes_with(item),

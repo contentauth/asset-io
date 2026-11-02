@@ -152,7 +152,7 @@ fn fixture(f: Format, pages: usize, extra: &[Tag]) -> Vec<u8> {
 }
 
 fn parse(data: &[u8]) -> Structure {
-    registry().parse_detect(&mut Cursor::new(data)).unwrap()
+    asset_io_core::parse(&registry(), &mut Cursor::new(data), None).unwrap()
 }
 fn registry() -> HandlerRegistry {
     HandlerRegistry::new().with_handler(tiff::TiffHandler)
@@ -221,7 +221,10 @@ fn both_byte_orders_and_widths_read_write_and_conform() {
         for pages in [1, 2, 3] {
             let bytes = fixture(f, pages, &[]);
             let source = parse(&bytes);
-            let parsed = drive(registry().parse_detect_task(bytes.len() as u64), &bytes);
+            let parsed = drive(
+                asset_io_core::parse_task(&registry(), bytes.len() as u64, None),
+                &bytes,
+            );
             assert_eq!(shape(&source), shape(&parsed));
             assert_eq!(layout(&source).unwrap().is_big_tiff(), f.big);
             assert_eq!(
@@ -443,18 +446,29 @@ fn registry_formats_and_composed_metadata_match_upstream() {
     ] {
         assert_eq!(registry.container_for(format), Some("tiff"));
         assert_eq!(
-            registry.compose(format, ItemKind::Jumbf, b"STORE").unwrap(),
+            registry
+                .handler(format)
+                .unwrap()
+                .compose(ItemKind::Jumbf, b"STORE")
+                .unwrap(),
             b"STORE"
         );
         assert_eq!(
-            registry.compose(format, ItemKind::Xmp, b"<xmp/>").unwrap(),
+            registry
+                .handler(format)
+                .unwrap()
+                .compose(ItemKind::Xmp, b"<xmp/>")
+                .unwrap(),
             b"<xmp/>"
         );
     }
     assert_eq!(registry.media_type_for("dng"), Some("image/x-adobe-dng"));
     assert_eq!(registry.extension_for("image/tiff"), Some("tif"));
     assert!(matches!(
-        registry.compose("tif", ItemKind::Exif, b""),
+        registry
+            .handler("tif")
+            .unwrap()
+            .compose(ItemKind::Exif, b""),
         Err(Error::UnsupportedFormat)
     ));
 }

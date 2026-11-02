@@ -26,7 +26,7 @@ fn main() -> asset_io::Result<()> {
 
     let mut src = File::open(&path)?;
     let registry = HandlerRegistry::builtin();
-    let structure = registry.parse_detect(&mut src)?;
+    let structure = asset_io::parse(&registry, &mut src, None)?;
 
     println!("File: {path}");
     println!("  Container: {}", structure.container_id());

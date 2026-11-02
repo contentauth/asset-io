@@ -33,7 +33,7 @@ use tokio::fs::File;
 async fn inspect(path: String) -> Result<String> {
     let registry = HandlerRegistry::builtin();
     let mut file = File::open(&path).await?;
-    let structure = asset::parse_detect(&registry, &mut file).await?;
+    let structure = asset::parse(&registry, &mut file, None).await?;
     let mut out = format!(
         "{path}\n  {} ({}), {} bytes, {} segments\n",
         structure.media_type(),
@@ -56,7 +56,7 @@ async fn edit(input: String, output: String, xmp: Vec<u8>) -> Result<(Structure,
     let registry = HandlerRegistry::builtin();
     let mut src = File::open(&input).await?;
     let parse_started = Instant::now();
-    let structure = asset::parse_detect(&registry, &mut src).await?;
+    let structure = asset::parse(&registry, &mut src, None).await?;
     let parse_elapsed = parse_started.elapsed();
 
     // Plan the write: the structure of the output and the steps that produce it.

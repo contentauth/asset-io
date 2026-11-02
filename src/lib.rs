@@ -15,7 +15,7 @@
 //! // Enable the `jpeg` feature for this example.
 //! let registry = HandlerRegistry::builtin();
 //! let mut source = std::fs::File::open("image.jpg")?;
-//! let structure = registry.parse_detect(&mut source)?;
+//! let structure = asset_io::parse(&registry, &mut source, None)?;
 //! if let Some(item) = structure.item(ItemKind::Xmp)? {
 //!     let xmp = structure.read_content(&mut source, item)?;
 //!     println!("{} bytes of XMP", xmp.len());

@@ -55,13 +55,15 @@ fuzz_target!(|data: &[u8]| {
     file.extend_from_slice(tail);
 
     let registry = HandlerRegistry::builtin();
-    let Ok(structure) = registry.parse("jpg", &mut Cursor::new(&file)) else {
+    let Ok(structure) = asset_io::parse(&registry, &mut Cursor::new(&file), Some("jpg")) else {
         return;
     };
 
     let cases = [
         Updates::new(),
-        Updates::new().set_jumbf(vec![0, 0, 0, 16, b'j', b'u', b'm', b'b', 1, 2, 3, 4, 5, 6, 7, 8]),
+        Updates::new().set_jumbf(vec![
+            0, 0, 0, 16, b'j', b'u', b'm', b'b', 1, 2, 3, 4, 5, 6, 7, 8,
+        ]),
         Updates::new().set_xmp(b"<x:xmpmeta/>".to_vec()),
         Updates::remove_all(),
     ];
@@ -73,8 +75,7 @@ fuzz_target!(|data: &[u8]| {
         };
         let out = out.into_inner();
         assert_eq!(dest.total_size(), out.len() as u64);
-        let again = registry
-            .parse("jpg", &mut Cursor::new(&out))
+        let again = asset_io::parse(&registry, &mut Cursor::new(&out), Some("jpg"))
             .expect("the output of an accepted edit parses");
         assert_eq!(again.subassets(), dest.subassets());
     }

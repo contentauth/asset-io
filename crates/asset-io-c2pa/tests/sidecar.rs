@@ -65,8 +65,7 @@ fn aliases_and_conservative_detection() {
     let bytes = store(STORE_TYPE);
     assert_eq!(registry.detect(&bytes).unwrap().id(), "c2pa");
     assert_eq!(
-        registry
-            .parse_detect(&mut Cursor::new(&bytes))
+        asset_io_core::parse(&registry, &mut Cursor::new(&bytes), None)
             .unwrap()
             .container_id(),
         "c2pa"
