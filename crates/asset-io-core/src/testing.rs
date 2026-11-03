@@ -14,7 +14,8 @@
 //! Conformance checks for [`ContainerHandler`]s.
 //!
 //! Every handler has to keep the same promises, whatever its format: the
-//! structure it parses tiles the stream, a write that changes nothing changes
+//! structure it parses tiles the stream, segment by segment and element by
+//! element, a write that changes nothing changes
 //! nothing, the plan, the write and the stepper agree, the sink sees every output
 //! byte once and in order, and bad input is an error, never a panic.
 //! [`Conformance`] checks all of that on samples you give it, so a handler's own
@@ -572,6 +573,23 @@ fn tiles(s: &Structure, len: u64) -> std::result::Result<(), String> {
             "segments end at {at} and the structure says {} for a stream of {len}",
             s.total_size()
         ));
+    }
+    // The finer elements (JPEG restart intervals, say) tile the stream too.
+    let mut at = 0u64;
+    s.elements(|_, e| {
+        let r = e.range();
+        if r.offset() != at {
+            return Err(Error::InvalidFormat(format!(
+                "an element starts at {}, not {at}",
+                r.offset()
+            )));
+        }
+        at = r.end();
+        Ok(())
+    })
+    .map_err(|e| e.to_string())?;
+    if at != len {
+        return Err(format!("elements end at {at}, not {len}"));
     }
     for e in s.items() {
         for p in e.extents() {
