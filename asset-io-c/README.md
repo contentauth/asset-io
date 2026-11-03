@@ -104,6 +104,61 @@ read-side hashing, using bounded memory. Its offsets/segment IDs describe the
 original source, not planned output. `asset_io_read_range` copies an arbitrary
 validated source range into an owned buffer, subject to the core's 256 MiB limit.
 
+## Host-native async and threads (sans-I/O parsing)
+
+The additive `asset_io_parse_task_*` API exposes the Rust parser's read requests
+without calling any I/O callback or selecting a Rust executor:
+
+1. `asset_io_parse_task_new(registry, format, size)` creates an unstarted task.
+   It retains the registry and copies the optional format string.
+2. `asset_io_parse_task_resume(task, &request)` runs computation until it needs
+   bytes (`1`), completes (`0`), or fails (`-1`). On `1`, the request describes
+   an absolute `offset`, `min_len`, and `window_len`. Repeated resume calls before
+   supplying return the same request without advancing the parser.
+3. Schedule reads using the host's own event loop, async API, or thread pool.
+   No Rust call remains active while the host waits. Gather at least `min_len`
+   bytes and at most `window_len`, then call `asset_io_parse_task_supply`.
+   It copies the response, so the host can immediately release its buffer.
+   A short response is unexpected EOF on the next resume; invalid pointers or an
+   oversized response return `-1` without consuming the pending request.
+4. Resume again. After `0`, `asset_io_parse_task_structure` returns an independent
+   structure handle usable with `asset_io_structure_json`.
+
+Resume and supply can run on different native threads, but **must be sequenced**:
+only one operation on a task at a time. Every task operation uses an exclusive
+tracked borrow, including obtaining the completed structure. One read is outstanding
+per task; independent tasks may run concurrently. Use the same immutable source
+and size throughout. The library retains cached windows, not the complete source.
+
+For a host read error, `asset_io_parse_task_fail(task, message)` records an `Io`
+error on the calling thread and terminates the task. Subsequent resume calls
+return `-1` with `TaskFailed` and the recorded message. Parsing errors likewise
+remain terminal. Error access is thread-local: read it on the failing thread.
+Cancel by freeing the task; coordinate with host workers first. Cancellation
+does not stop host I/O, and a late completion on a freed handle returns `-1`.
+The completed structure survives task destruction.
+
+This proof is **parsing only**. It returns a source-free `AssetIoStructure`, not an
+`AssetIoAsset`; metadata extraction and writing through the existing asset APIs
+still use synchronous callbacks. It does not yet expose the core's read/write
+operations as resumable C tasks, or provide Wasm/JS bindings.
+
+The [pthread example](examples/threaded_parse.c) resumes on the main thread and
+services `pread` and supplies responses on a native worker thread. It checks
+request bounds, exercises multiple suspensions, joins the worker before freeing
+the task, and compares the complete structure JSON with blocking parsing.
+The full-input allocation at the end is only the comparison oracle, not part
+of the sans-I/O driver. Build and run it on macOS/Linux:
+
+```sh
+cargo build --locked --manifest-path asset-io-c/Cargo.toml --target-dir asset-io-c/target
+cc -std=c11 -Wall -Wextra -Werror -pthread -Iasset-io-c/include \
+  asset-io-c/examples/threaded_parse.c -Lasset-io-c/target/debug -lasset_io_c \
+  -Wl,-rpath,"$PWD/asset-io-c/target/debug" -o asset-io-c/target/threaded-parse
+asset-io-c/target/threaded-parse tests/fixtures/Designer.jpeg
+asset-io-c/target/threaded-parse tests/fixtures/GreenCat.png png
+```
+
 ## Coverage and inspection schema
 
 The header exports registry creation/format aliases, explicit/detected memory or

@@ -2,7 +2,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use std::{
-    ffi::{c_char, c_void},
+    ffi::{c_char, c_void, CStr},
     io::{self, Cursor, Read, Seek, SeekFrom},
     panic::{catch_unwind, AssertUnwindSafe},
     ptr,
@@ -10,8 +10,9 @@ use std::{
 };
 
 use asset_io::{
-    container_api::MetadataUpdate, HandlerRegistry, Name, Relation, Role, Structure,
-    TransferEncoding, Updates,
+    container_api::MetadataUpdate,
+    task::{Progress, Task},
+    HandlerRegistry, Name, Relation, Role, Structure, TransferEncoding, Updates,
 };
 use cimpl::{
     box_tracked, bytes_or_return, cstr_or_return, deref_mut_or_return, deref_or_return,
@@ -38,6 +39,28 @@ pub struct AssetIoStructure(Arc<Structure>);
 pub struct AssetIoUpdates(Updates);
 /// Opaque owned bytes (also used for UTF-8 JSON, without a terminating NUL).
 pub struct AssetIoBuffer(Vec<u8>);
+
+/// Opaque caller-driven parser. No callbacks, I/O, or runtime are used.
+pub struct AssetIoParseTask {
+    task: Task<'static, Structure>,
+    state: ParseState,
+}
+
+/// An absolute read request. Supply min_len..=window_len bytes from offset.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct AssetIoReadRequest {
+    pub offset: u64,
+    pub min_len: usize,
+    pub window_len: usize,
+}
+
+enum ParseState {
+    Ready,
+    Read(AssetIoReadRequest),
+    Done(Arc<Structure>),
+    Failed(String),
+}
 
 /// Read at absolute offset. Return bytes read, 0 for EOF, or a negative value for failure.
 pub type AssetIoReadAt =
@@ -303,6 +326,179 @@ pub extern "C" fn asset_io_parse_source(
                 pos: 0,
             },
         )
+    })
+}
+
+/// Create a sans-I/O parser for a known source size. Copies format and retains
+/// the registry; both caller inputs may be released after this call.
+/// Selection/parsing errors occur on resume. Free the task to cancel.
+#[no_mangle]
+pub extern "C" fn asset_io_parse_task_new(
+    registry: *mut AssetIoRegistry,
+    format: *const c_char,
+    size: u64,
+) -> *mut AssetIoParseTask {
+    boundary(ptr::null_mut(), || {
+        let r = deref_or_return!(registry, AssetIoRegistry, ptr::null_mut());
+        let registry = r.0.clone();
+        let format = if format.is_null() {
+            None
+        } else {
+            let value = cstr_or_return!(format, ptr::null_mut());
+            ok_or_return!(
+                unsafe { CStr::from_ptr(format) }
+                    .to_str()
+                    .map_err(|_| invalid("format must be UTF-8")),
+                ptr::null_mut()
+            );
+            Some(value)
+        };
+        let task = Task::new(size, move |mut io| async move {
+            Structure::parse_async(&registry, &mut io, format.as_deref()).await
+        });
+        box_tracked!(AssetIoParseTask {
+            task,
+            state: ParseState::Ready,
+        })
+    })
+}
+
+/// Run until a read (1), completion (0), or error (-1). request must be writable;
+/// it is zeroed unless returning 1. Repeated calls while waiting return the same
+/// request without polling. Complete host I/O, then supply bytes before resuming.
+/// Calls may move between threads but must be externally sequenced.
+#[no_mangle]
+pub extern "C" fn asset_io_parse_task_resume(
+    task: *mut AssetIoParseTask,
+    request: *mut AssetIoReadRequest,
+) -> i32 {
+    boundary(-1, || {
+        ptr_or_return!(request, -1);
+        unsafe { *request = AssetIoReadRequest::default() };
+        let mut t = deref_mut_or_return!(task, AssetIoParseTask, -1);
+        match &t.state {
+            ParseState::Read(read) => {
+                unsafe { *request = *read };
+                return 1;
+            }
+            ParseState::Done(_) => return 0,
+            ParseState::Failed(message) => {
+                cimpl::Error::new("TaskFailed", message).set_last();
+                return -1;
+            }
+            ParseState::Ready => {}
+        }
+        let next = match t.task.resume() {
+            Ok(Progress::Read(req)) => ParseState::Read(AssetIoReadRequest {
+                offset: req.offset(),
+                min_len: req.min_len(),
+                window_len: req.window_len(),
+            }),
+            Ok(Progress::Done(structure)) => ParseState::Done(Arc::new(structure)),
+            Err(error) => {
+                let error = cimpl::Error::from(CoreError(error));
+                let message = error.to_string();
+                error.set_last();
+                ParseState::Failed(message)
+            }
+            Ok(_) => {
+                let message = "unsupported task progress";
+                invalid(message).set_last();
+                ParseState::Failed(message.into())
+            }
+        };
+        let status = match &next {
+            ParseState::Read(read) => {
+                unsafe { *request = *read };
+                1
+            }
+            ParseState::Done(_) => 0,
+            _ => -1,
+        };
+        t.state = next;
+        status
+    })
+}
+
+/// Copy the response to the outstanding request. NULL data is allowed for len=0.
+/// At most window_len bytes are accepted; a response shorter than min_len causes
+/// unexpected EOF on the next resume. Invalid arguments leave the request pending.
+/// Bytes must come from the requested offset of the same unchanged source.
+#[no_mangle]
+pub extern "C" fn asset_io_parse_task_supply(
+    task: *mut AssetIoParseTask,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    boundary(-1, || {
+        let mut t = deref_mut_or_return!(task, AssetIoParseTask, -1);
+        let ParseState::Read(read) = &t.state else {
+            invalid("task has no outstanding read").set_last();
+            return -1;
+        };
+        if len > read.window_len {
+            invalid("response exceeds requested window").set_last();
+            return -1;
+        }
+        let bytes = if len == 0 {
+            &[]
+        } else {
+            bytes_or_return!(data, len, "data", -1)
+        };
+        {
+            let mut req = ok_or_return!(
+                t.task
+                    .pending_read()
+                    .ok_or_else(|| invalid("missing core read request")),
+                -1
+            );
+            req.buffer().clear();
+            req.buffer().extend_from_slice(bytes);
+        }
+        t.state = ParseState::Ready;
+        0
+    })
+}
+
+/// Report a host read failure, terminating the task. message is NUL-terminated
+/// UTF-8 and is copied. Returns 0 after recording an Io error, -1 for misuse.
+#[no_mangle]
+pub extern "C" fn asset_io_parse_task_fail(
+    task: *mut AssetIoParseTask,
+    message: *const c_char,
+) -> i32 {
+    boundary(-1, || {
+        let mut t = deref_mut_or_return!(task, AssetIoParseTask, -1);
+        if !matches!(t.state, ParseState::Read(_)) {
+            invalid("task has no outstanding read").set_last();
+            return -1;
+        }
+        let value = cstr_or_return!(message, -1);
+        ok_or_return!(
+            unsafe { CStr::from_ptr(message) }
+                .to_str()
+                .map_err(|_| invalid("message must be UTF-8")),
+            -1
+        );
+        cimpl::Error::new("Io", &value).set_last();
+        t.state = ParseState::Failed(value);
+        0
+    })
+}
+
+/// Obtain an owned structure snapshot only after resume returns 0. No source is
+/// retained. The snapshot survives task destruction; it is not an Asset handle.
+#[no_mangle]
+pub extern "C" fn asset_io_parse_task_structure(
+    task: *mut AssetIoParseTask,
+) -> *mut AssetIoStructure {
+    boundary(ptr::null_mut(), || {
+        let t = deref_mut_or_return!(task, AssetIoParseTask, ptr::null_mut());
+        let ParseState::Done(structure) = &t.state else {
+            invalid("task has not completed successfully").set_last();
+            return ptr::null_mut();
+        };
+        box_tracked!(AssetIoStructure(structure.clone()))
     })
 }
 

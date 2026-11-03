@@ -102,3 +102,7 @@ jobs:
           c++ -x c++ -std=c++17 -Wall -Wextra -Werror -Iasset-io-c/include asset-io-c/examples/smoke.c \
             -Lasset-io-c/target/debug -lasset_io_c -Wl,-rpath,"$PWD/asset-io-c/target/debug" -o asset-io-c/target/cpp-smoke
           asset-io-c/target/cpp-smoke
+          cc -std=c11 -Wall -Wextra -Werror -pthread -Iasset-io-c/include asset-io-c/examples/threaded_parse.c \
+            -Lasset-io-c/target/debug -lasset_io_c -Wl,-rpath,"$PWD/asset-io-c/target/debug" -o asset-io-c/target/threaded-parse
+          asset-io-c/target/threaded-parse tests/fixtures/Designer.jpeg
+          asset-io-c/target/threaded-parse tests/fixtures/GreenCat.png png

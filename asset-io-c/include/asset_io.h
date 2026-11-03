@@ -26,6 +26,11 @@ typedef struct AssetIoAsset AssetIoAsset;
 typedef struct AssetIoBuffer AssetIoBuffer;
 
 /**
+ * Opaque caller-driven parser. No callbacks, I/O, or runtime are used.
+ */
+typedef struct AssetIoParseTask AssetIoParseTask;
+
+/**
  * Opaque registry of formats compiled into this library.
  */
 typedef struct AssetIoRegistry AssetIoRegistry;
@@ -44,6 +49,15 @@ typedef struct AssetIoUpdates AssetIoUpdates;
  * Read at absolute offset. Return bytes read, 0 for EOF, or a negative value for failure.
  */
 typedef int64_t (*AssetIoReadAt)(void *context, uint64_t offset, uint8_t *data, size_t len);
+
+/**
+ * An absolute read request. Supply min_len..=window_len bytes from offset.
+ */
+typedef struct AssetIoReadRequest {
+  uint64_t offset;
+  size_t min_len;
+  size_t window_len;
+} AssetIoReadRequest;
 
 /**
  * Receive bytes in order, tagged with segment, role and absolute offset.
@@ -93,6 +107,44 @@ struct AssetIoAsset *asset_io_parse_source(struct AssetIoRegistry *registry,
                                            uint64_t size,
                                            AssetIoReadAt read,
                                            void *context);
+
+/**
+ * Create a sans-I/O parser for a known source size. Copies format and retains
+ * the registry; both caller inputs may be released after this call.
+ * Selection/parsing errors occur on resume. Free the task to cancel.
+ */
+struct AssetIoParseTask *asset_io_parse_task_new(struct AssetIoRegistry *registry,
+                                                 const char *format,
+                                                 uint64_t size);
+
+/**
+ * Run until a read (1), completion (0), or error (-1). request must be writable;
+ * it is zeroed unless returning 1. Repeated calls while waiting return the same
+ * request without polling. Complete host I/O, then supply bytes before resuming.
+ * Calls may move between threads but must be externally sequenced.
+ */
+int32_t asset_io_parse_task_resume(struct AssetIoParseTask *task,
+                                   struct AssetIoReadRequest *request);
+
+/**
+ * Copy the response to the outstanding request. NULL data is allowed for len=0.
+ * At most window_len bytes are accepted; a response shorter than min_len causes
+ * unexpected EOF on the next resume. Invalid arguments leave the request pending.
+ * Bytes must come from the requested offset of the same unchanged source.
+ */
+int32_t asset_io_parse_task_supply(struct AssetIoParseTask *task, const uint8_t *data, size_t len);
+
+/**
+ * Report a host read failure, terminating the task. message is NUL-terminated
+ * UTF-8 and is copied. Returns 0 after recording an Io error, -1 for misuse.
+ */
+int32_t asset_io_parse_task_fail(struct AssetIoParseTask *task, const char *message);
+
+/**
+ * Obtain an owned structure snapshot only after resume returns 0. No source is
+ * retained. The snapshot survives task destruction; it is not an Asset handle.
+ */
+struct AssetIoStructure *asset_io_parse_task_structure(struct AssetIoParseTask *task);
 
 /**
  * Obtain an owned structure snapshot. It survives freeing the asset.
