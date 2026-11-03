@@ -147,7 +147,8 @@ impl ContainerHandler for PngHandler {
 }
 
 /// Parse a PNG into a validated structure.
-pub fn parse<R: Read + Seek>(src: &mut R) -> Result<Structure> {
+#[cfg(test)]
+fn parse<R: Read + Seek>(src: &mut R) -> Result<Structure> {
     handler().parse(src)
 }
 

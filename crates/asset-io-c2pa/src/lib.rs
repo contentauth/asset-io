@@ -17,7 +17,6 @@ use asset_io_core::{
     Name, PlanBuilder, Result, SegmentId, SegmentKind, Structure, StructureBuilder, Updates,
     WritePlan,
 };
-use std::io::{Read, Seek};
 use std::sync::Arc;
 
 /// The C2PA sidecar container's [`ContainerHandler::id`].
@@ -99,11 +98,6 @@ impl ContainerHandler for C2paHandler {
         }
         Ok(())
     }
-}
-
-/// Describe a sidecar's bytes without validating the manifest store.
-pub fn parse<R: Read + Seek>(source: &mut R) -> Result<Structure> {
-    handler().parse(source)
 }
 
 fn item_info(data: &[u8]) -> ItemInfo {

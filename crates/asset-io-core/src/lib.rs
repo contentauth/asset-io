@@ -90,35 +90,33 @@
 //! # Example
 //!
 //! ```no_run
-//! use asset_io_core::{HandlerRegistry, ItemKind, NullSink, Updates};
-//! use std::fs::OpenOptions;
+//! use asset_io_core::{Asset, HandlerRegistry, ItemKind, NullSink, Updates};
 //!
 //! # fn main() -> asset_io_core::Result<()> {
 //! // Register an application-provided handler before parsing.
 //! let registry = HandlerRegistry::new();
-//! let mut src = std::fs::File::open("image.jpg")?;
-//! let structure = asset_io_core::Structure::parse(&registry, &mut src, Some("jpg"))?;
+//! let asset = Asset::open(&registry, std::fs::File::open("image.jpg")?, Some("jpg"))?;
 //!
 //! // Read a metadata item, which may have extents in several segments.
-//! if let Some(jumbf) = structure.item(ItemKind::Jumbf)? {
-//!     let bytes = structure.read_item(&mut src, jumbf)?;
+//! if let Some(jumbf) = asset.item(ItemKind::Jumbf)? {
+//!     let bytes = asset.read_item(jumbf)?;
 //!     println!("JUMBF: {} bytes", bytes.len());
 //! }
 //!
 //! // Write a copy with changes. Every output byte also goes to a sink, tagged
 //! // with its segment and role, so it can be hashed without a second pass.
-//! let mut out = OpenOptions::new()
-//!     .read(true)
-//!     .write(true)
-//!     .create(true)
-//!     .truncate(true)
-//!     .open("out.jpg")?;
+//! let mut out = std::fs::File::create("out.jpg")?;
 //! let updates = Updates::new().set_xmp(b"<x:xmpmeta/>".to_vec()).remove_jumbf();
-//! structure.write(&mut src, &mut out, &updates, &mut NullSink)?;
+//! asset.write(&mut out, &updates, &mut NullSink)?;
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! [`Asset`] holds the source; [`Structure`] is the I/O-free description it
+//! wraps, whose methods take the source as an argument. Async and caller-driven
+//! code uses [`Structure::parse_task`] and the `*_async` methods directly.
 
+mod asset;
 mod crc;
 mod embedded;
 mod error;
@@ -148,6 +146,7 @@ mod walk;
 #[cfg(feature = "xmp")]
 mod xmp;
 
+pub use asset::Asset;
 pub use crc::Crc32;
 pub use embedded::{EmbeddedAsset, EmbeddedReader, ScanLimits};
 pub use error::{Error, Result};

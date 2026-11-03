@@ -102,23 +102,23 @@ use asset_io_core::{
     StructureBuilder, Updates, MAX_SEGMENT_SIZE,
 };
 use std::borrow::Cow;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::SeekFrom;
 use std::sync::Arc;
 
 /// C2PA content provenance box type, `D8FEC3D6-1B0E-483C-9297-5828877EC481`.
-pub const C2PA_UUID: [u8; 16] = [
+const C2PA_UUID: [u8; 16] = [
     0xd8, 0xfe, 0xc3, 0xd6, 0x1b, 0x0e, 0x48, 0x3c, 0x92, 0x97, 0x58, 0x28, 0x87, 0x7e, 0xc4, 0x81,
 ];
 /// XMP box type, `BE7ACFCB-97A9-42E8-9C71-999491E3AFAC`.
-pub const XMP_UUID: [u8; 16] = [
+const XMP_UUID: [u8; 16] = [
     0xbe, 0x7a, 0xcf, 0xcb, 0x97, 0xa9, 0x42, 0xe8, 0x9c, 0x71, 0x99, 0x94, 0x91, 0xe3, 0xaf, 0xac,
 ];
 
 /// Maximum nesting depth followed by [`walk`](ContainerHandler::walk).
-pub const MAX_BOX_DEPTH: u32 = 32;
+const MAX_BOX_DEPTH: u32 = 32;
 
 /// Purpose labels of C2PA boxes (see [`labels`](asset_io_core::labels)).
-pub use asset_io_core::labels::{MANIFEST, MERKLE, ORIGINAL, UPDATE};
+use asset_io_core::labels::{MANIFEST, MERKLE, ORIGINAL, UPDATE};
 
 /// What to do with the `merkle` boxes of a file; see [`BmffUpdates`].
 #[derive(Debug, Clone, Default)]
@@ -335,7 +335,8 @@ impl ContainerHandler for BmffHandler {
 }
 
 /// Parse the top-level boxes of a BMFF file into a validated structure.
-pub fn parse<R: Read + Seek>(src: &mut R) -> Result<Structure> {
+#[cfg(test)]
+fn parse<R: std::io::Read + std::io::Seek>(src: &mut R) -> Result<Structure> {
     handler().parse(src)
 }
 

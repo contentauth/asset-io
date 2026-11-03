@@ -1,5 +1,5 @@
 use asset_io::{
-    BoxFuture, ContainerHandler, Error, FormatSpec, HandlerRegistry, Io, Result, Structure,
+    Asset, BoxFuture, ContainerHandler, Error, FormatSpec, HandlerRegistry, Io, Result, Structure,
 };
 use std::io::Cursor;
 use std::sync::Arc;
@@ -49,11 +49,11 @@ fn builtin_registry_contains_exactly_the_enabled_families() {
         assert!(registry.formats().is_empty());
         assert!(registry.detect(b"\xff\xd8\xff\xe0").is_none());
         assert!(matches!(
-            asset_io::Structure::parse(&registry, &mut Cursor::new([]), Some("jpg")),
+            Asset::open(&registry, Cursor::new([]), Some("jpg")),
             Err(Error::UnsupportedFormat)
         ));
         assert!(matches!(
-            asset_io::Structure::parse(&registry, &mut Cursor::new(b"%PDF-1.7\n"), None),
+            Asset::open(&registry, Cursor::new(b"%PDF-1.7\n"), None),
             Err(Error::UnsupportedFormat)
         ));
     }
@@ -84,7 +84,7 @@ fn custom_registration_and_fallback_preserve_core_interoperability() {
     let core: &asset_io_core::HandlerRegistry = &fallback;
     assert_eq!(core.container_for("custom"), Some("custom"));
     assert!(matches!(
-        asset_io::Structure::parse(core, &mut Cursor::new([]), Some("custom")),
+        Asset::open(core, Cursor::new([]), Some("custom")),
         Err(Error::UnsupportedFeature("test handler"))
     ));
 }
@@ -102,18 +102,15 @@ fn an_existing_fallback_is_not_changed_by_later_mutations() {
 #[test]
 fn sidecars_work_through_the_feature_selected_registry() {
     let registry = HandlerRegistry::builtin();
-    let mut source = Cursor::new(b"raw manifest-store bytes");
-    let structure = asset_io::Structure::parse(
+    let bytes = b"raw manifest-store bytes";
+    let asset = Asset::open(
         &registry,
-        &mut source,
+        Cursor::new(bytes),
         Some("application/x-c2pa-manifest-store"),
     )
     .unwrap();
-    assert_eq!(structure.container_id(), asset_io::containers::c2pa::ID);
-    assert_eq!(
-        structure.store(&mut source).unwrap().unwrap(),
-        source.get_ref().as_slice()
-    );
+    assert_eq!(asset.container_id(), asset_io::containers::c2pa::ID);
+    assert_eq!(asset.store().unwrap().unwrap(), bytes);
     assert_eq!(
         registry
             .handler("c2pa")
@@ -122,15 +119,14 @@ fn sidecars_work_through_the_feature_selected_registry() {
             .unwrap(),
         b"replacement"
     );
-    let mut output = Cursor::new(Vec::new());
-    let result = structure
+    let mut output = Vec::new();
+    let result = asset
         .write(
-            &mut source,
             &mut output,
             &asset_io::Updates::new().remove_jumbf(),
             &mut asset_io::NullSink,
         )
         .unwrap();
-    assert!(output.into_inner().is_empty());
+    assert!(output.is_empty());
     assert!(result.items().next().is_none());
 }

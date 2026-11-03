@@ -25,21 +25,20 @@ Changing metadata can therefore grow the file. A no-op write is byte-identical.
 Inline TIFF values are supported, including small metadata placeholders.
 
 ```rust,no_run
-use asset_io_core::{NullSink, Updates};
-use asset_io_tiff::{layout, parse};
+use asset_io_core::{Asset, HandlerRegistry, NullSink, Updates};
 
-let mut src = std::fs::File::open("image.dng")?;
-let structure = parse(&mut src)?;
-if let Some(entry) = layout(&structure)?.manifest_entry() {
-    println!("manifest {:?}, count {:?}", entry.value_range(), entry.count_range());
+let registry = HandlerRegistry::new().with_handler(asset_io_tiff::TiffHandler);
+let asset = Asset::open(&registry, std::fs::File::open("image.dng")?, None)?;
+if let Some(store) = asset.c2pa_store()? {
+    println!("manifest store: {} bytes", store.len());
 }
 let mut out = std::fs::File::create("out.dng")?;
-structure.write(&mut src, &mut out, &Updates::new().set_xmp(b"<xmp/>".to_vec()), &mut NullSink)?;
+asset.write(&mut out, &Updates::new().set_xmp(b"<xmp/>".to_vec()), &mut NullSink)?;
 # Ok::<(), asset_io_core::Error>(())
 ```
 
-`layout` exposes reachable directories and native tag, type, count, entry,
-value, and count-field ranges without more I/O. Image strip/tile/JPEG ranges
+The handler keeps every reachable directory and the native geometry of each
+entry internally; it is not public API. Image strip/tile/JPEG ranges
 are media-data segments; IFDs, metadata, and gaps form a gapless physical tiling.
 Only the selected manifest and first-IFD XMP are logical metadata items.
 Unknown field types are preserved without guessing their value geometry.

@@ -50,7 +50,6 @@ use asset_io_core::{
     StructureBuilder, Updates,
 };
 use std::borrow::Cow;
-use std::io::{Read, Seek};
 use std::sync::Arc;
 
 const RIFF: [u8; 4] = *b"RIFF";
@@ -188,7 +187,8 @@ impl ContainerHandler for RiffHandler {
 }
 
 /// Parse a RIFF file into a validated structure.
-pub fn parse<R: Read + Seek>(src: &mut R) -> Result<Structure> {
+#[cfg(test)]
+fn parse<R: std::io::Read + std::io::Seek>(src: &mut R) -> Result<Structure> {
     handler().parse(src)
 }
 

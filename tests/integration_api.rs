@@ -15,10 +15,15 @@
 //! writing, the store as a reader sees it, and media types by format string.
 #![cfg(all(feature = "jpeg", feature = "png", feature = "bmff", feature = "riff"))]
 
-use asset_io::{HandlerRegistry, ItemInfo, ItemKind, NullSink, Structure, Updates};
+use asset_io::{Asset, HandlerRegistry, ItemInfo, ItemKind, NullSink, Structure, Updates};
 use std::fs;
 use std::io::Cursor;
 use std::path::PathBuf;
+
+/// `bytes` as an asset, its container detected.
+fn open<'a>(reg: &HandlerRegistry, bytes: &'a [u8]) -> asset_io::Result<Asset<Cursor<&'a [u8]>>> {
+    Asset::open(reg, Cursor::new(bytes), None)
+}
 
 fn fixtures() -> Vec<(String, Vec<u8>)> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
@@ -97,21 +102,17 @@ fn plan_is_what_write_returns() {
     ];
     let mut ran = 0;
     for (name, bytes) in fixtures() {
-        let Ok(s) = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), None) else {
+        let Ok(s) = open(&reg, &bytes) else {
             continue;
         };
         for (i, u) in updates.iter().enumerate() {
-            let planned = s.plan(&mut Cursor::new(&bytes), u);
-            let mut out = Cursor::new(Vec::new());
-            let written = s.write(&mut Cursor::new(&bytes), &mut out, u, &mut NullSink);
+            let planned = s.plan(u);
+            let mut out = Vec::new();
+            let written = s.write(&mut out, u, &mut NullSink);
             match (planned, written) {
                 (Ok(p), Ok(w)) => {
                     assert_eq!(shape(&p), shape(&w), "{name} update {i}");
-                    assert_eq!(
-                        p.total_size(),
-                        out.get_ref().len() as u64,
-                        "{name} update {i}"
-                    );
+                    assert_eq!(p.total_size(), out.len() as u64, "{name} update {i}");
                 }
                 (Err(_), Err(_)) => {}
                 (p, w) => panic!(
@@ -132,13 +133,13 @@ fn plan_places_a_manifest_that_is_not_there_yet() {
     let u = Updates::new().set_jumbf(store(1, &[b"one"]));
     let mut ran = 0;
     for (name, bytes) in fixtures() {
-        let Ok(s) = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), None) else {
+        let Ok(s) = open(&reg, &bytes) else {
             continue;
         };
         if s.item(ItemKind::Jumbf).ok().flatten().is_some() {
             continue;
         }
-        let Ok(dest) = s.plan(&mut Cursor::new(&bytes), &u) else {
+        let Ok(dest) = s.plan(&u) else {
             continue;
         };
         let e = dest.require_item(ItemKind::Jumbf).unwrap();
@@ -160,46 +161,35 @@ fn a_reader_sees_original_and_update_as_one_store() {
     let second = store(1, &[b"m1", b"m2"]);
 
     // Start from a file with no store, whatever the fixture holds.
-    let bytes = {
-        let s = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), None).unwrap();
-        let mut out = Cursor::new(Vec::new());
-        s.write(
-            &mut Cursor::new(&bytes),
-            &mut out,
-            &Updates::remove_all(),
-            &mut NullSink,
-        )
+    let mut none = Vec::new();
+    open(&reg, &bytes)
+        .unwrap()
+        .write(&mut none, &Updates::remove_all(), &mut NullSink)
         .unwrap();
-        out.into_inner()
-    };
-    let s0 = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), None).unwrap();
-    assert_eq!(s0.store(&mut Cursor::new(&bytes)).unwrap(), None);
+    let s0 = open(&reg, &none).unwrap();
+    assert_eq!(s0.store().unwrap(), None);
 
-    let mut a = Cursor::new(Vec::new());
+    let mut a = Vec::new();
     s0.write(
-        &mut Cursor::new(&bytes),
         &mut a,
         &Updates::new().set_jumbf(first.clone()),
         &mut NullSink,
     )
     .unwrap();
-    let a = a.into_inner();
-    let s1 = asset_io::Structure::parse(&reg, &mut Cursor::new(&a), None).unwrap();
-    assert_eq!(s1.store(&mut Cursor::new(&a)).unwrap(), Some(first));
+    let s1 = open(&reg, &a).unwrap();
+    assert_eq!(s1.store().unwrap(), Some(first));
 
-    let mut b = Cursor::new(Vec::new());
+    let mut b = Vec::new();
     s1.write(
-        &mut Cursor::new(&a),
         &mut b,
         &Updates::new().set_jumbf(second.clone()).as_update(),
         &mut NullSink,
     )
     .unwrap();
-    let b = b.into_inner();
-    let s2 = asset_io::Structure::parse(&reg, &mut Cursor::new(&b), None).unwrap();
+    let s2 = open(&reg, &b).unwrap();
     // Two stores are in the file, and a reader sees them as the one that was set.
     assert_eq!(s2.items_of(ItemKind::Jumbf).count(), 2);
-    assert_eq!(s2.store(&mut Cursor::new(&b)).unwrap(), Some(second));
+    assert_eq!(s2.store().unwrap(), Some(second));
 }
 
 /// The bytes of the segments an item lives in, in order.
@@ -228,7 +218,7 @@ fn compose_is_what_write_inserts() {
     let xmp = b"<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"/>".to_vec();
     let mut checked = std::collections::HashSet::new();
     for (name, bytes) in fixtures() {
-        let Ok(s) = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), None) else {
+        let Ok(s) = open(&reg, &bytes) else {
             continue;
         };
         for (kind, data) in [(ItemKind::Jumbf, &jumbf), (ItemKind::Xmp, &xmp)] {
@@ -241,11 +231,8 @@ fn compose_is_what_write_inserts() {
                 ItemKind::Jumbf => Updates::new().set_jumbf(data.clone()),
                 _ => Updates::new().set_xmp(data.clone()),
             };
-            let mut out = Cursor::new(Vec::new());
-            let dest = s
-                .write(&mut Cursor::new(&bytes), &mut out, &updates, &mut NullSink)
-                .unwrap();
-            let out = out.into_inner();
+            let mut out = Vec::new();
+            let dest = s.write(&mut out, &updates, &mut NullSink).unwrap();
             assert_eq!(
                 composed,
                 item_segments(&dest, &out, kind),
@@ -278,20 +265,12 @@ fn compose_splits_a_large_jpeg_store_like_write() {
     let Some((_, bytes)) = fixtures().into_iter().find(|(n, _)| n.ends_with(".jpg")) else {
         return;
     };
-    let s = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), Some("jpg")).unwrap();
-    let mut out = Cursor::new(Vec::new());
+    let s = Asset::open(&reg, Cursor::new(&bytes), Some("jpg")).unwrap();
+    let mut out = Vec::new();
     let dest = s
-        .write(
-            &mut Cursor::new(&bytes),
-            &mut out,
-            &Updates::new().set_jumbf(jumbf),
-            &mut NullSink,
-        )
+        .write(&mut out, &Updates::new().set_jumbf(jumbf), &mut NullSink)
         .unwrap();
-    assert_eq!(
-        composed,
-        item_segments(&dest, &out.into_inner(), ItemKind::Jumbf)
-    );
+    assert_eq!(composed, item_segments(&dest, &out, ItemKind::Jumbf));
 }
 
 #[test]
@@ -396,16 +375,16 @@ fn item_kinds_encodings_and_categories_per_container() {
     let jumbf = store(1, &[b"one"]);
     let mut written = std::collections::BTreeSet::new();
     for (name, bytes) in fixtures() {
-        let Ok(s) = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), None) else {
+        let Ok(s) = open(&reg, &bytes) else {
             continue;
         };
         check(&s, &name);
         let updates = Updates::new().set_xmp(xmp.clone()).set_jumbf(jumbf.clone());
-        let mut out = Cursor::new(Vec::new());
-        let Ok(dest) = s.write(&mut Cursor::new(&bytes), &mut out, &updates, &mut NullSink) else {
+        let mut out = Vec::new();
+        let Ok(dest) = s.write(&mut out, &updates, &mut NullSink) else {
             continue;
         };
-        let out = out.into_inner();
+        let dest = Asset::from_parts(dest, Cursor::new(&out));
         check(&dest, &name);
         // What a write inserts is a metadata item in a metadata segment.
         for (kind, encoding, data) in [
@@ -414,7 +393,7 @@ fn item_kinds_encodings_and_categories_per_container() {
         ] {
             let found = dest
                 .items_of(kind)
-                .find(|e| dest.read_content(&mut Cursor::new(&out), e).unwrap() == *data);
+                .find(|e| dest.read_content(e).unwrap() == *data);
             let e = found.unwrap_or_else(|| panic!("{name}: no {kind} written"));
             assert_eq!(e.encoding(), encoding, "{name}");
             assert_eq!(e.kind().category(), ItemCategory::Metadata, "{name}");

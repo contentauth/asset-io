@@ -34,12 +34,8 @@ fn load() -> Vec<(&'static str, Vec<u8>, Structure)> {
         .iter()
         .filter_map(|p| {
             let bytes = std::fs::read(p).ok()?;
-            let s = asset_io::Structure::parse(
-                &HandlerRegistry::builtin(),
-                &mut Cursor::new(&bytes),
-                None,
-            )
-            .ok()?;
+            let s = Structure::parse(&HandlerRegistry::builtin(), &mut Cursor::new(&bytes), None)
+                .ok()?;
             Some((*p, bytes, s))
         })
         .collect()

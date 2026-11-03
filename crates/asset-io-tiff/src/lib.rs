@@ -9,17 +9,16 @@
 mod write;
 
 use asset_io_core::{
-    BoxFuture, ByteRange, ContainerHandler, Error, FormatSpec, Io, ItemInfo, ItemKind, Name,
+    BoxFuture, ByteRange, ContainerHandler, Error, FormatSpec, Io, Item, ItemInfo, ItemKind, Name,
     Result, SegmentId, SegmentKind, Structure, StructureBuilder, Updates, WritePlan,
 };
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read, Seek};
 use std::sync::Arc;
 
 /// TIFF tag holding a C2PA manifest store, of type UNDEFINED (7).
-pub const C2PA_TAG: u16 = 0xcd41;
+pub(crate) const C2PA_TAG: u16 = 0xcd41;
 /// TIFF tag holding XMP, of type BYTE (1).
-pub const XMP_TAG: u16 = 700;
+pub(crate) const XMP_TAG: u16 = 700;
 /// The TIFF handler's container identifier.
 pub const ID: &str = "tiff";
 
@@ -30,7 +29,7 @@ const CHILD_TAGS: [u16; 4] = [330, 34665, 34853, 40965];
 
 /// Byte order of a TIFF stream, including its IFD fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ByteOrder {
+pub(crate) enum ByteOrder {
     Little,
     Big,
 }
@@ -58,7 +57,7 @@ impl ByteOrder {
 
 /// One TIFF tag entry and the geometry of its stored value.
 #[derive(Debug, Clone)]
-pub struct Entry {
+pub(crate) struct Entry {
     tag: u16,
     field_type: u16,
     count: u64,
@@ -68,16 +67,12 @@ pub struct Entry {
 }
 
 impl Entry {
-    pub fn tag(&self) -> u16 {
-        self.tag
-    }
+    #[cfg(test)]
     pub fn field_type(&self) -> u16 {
         self.field_type
     }
-    pub fn count(&self) -> u64 {
-        self.count
-    }
     /// The complete 12-byte or 20-byte directory entry.
+    #[cfg(test)]
     pub fn range(&self) -> ByteRange {
         self.range
     }
@@ -101,7 +96,7 @@ impl Entry {
 
 /// A reachable TIFF image, SubIFD, EXIF, GPS, or interoperability directory.
 #[derive(Debug, Clone)]
-pub struct Directory {
+pub(crate) struct Directory {
     range: ByteRange,
     entries: BTreeMap<u16, Entry>,
     next: u64,
@@ -109,6 +104,7 @@ pub struct Directory {
 }
 
 impl Directory {
+    #[cfg(test)]
     pub fn range(&self) -> ByteRange {
         self.range
     }
@@ -118,14 +114,11 @@ impl Directory {
     pub fn entry(&self, tag: u16) -> Option<&Entry> {
         self.entries.get(&tag)
     }
-    pub fn next_ifd(&self) -> u64 {
-        self.next
-    }
 }
 
 /// TIFF geometry retained with parsed, planned, and written structures.
 #[derive(Debug, Clone)]
-pub struct TiffLayout {
+pub(crate) struct TiffLayout {
     order: ByteOrder,
     big: bool,
     pages: Vec<u64>,
@@ -134,9 +127,11 @@ pub struct TiffLayout {
 }
 
 impl TiffLayout {
+    #[cfg(test)]
     pub fn byte_order(&self) -> ByteOrder {
         self.order
     }
+    #[cfg(test)]
     pub fn is_big_tiff(&self) -> bool {
         self.big
     }
@@ -189,7 +184,7 @@ impl TiffLayout {
 }
 
 /// Inspect TIFF-specific tag and directory geometry without additional I/O.
-pub fn layout(structure: &Structure) -> Result<&TiffLayout> {
+pub(crate) fn layout(structure: &Structure) -> Result<&TiffLayout> {
     structure
         .attachment::<Arc<TiffLayout>>()
         .map(Arc::as_ref)
@@ -241,10 +236,28 @@ impl ContainerHandler for TiffHandler {
             _ => Err(Error::UnsupportedFormat),
         }
     }
-}
-
-pub fn parse<R: Read + Seek>(source: &mut R) -> Result<Structure> {
-    handler().parse(source)
+    // C2PA excludes the manifest store's value bytes and the count field of its IFD
+    // entry, which a store of another size changes (as c2pa-rs's TIFF handler does).
+    // An inline value sits in the entry's value field, right after the count.
+    fn c2pa_data_hash_exclusions(
+        &self,
+        structure: &Structure,
+        item: &Item,
+    ) -> Result<Vec<ByteRange>> {
+        let entry = layout(structure)?.manifest_entry().ok_or(Error::NotFound {
+            what: "TIFF C2PA manifest entry",
+        })?;
+        let value = entry
+            .value_range()
+            .ok_or_else(|| Error::InvalidFormat("TIFF C2PA entry has no value range".into()))?;
+        let mut extents = item.extents().map(|extent| extent.range());
+        if extents.next() != Some(value) || extents.next().is_some() {
+            return Err(Error::InvalidFormat(
+                "item is not the value of the TIFF C2PA manifest entry".into(),
+            ));
+        }
+        Ok(vec![entry.count_range(), value])
+    }
 }
 
 fn checked_range(at: u64, len: u64, total: u64) -> Result<ByteRange> {
@@ -699,3 +712,6 @@ fn structure(
     builder.attach(state);
     builder.finish()
 }
+
+#[cfg(test)]
+mod tests;

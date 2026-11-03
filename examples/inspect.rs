@@ -15,7 +15,7 @@
 //!
 //! Run: `cargo run --example inspect --features all-formats,xmp,exif -- <file> [--embedded]`
 
-use asset_io::{HandlerRegistry, Item, Name, Role, ScanLimits, TransferEncoding};
+use asset_io::{Asset, HandlerRegistry, Item, Name, Role, ScanLimits, TransferEncoding};
 use std::{env, fs::File};
 
 fn main() -> asset_io::Result<()> {
@@ -24,26 +24,25 @@ fn main() -> asset_io::Result<()> {
         std::process::exit(1);
     };
 
-    let mut src = File::open(&path)?;
     let registry = HandlerRegistry::builtin();
-    let structure = asset_io::Structure::parse(&registry, &mut src, None)?;
+    let asset = Asset::open(&registry, File::open(&path)?, None)?;
 
     println!("File: {path}");
-    println!("  Container: {}", structure.container_id());
-    println!("  Media type: {}", structure.media_type());
-    println!("  Size: {} bytes", structure.total_size());
-    println!("  Segments: {}", structure.segments().len());
+    println!("  Container: {}", asset.container_id());
+    println!("  Media type: {}", asset.media_type());
+    println!("  Size: {} bytes", asset.total_size());
+    println!("  Segments: {}", asset.segments().len());
 
     println!("\nItems:");
-    for e in structure.items() {
+    for e in asset.items() {
         println!("  {}", describe(e));
     }
 
     #[cfg(feature = "exif")]
-    if let Some(info) = structure.exif_info(&mut src)? {
+    if let Some(info) = asset.exif_info()? {
         println!("\nEXIF: {info}");
     }
-    if let Some(t) = structure.embedded_thumbnail(&mut src)? {
+    if let Some(t) = asset.embedded_thumbnail()? {
         println!(
             "Thumbnail: {}, {} bytes",
             t.media_type().unwrap_or("unknown type"),
@@ -52,7 +51,7 @@ fn main() -> asset_io::Result<()> {
     }
 
     if env::args().skip(2).any(|arg| arg == "--embedded") {
-        let assets = structure.scan_embedded(&mut src, &registry, ScanLimits::default())?;
+        let assets = asset.scan_embedded(&registry, ScanLimits::default())?;
         for (i, asset) in assets.iter().enumerate() {
             let parsed = match &asset.structure {
                 Ok(s) => format!("{} {}", s.container_id(), s.media_type()),
@@ -72,8 +71,8 @@ fn main() -> asset_io::Result<()> {
     }
 
     println!("\nSegments:");
-    for (i, seg) in structure.segments().iter().enumerate() {
-        let name = structure
+    for (i, seg) in asset.segments().iter().enumerate() {
+        let name = asset
             .box_name(seg.name())
             .map(|n| n.into_owned())
             .unwrap_or_default();
@@ -89,12 +88,12 @@ fn main() -> asset_io::Result<()> {
     }
 
     // Region view: the roles a hasher would see.
-    let payload: u64 = structure
+    let payload: u64 = asset
         .regions()
         .filter(|r| r.role == Role::Payload)
         .map(|r| r.range.len())
         .sum();
-    println!("\nPayload bytes: {payload} of {}", structure.total_size());
+    println!("\nPayload bytes: {payload} of {}", asset.total_size());
     Ok(())
 }
 

@@ -14,7 +14,7 @@
 #![no_main]
 
 use asset_io::containers::bmff::BmffUpdates;
-use asset_io::{HandlerRegistry, NullSink, Updates};
+use asset_io::{HandlerRegistry, NullSink, Structure, Updates};
 use libfuzzer_sys::fuzz_target;
 use std::io::Cursor;
 
@@ -24,9 +24,9 @@ const XPACKET: &[u8] = b"<?xpacket begin=\"\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\
 fuzz_target!(|data: &[u8]| {
     let registry = HandlerRegistry::builtin();
     let mut src = Cursor::new(data);
-    let structure = match asset_io::Structure::parse(&registry, &mut src, None) {
+    let structure = match Structure::parse(&registry, &mut src, None) {
         Ok(s) => s,
-        Err(_) => match asset_io::Structure::parse(&registry, &mut src, Some("svg")) {
+        Err(_) => match Structure::parse(&registry, &mut src, Some("svg")) {
             Ok(s) => s,
             Err(_) => return,
         },

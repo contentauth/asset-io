@@ -7,8 +7,17 @@
     feature = "c2pa"
 ))]
 
-use asset_io::{ByteRange, Error, HandlerRegistry, ItemKind, NullSink, Updates};
+use asset_io::{Asset, ByteRange, Error, HandlerRegistry, ItemKind, NullSink, Updates};
 use std::io::Cursor;
+
+fn open<'a>(format: &str, bytes: &'a [u8]) -> Asset<Cursor<&'a [u8]>> {
+    Asset::open(
+        &HandlerRegistry::builtin(),
+        Cursor::new(bytes),
+        Some(format),
+    )
+    .unwrap()
+}
 
 fn store(len: usize) -> Vec<u8> {
     let mut bytes = (len as u32).to_be_bytes().to_vec();
@@ -23,7 +32,6 @@ fn store(len: usize) -> Vec<u8> {
 
 #[test]
 fn handler_exclusions_match_planned_written_and_parsed_geometry() {
-    let registry = HandlerRegistry::builtin();
     for (format, input) in [
         ("jpg", vec![0xff, 0xd8, 0xff, 0xd9]),
         (
@@ -37,20 +45,16 @@ fn handler_exclusions_match_planned_written_and_parsed_geometry() {
         ),
     ] {
         for len in [33, 34, 160_001] {
-            let mut source = Cursor::new(&input);
-            let structure =
-                asset_io::Structure::parse(&registry, &mut source, Some(format)).unwrap();
+            let asset = open(format, &input);
             let updates = Updates::new().set_jumbf(store(len));
-            let planned = structure.plan(&mut source, &updates).unwrap();
+            let planned = asset.plan(&updates).unwrap();
             let mut output = Cursor::new(Vec::new());
-            let written = structure
-                .write(&mut source, &mut output, &updates, &mut NullSink)
-                .unwrap();
-            let parsed = asset_io::Structure::parse(&registry, &mut output, Some(format)).unwrap();
+            let written = asset.write(&mut output, &updates, &mut NullSink).unwrap();
+            let parsed = open(format, output.get_ref());
             let item = planned.require_item(ItemKind::Jumbf).unwrap();
             let expected = planned.c2pa_data_hash_exclusions(item).unwrap();
             assert!(!expected.is_empty());
-            for candidate in [&written, &parsed] {
+            for candidate in [&written, parsed.structure()] {
                 assert_eq!(
                     candidate
                         .c2pa_data_hash_exclusions(candidate.require_item(ItemKind::Jumbf).unwrap())
@@ -100,19 +104,16 @@ fn handler_exclusions_match_planned_written_and_parsed_geometry() {
 
 #[test]
 fn containers_with_other_bindings_refuse_rather_than_guess() {
-    let registry = HandlerRegistry::builtin();
-    let mut sidecar = Cursor::new(store(33));
-    let structure = asset_io::Structure::parse(&registry, &mut sidecar, Some("c2pa")).unwrap();
-    let item = structure.require_item(ItemKind::Jumbf).unwrap();
+    let sidecar = store(33);
+    let asset = open("c2pa", &sidecar);
+    let item = asset.require_item(ItemKind::Jumbf).unwrap();
     assert!(matches!(
-        structure.c2pa_data_hash_exclusions(item),
+        asset.c2pa_data_hash_exclusions(item),
         Err(Error::UnsupportedFeature(_))
     ));
 
-    let mut mp4 = Cursor::new(b"\0\0\0\x18ftypisom\0\0\0\0isommp42".to_vec());
-    let structure = asset_io::Structure::parse(&registry, &mut mp4, Some("mp4")).unwrap();
-    let planned = structure
-        .plan(&mut mp4, &Updates::new().set_jumbf(store(33)))
+    let planned = open("mp4", b"\0\0\0\x18ftypisom\0\0\0\0isommp42")
+        .plan(&Updates::new().set_jumbf(store(33)))
         .unwrap();
     let item = planned.require_item(ItemKind::Jumbf).unwrap();
     assert!(matches!(
@@ -124,7 +125,6 @@ fn containers_with_other_bindings_refuse_rather_than_guess() {
 #[test]
 fn each_container_names_its_c2pa_hard_binding() {
     use asset_io::C2paHash;
-    let registry = HandlerRegistry::builtin();
     for (format, input, expected) in [
         ("jpg", vec![0xff, 0xd8, 0xff, 0xd9], Some(C2paHash::Box)),
         (
@@ -145,16 +145,13 @@ fn each_container_names_its_c2pa_hard_binding() {
         ),
         ("c2pa", store(33), None),
     ] {
-        let structure =
-            asset_io::Structure::parse(&registry, &mut Cursor::new(input), Some(format)).unwrap();
-        assert_eq!(structure.c2pa_hash(), expected, "{format}");
+        assert_eq!(open(format, &input).c2pa_hash(), expected, "{format}");
     }
 }
 
 #[test]
 fn c2pa_boxes_tile_the_asset_with_one_store_box() {
     use asset_io::{AFTER_BOX, C2PA_BOX};
-    let registry = HandlerRegistry::builtin();
     for (format, input) in [
         ("jpg", vec![0xff, 0xd8, 0xff, 0xd9]),
         (
@@ -164,23 +161,16 @@ fn c2pa_boxes_tile_the_asset_with_one_store_box() {
         ("wav", b"RIFF\x04\0\0\0WAVE".to_vec()),
     ] {
         for len in [33, 160_001] {
-            let mut source = Cursor::new(&input);
-            let structure =
-                asset_io::Structure::parse(&registry, &mut source, Some(format)).unwrap();
+            let asset = open(format, &input);
             let mut c2pa = store(len);
             c2pa[16..32].copy_from_slice(&asset_io::jumbf::C2PA_STORE_TYPE);
             let updates = Updates::new().set_jumbf(c2pa);
-            let planned = structure.plan(&mut source, &updates).unwrap();
-            let mut output = Cursor::new(Vec::new());
-            structure
-                .write(&mut source, &mut output, &updates, &mut NullSink)
-                .unwrap();
-            let mut bytes = output.into_inner();
-            let parsed =
-                asset_io::Structure::parse(&registry, &mut Cursor::new(&bytes), Some(format))
-                    .unwrap();
+            let planned = asset.plan(&updates).unwrap();
+            let mut bytes = Vec::new();
+            asset.write(&mut bytes, &updates, &mut NullSink).unwrap();
+            let parsed = open(format, &bytes);
 
-            let boxes = parsed.c2pa_boxes(&mut Cursor::new(&bytes)).unwrap();
+            let boxes = parsed.c2pa_boxes().unwrap();
             assert_eq!(
                 planned.c2pa_boxes(&mut Cursor::new([])).unwrap(),
                 boxes,
@@ -206,10 +196,7 @@ fn c2pa_boxes_tile_the_asset_with_one_store_box() {
                 continue;
             }
             bytes.extend_from_slice(b"trailing");
-            let parsed =
-                asset_io::Structure::parse(&registry, &mut Cursor::new(&bytes), Some(format))
-                    .unwrap();
-            let boxes = parsed.c2pa_boxes(&mut Cursor::new(&bytes)).unwrap();
+            let boxes = open(format, &bytes).c2pa_boxes().unwrap();
             let last = boxes.last().unwrap();
             assert_eq!(
                 (last.name.as_ref(), last.range.len()),
@@ -218,11 +205,9 @@ fn c2pa_boxes_tile_the_asset_with_one_store_box() {
             );
         }
     }
-    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#;
-    let structure =
-        asset_io::Structure::parse(&registry, &mut Cursor::new(svg), Some("svg")).unwrap();
+    let svg = open("svg", br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#);
     assert!(matches!(
-        structure.c2pa_boxes(&mut Cursor::new(svg)),
+        svg.c2pa_boxes(),
         Err(Error::UnsupportedFeature(_))
     ));
 }
@@ -240,22 +225,15 @@ fn named(boxes: &[asset_io::C2paBox]) -> Named {
 /// Write `input` with a C2PA store, then return the planned boxes (read in the
 /// source, before the output exists) and the boxes of the written output.
 fn planned_and_written(format: &str, input: &[u8]) -> (Named, Named, Vec<u8>) {
-    let registry = HandlerRegistry::builtin();
     let mut c2pa = store(40);
     c2pa[16..32].copy_from_slice(&asset_io::jumbf::C2PA_STORE_TYPE);
     let updates = Updates::new().set_jumbf(c2pa);
-    let mut source = Cursor::new(input);
-    let structure = asset_io::Structure::parse(&registry, &mut source, Some(format)).unwrap();
-    let planned = structure.plan(&mut source, &updates).unwrap();
-    let planned_boxes = named(&planned.c2pa_boxes(&mut source).unwrap());
-    let mut output = Cursor::new(Vec::new());
-    structure
-        .write(&mut source, &mut output, &updates, &mut NullSink)
-        .unwrap();
-    let bytes = output.into_inner();
-    let written =
-        asset_io::Structure::parse(&registry, &mut Cursor::new(&bytes), Some(format)).unwrap();
-    let written_boxes = named(&written.c2pa_boxes(&mut Cursor::new(&bytes)).unwrap());
+    let asset = open(format, input);
+    let planned = asset.plan(&updates).unwrap();
+    let planned_boxes = named(&planned.c2pa_boxes(&mut Cursor::new(input)).unwrap());
+    let mut bytes = Vec::new();
+    asset.write(&mut bytes, &updates, &mut NullSink).unwrap();
+    let written_boxes = named(&open(format, &bytes).c2pa_boxes().unwrap());
     (planned_boxes, written_boxes, bytes)
 }
 
@@ -361,24 +339,17 @@ fn every_image_of_a_multi_picture_jpeg_is_listed() {
 
 #[test]
 fn boxes_report_their_asset_metadata() {
-    let registry = HandlerRegistry::builtin();
-    let png = b"\x89PNG\r\n\x1a\n\0\0\0\0IEND\xae\x42\x60\x82".to_vec();
-    let mut source = Cursor::new(&png);
-    let structure = asset_io::Structure::parse(&registry, &mut source, Some("png")).unwrap();
+    let png = b"\x89PNG\r\n\x1a\n\0\0\0\0IEND\xae\x42\x60\x82";
     let xmp = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/"/>"#.to_vec();
-    let mut output = Cursor::new(Vec::new());
-    structure
+    let mut bytes = Vec::new();
+    open("png", png)
         .write(
-            &mut source,
-            &mut output,
+            &mut bytes,
             &Updates::new().set_xmp(xmp.clone()),
             &mut NullSink,
         )
         .unwrap();
-    let bytes = output.into_inner();
-    let parsed =
-        asset_io::Structure::parse(&registry, &mut Cursor::new(&bytes), Some("png")).unwrap();
-    let boxes = parsed.c2pa_boxes(&mut Cursor::new(&bytes)).unwrap();
+    let boxes = open("png", &bytes).c2pa_boxes().unwrap();
     let itxt = boxes.iter().find(|b| b.name == "iTXt").unwrap();
     assert_eq!(itxt.metadata.len(), 1);
     let m = itxt.metadata[0];

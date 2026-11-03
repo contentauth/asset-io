@@ -1,6 +1,8 @@
 #![cfg(all(feature = "tokio", feature = "jpeg", feature = "png", feature = "svg"))]
 
-use asset_io::{tokio as asset, Chunk, Error, HandlerRegistry, ItemKind, NullSink, Task, Updates};
+use asset_io::{
+    tokio as asset, Asset, Chunk, Error, HandlerRegistry, ItemKind, NullSink, Task, Updates,
+};
 use std::io::Cursor;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
@@ -35,16 +37,10 @@ async fn spawned_adapters_match_blocking_reads_writes_and_sink_bytes() {
             let registry = HandlerRegistry::builtin();
             let updates = Updates::new().set_jumbf(store());
             let blocking =
-                asset_io::Structure::parse(&registry, &mut Cursor::new(&input), Some(format))
-                    .unwrap();
+                Asset::open(&registry, Cursor::new(input.clone()), Some(format)).unwrap();
             let mut expected = Cursor::new(Vec::new());
             let expected_layout = blocking
-                .write(
-                    &mut Cursor::new(&input),
-                    &mut expected,
-                    &updates,
-                    &mut NullSink,
-                )
+                .write(&mut expected, &updates, &mut NullSink)
                 .unwrap();
 
             // Parsing is independent of the stream's initial position.

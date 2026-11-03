@@ -44,9 +44,9 @@ fn fixtures() -> Vec<(PathBuf, bool)> {
 fn parse(bytes: &[u8], jpeg: bool) -> asset_io::Result<asset_io::Structure> {
     let mut c = Cursor::new(bytes.to_vec());
     if jpeg {
-        containers::jpeg::parse(&mut c)
+        containers::jpeg::handler().parse(&mut c)
     } else {
-        containers::png::parse(&mut c)
+        containers::png::handler().parse(&mut c)
     }
 }
 
@@ -283,7 +283,7 @@ fn sweep_external_directories() {
             }
         }
         if *jpeg {
-            if let Err(e) = containers::jpeg::read_xmp(&s, &mut c) {
+            if let Err(e) = s.xmp(&mut c) {
                 problems.push(format!("{name}: XMP unreadable: {e}"));
                 continue;
             }

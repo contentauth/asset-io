@@ -1,10 +1,21 @@
-use asset_io_c2pa::{handler, parse};
+use asset_io_c2pa::handler;
 use asset_io_core::testing::Conformance;
 use asset_io_core::{
-    plan::validate, Encoding, Error, HandlerRegistry, ItemKind, NullSink, Progress, SegmentKind,
-    Structure, TransferEncoding, Updates, DEFAULT_WINDOW,
+    plan::validate, Asset, Encoding, Error, HandlerRegistry, ItemKind, NullSink, Progress,
+    SegmentKind, Structure, TransferEncoding, Updates, DEFAULT_WINDOW,
 };
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
+
+/// Parse with the sidecar handler directly, from any reader.
+fn parse<R: Read + Seek>(source: &mut R) -> asset_io_core::Result<Structure> {
+    handler().parse(source)
+}
+
+/// `bytes` as a sidecar. Detection is conservative, so the format is named.
+fn open(bytes: &[u8]) -> Asset<Cursor<&[u8]>> {
+    let registry = HandlerRegistry::new().with_handler(asset_io_c2pa::C2paHandler);
+    Asset::open(&registry, Cursor::new(bytes), Some("c2pa")).unwrap()
+}
 
 const STORE_TYPE: [u8; 16] = [
     0x63, 0x32, 0x70, 0x61, 0x00, 0x11, 0x00, 0x10, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71,
@@ -22,22 +33,12 @@ fn store(ty: [u8; 16]) -> Vec<u8> {
 }
 
 fn write(source: &[u8], updates: &Updates) -> (Vec<u8>, Structure) {
-    let structure = parse(&mut Cursor::new(source)).unwrap();
-    let plan = structure
-        .write_plan(&mut Cursor::new(source), updates)
-        .unwrap();
+    let asset = open(source);
+    let plan = asset.write_plan(updates).unwrap();
     validate(&plan, source.len() as u64).unwrap();
-    let mut output = Cursor::new(Vec::new());
-    let written = structure
-        .write(
-            &mut Cursor::new(source),
-            &mut output,
-            updates,
-            &mut NullSink,
-        )
-        .unwrap();
-    let bytes = output.into_inner();
-    let reparsed = parse(&mut Cursor::new(&bytes)).unwrap();
+    let mut bytes = Vec::new();
+    let written = asset.write(&mut bytes, updates, &mut NullSink).unwrap();
+    let reparsed = open(&bytes);
     assert_eq!(plan.structure().segments(), written.segments());
     assert_eq!(written.segments(), reparsed.segments());
     assert_eq!(written.total_size(), bytes.len() as u64);
@@ -65,7 +66,7 @@ fn aliases_and_conservative_detection() {
     let bytes = store(STORE_TYPE);
     assert_eq!(registry.detect(&bytes).unwrap().id(), "c2pa");
     assert_eq!(
-        asset_io_core::Structure::parse(&registry, &mut Cursor::new(&bytes), None)
+        Asset::open(&registry, Cursor::new(&bytes), None)
             .unwrap()
             .container_id(),
         "c2pa"
@@ -83,33 +84,27 @@ fn aliases_and_conservative_detection() {
 #[test]
 fn the_entire_file_is_the_stored_jumbf_item() {
     for bytes in [store(STORE_TYPE), b"opaque bytes".to_vec(), vec![0]] {
-        let structure = parse(&mut Cursor::new(&bytes)).unwrap();
-        assert_eq!(structure.media_type(), "application/c2pa");
-        assert_eq!(structure.total_size(), bytes.len() as u64);
-        assert_eq!(structure.segments().len(), 1);
-        let segment = &structure.segments()[0];
+        let asset = open(&bytes);
+        assert_eq!(asset.media_type(), "application/c2pa");
+        assert_eq!(asset.total_size(), bytes.len() as u64);
+        assert_eq!(asset.segments().len(), 1);
+        let segment = &asset.segments()[0];
         assert_eq!(segment.kind(), SegmentKind::Metadata);
         assert_eq!(segment.header().len(), 0);
         assert_eq!(segment.trailer().len(), 0);
         assert_eq!(segment.payload().len(), bytes.len() as u64);
-        let item = structure.require_item(ItemKind::Jumbf).unwrap();
+        let item = asset.require_item(ItemKind::Jumbf).unwrap();
         assert_eq!(item.encoding(), Encoding::Jumbf);
         assert_eq!(*item.transfer(), TransferEncoding::Identity);
         assert_eq!(item.extent_count(), 1);
         assert_eq!(item.extents().next().unwrap().range(), segment.range());
-        assert_eq!(
-            structure.store(&mut Cursor::new(&bytes)).unwrap(),
-            Some(bytes.clone())
-        );
-        assert_eq!(
-            structure.read_item(&mut Cursor::new(&bytes), item).unwrap(),
-            bytes
-        );
-        assert_eq!(structure.xmp(&mut Cursor::new(&bytes)).unwrap(), None);
+        assert_eq!(asset.store().unwrap(), Some(bytes.clone()));
+        assert_eq!(asset.read_item(item).unwrap(), bytes);
+        assert_eq!(asset.xmp().unwrap(), None);
     }
-    let structure = parse(&mut Cursor::new(store(STORE_TYPE))).unwrap();
+    let bytes = store(STORE_TYPE);
     assert_eq!(
-        structure
+        open(&bytes)
             .require_item(ItemKind::Jumbf)
             .unwrap()
             .jumbf_type(),
@@ -119,11 +114,11 @@ fn the_entire_file_is_the_stored_jumbf_item() {
 
 #[test]
 fn empty_sidecars_have_no_items_and_can_receive_a_store() {
-    let empty = parse(&mut Cursor::new([])).unwrap();
+    let empty = open(&[]);
     assert_eq!(empty.total_size(), 0);
     assert!(empty.segments().is_empty());
     assert!(empty.items().next().is_none());
-    assert_eq!(empty.store(&mut Cursor::new([])).unwrap(), None);
+    assert_eq!(empty.store().unwrap(), None);
     let bytes = store(STORE_TYPE);
     let (output, _) = write(&[], &Updates::new().set_jumbf(bytes.clone()));
     assert_eq!(output, bytes);
@@ -188,36 +183,29 @@ fn composing_is_identity_for_jumbf_only() {
 #[test]
 fn setting_xmp_is_rejected_before_output_is_changed() {
     let source = store(STORE_TYPE);
-    let structure = parse(&mut Cursor::new(&source)).unwrap();
-    let mut output = Cursor::new(b"untouched".to_vec());
+    let mut output = b"untouched".to_vec();
     let updates = Updates::new().set_xmp(b"<x/>".to_vec()).remove_jumbf();
     assert!(matches!(
-        structure.write(
-            &mut Cursor::new(&source),
-            &mut output,
-            &updates,
-            &mut NullSink
-        ),
+        open(&source).write(&mut output, &updates, &mut NullSink),
         Err(Error::UnsupportedFeature(_))
     ));
-    assert_eq!(output.into_inner(), b"untouched");
+    assert_eq!(output, b"untouched");
 }
 
 #[test]
 fn patches_require_the_exact_length_and_never_pad() {
     let source = b"original store";
-    let structure = parse(&mut Cursor::new(source)).unwrap();
-    let item = structure.require_item(ItemKind::Jumbf).unwrap();
-    let mut output = Cursor::new(source.to_vec());
+    // A writable copy, opened directly, so it can be patched in place.
+    let registry = HandlerRegistry::new().with_handler(asset_io_c2pa::C2paHandler);
+    let output = Asset::open(&registry, Cursor::new(source.to_vec()), Some("c2pa")).unwrap();
+    let item = output.require_item(ItemKind::Jumbf).unwrap();
     for replacement in [b"short".as_slice(), b"replacement too long".as_slice()] {
-        assert!(structure.patch(&mut output, item, replacement).is_err());
-        assert_eq!(output.get_ref(), source);
+        assert!(output.patch(item, replacement).is_err());
+        assert_eq!(output.read_item(item).unwrap(), source);
     }
     let replacement = b"replaced store";
-    structure
-        .patch_exact(&mut output, item, replacement)
-        .unwrap();
-    assert_eq!(output.into_inner(), replacement);
+    output.patch_exact(item, replacement).unwrap();
+    assert_eq!(output.into_source().into_inner(), replacement);
 }
 
 struct Counted {

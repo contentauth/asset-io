@@ -225,7 +225,8 @@ impl ContainerHandler for JpegHandler {
 }
 
 /// Parse a JPEG into a validated structure.
-pub fn parse<R: Read + Seek>(src: &mut R) -> Result<Structure> {
+#[cfg(test)]
+fn parse<R: Read + Seek>(src: &mut R) -> Result<Structure> {
     handler().parse(src)
 }
 
@@ -1217,7 +1218,8 @@ fn compose(kind: ItemKind, data: &[u8]) -> Result<Vec<u8>> {
 
 /// The JUMBF bytes (XT framing removed, extents concatenated), or `None`.
 /// Several distinct JUMBF boxes is an error.
-pub fn read_jumbf<R: Read + Seek>(s: &Structure, src: &mut R) -> Result<Option<Vec<u8>>> {
+#[cfg(test)]
+fn read_jumbf<R: Read + Seek>(s: &Structure, src: &mut R) -> Result<Option<Vec<u8>>> {
     match s.item(ItemKind::Jumbf)? {
         Some(e) => s.read_item(src, e).map(Some),
         None => Ok(None),
@@ -1226,7 +1228,7 @@ pub fn read_jumbf<R: Read + Seek>(s: &Structure, src: &mut R) -> Result<Option<V
 
 /// The XMP packet, or `None`. With extended XMP, the reassembled extended
 /// packet is returned (the standard packet only carries a pointer to it).
-pub fn read_xmp<R: Read + Seek>(s: &Structure, src: &mut R) -> Result<Option<Vec<u8>>> {
+fn read_xmp<R: Read + Seek>(s: &Structure, src: &mut R) -> Result<Option<Vec<u8>>> {
     let Some(e) = s.item(ItemKind::Xmp)? else {
         return Ok(None);
     };
@@ -2171,11 +2173,10 @@ mod tests {
     fn mpo_is_served_by_the_jpeg_handler() {
         let f = mpf_file(&second_image(), b"", 0, false);
         let reg = asset_io_core::HandlerRegistry::new().with_handler(JpegHandler);
-        let s = asset_io_core::Structure::parse(&reg, &mut Cursor::new(f.clone()), Some("mpo"))
-            .unwrap();
+        let s = Structure::parse(&reg, &mut Cursor::new(f.clone()), Some("mpo")).unwrap();
         assert_eq!(s.media_type(), "image/jpeg");
         assert_eq!(s.subassets().len(), 2);
-        let s = asset_io_core::Structure::parse(&reg, &mut Cursor::new(f), None).unwrap();
+        let s = Structure::parse(&reg, &mut Cursor::new(f), None).unwrap();
         assert_eq!(s.subassets().len(), 2);
     }
 

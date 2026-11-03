@@ -227,8 +227,7 @@ mod tests {
     fn custom_handler_parses_names_and_tiles() {
         let reg = HandlerRegistry::new().with_handler(Toy);
         let bytes = toy_bytes();
-        let s =
-            crate::Structure::parse(&reg, &mut Cursor::new(bytes.clone()), Some("TOY")).unwrap();
+        let s = Structure::parse(&reg, &mut Cursor::new(bytes.clone()), Some("TOY")).unwrap();
         assert_eq!(s.total_size(), bytes.len() as u64);
         assert_eq!(s.media_type(), "application/x-toy");
 
@@ -261,10 +260,10 @@ mod tests {
         assert!(reg.handler(" .Toy ").is_some());
         assert!(reg.handler("APPLICATION/X-TOY").is_some());
         assert_eq!(reg.container_for("application/x-toy"), Some("toy"));
-        let s = crate::Structure::parse(&reg, &mut Cursor::new(toy_bytes()), None).unwrap();
+        let s = Structure::parse(&reg, &mut Cursor::new(toy_bytes()), None).unwrap();
         assert_eq!(s.container_id(), "toy");
         assert!(matches!(
-            crate::Structure::parse(&reg, &mut Cursor::new(toy_bytes()), Some("xyz")),
+            Structure::parse(&reg, &mut Cursor::new(toy_bytes()), Some("xyz")),
             Err(Error::UnsupportedFormat)
         ));
     }
@@ -301,16 +300,16 @@ mod tests {
         // The override shadows the fallback for "toy"; the fallback still serves
         // the format string the override does not claim.
         assert!(matches!(
-            crate::Structure::parse(&over, &mut Cursor::new(toy_bytes()), Some("toy")),
+            Structure::parse(&over, &mut Cursor::new(toy_bytes()), Some("toy")),
             Err(Error::InvalidFormat(_))
         ));
-        assert!(crate::Structure::parse(
+        assert!(Structure::parse(
             &over,
             &mut Cursor::new(toy_bytes()),
             Some("application/x-toy")
         )
         .is_ok());
         // The fallback itself is untouched.
-        assert!(crate::Structure::parse(&base, &mut Cursor::new(toy_bytes()), Some("toy")).is_ok());
+        assert!(Structure::parse(&base, &mut Cursor::new(toy_bytes()), Some("toy")).is_ok());
     }
 }

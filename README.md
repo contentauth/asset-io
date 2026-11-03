@@ -60,17 +60,10 @@ A parsed file is a `Structure`: a gapless tiling of `Segment`s (header, payload,
 
 asset-io exposes what each format's own specifications define, including companion specifications (EXIF/TIFF, MPF, JPEG XT, the HEIF item model), and never interprets content that is portable across formats (C2PA manifests, XMP schemas); that belongs to higher-level helpers built on this API. Where such content is placed, including which item is the C2PA manifest store, is container knowledge and is here. See the crate documentation for the full glossary.
 
-## Upgrading from 0.1
-
-0.2 is a redesign, not a drop-in update. The 0.1 `Asset` type and its per-format `*_io` modules are gone. The registry resolves handlers, `Structure::parse` produces a `Structure`, and reading and writing operate on that structure. Hashing or other byte-level work goes through a `Sink`. The `parallel`, `c2pa`, `embed-fixtures` and `test-utils` features and the `rayon`, `c2pa`, `atree`, `fs2`, `byteorder` and `log` dependencies were removed. No handlers are enabled by default; enable individual container features or `all-formats`. Existing JPEG/PNG-default consumers must now select `features = ["jpeg", "png"]`. The 0.1 examples (`parallel_hash`, `progress_cancel`, `c2pa_embeddable`) do not exist in 0.2.
-
-The `c2pa` feature now selects raw sidecar handling only; it does not restore the
-0.1 signing or verification integration.
-
 ## Workspace and build composition
 
 - [`asset-io-core`](crates/asset-io-core): handler-free structures, registry, I/O,
-  write plans, execution, and shared conformance checks. It has no container
+  write plans, execution, got and shared conformance checks. It has no container
   dependencies, even with all its features enabled.
 - Container-family crates under [`crates/`](crates): JPEG, PNG, BMFF, RIFF, SVG,
   PDF, TIFF/DNG, and raw C2PA sidecars. BMFF keeps HEIF/HEIC/AVIF/MP4/M4A together; RIFF keeps WebP/WAV/AVI
@@ -163,32 +156,53 @@ The API separates resolution, format behavior, and I/O execution:
 | `HandlerRegistry` | Register handlers, resolve format strings, match supplied header bytes, and query format metadata; no stream I/O |
 | `ContainerHandler` | Implement container-specific parsing, planning, and format rules |
 | `Structure::parse`, `parse_async`, `parse_task` | Select a handler and run its parser with blocking I/O, inside a sans-I/O computation, or as a caller-driven task |
-| `Structure` | Describe a parsed asset and operate through its retained handler |
+| `Structure` | Describe a parsed asset and operate through its retained handler; I/O-free, so reads take the source as an argument |
+| `Asset` | A `Structure` together with the blocking stream it was parsed from, so reads, writes and patches need no source argument |
 | `asset_io::tokio` | Drive parsing, reads, and writes with Tokio streams |
 
-The parsing orchestration functions take an optional format: `Some("jpg")` or
+The parsing functions and `Asset::open` take an optional format: `Some("jpg")` or
 `Some("image/jpeg")` selects the named handler, while `None` detects the format.
 An unsupported explicit format is an error, never a request to try detection.
 Handlers without a detector (such as SVG) require an explicit format.
 
 ```rust
-use asset_io::{HandlerRegistry, ItemKind, NullSink, Updates};
+use asset_io::{Asset, HandlerRegistry, ItemKind, NullSink, Updates};
 
 let registry = HandlerRegistry::builtin();
-let mut src = std::fs::File::open("image.jpg")?;
-let structure = asset_io::Structure::parse(&registry, &mut src, None)?;
+let asset = Asset::open(&registry, std::fs::File::open("image.jpg")?, None)?;
 
-if let Some(jumbf) = structure.item(ItemKind::Jumbf)? {
-    let bytes = structure.read_item(&mut src, jumbf)?;
+if let Some(jumbf) = asset.item(ItemKind::Jumbf)? {
+    let bytes = asset.read_item(jumbf)?;
 }
-for item in structure.items() {
+for item in asset.items() {
     println!("{} ({}): {} bytes", item.kind(), item.encoding(), item.len());
 }
 
 let mut out = std::fs::File::create("out.jpg")?; // BMFF also needs Read
 let updates = Updates::new().set_xmp(xmp_bytes).remove_jumbf();
-structure.write(&mut src, &mut out, &updates, &mut NullSink)?;
+asset.write(&mut out, &updates, &mut NullSink)?;
 ```
+
+`Asset` dereferences to its `Structure`, so geometry such as `items()`,
+`segments()` and `c2pa_data_hash_exclusions(item)` is available directly. Its
+source may be owned (`File`) or borrowed (`&mut File`). Methods take `&self`, so
+an item found with `asset.c2pa_item()?` can be passed straight back to
+`read_content`, `c2pa_boxes_with` or `patch_exact`.
+
+To fill a placeholder in an output without parsing it again, pair the structure
+`write` returns with the output stream:
+
+```rust
+let written = asset.write(&mut out, &Updates::new().set_jumbf(placeholder), &mut NullSink)?;
+let output = Asset::from_parts(written, out); // `out` must be Read + Write + Seek
+let item = output.c2pa_item()?.expect("the placeholder");
+let exclusions = output.c2pa_data_hash_exclusions(item)?;
+// ... hash everything outside `exclusions` and sign ...
+output.patch_exact(item, &signed_store)?;
+```
+
+`Structure` remains the I/O-free core: async and caller-driven code composes
+its `*_async` and `*_task` methods directly.
 
 ### Tokio
 
@@ -318,24 +332,23 @@ Parsing stays shallow. Opt in to recursive scanning with the same registry,
 including any custom handlers:
 
 ```rust,no_run
-use asset_io::{Encoding, HandlerRegistry, ScanLimits};
+use asset_io::{Asset, Encoding, HandlerRegistry, ScanLimits};
 
 # fn main() -> asset_io::Result<()> {
 let registry = HandlerRegistry::builtin();
-let mut src = std::fs::File::open("photo.heic")?;
-let structure = asset_io::Structure::parse(&registry, &mut src, None)?;
-let embedded = structure.scan_embedded(&mut src, &registry, ScanLimits::default())?;
-for asset in &embedded {
-    match &asset.structure {
+let mut photo = Asset::open(&registry, std::fs::File::open("photo.heic")?, None)?;
+let embedded = photo.scan_embedded(&registry, ScanLimits::default())?;
+for found in &embedded {
+    match &found.structure {
         Ok(child) => {
-            let mut reader = asset.reader(&mut src)?;
+            let mut reader = found.reader(photo.source_mut())?;
             for item in child.items().filter(|i| i.encoding() == Encoding::IsoBmff) {
                 let bytes = child.read_item(&mut reader, item)?;
                 // The application interprets these bytes.
                 println!("{} bytes of box content", bytes.len());
             }
         }
-        Err(error) => eprintln!("Embedded item {:?}: {error}", asset.item.uri()),
+        Err(error) => eprintln!("Embedded item {:?}: {error}", found.item.uri()),
     }
 }
 # Ok(())

@@ -14,7 +14,7 @@
 #![no_main]
 
 use asset_io::testing::Conformance;
-use asset_io::HandlerRegistry;
+use asset_io::{HandlerRegistry, Structure};
 use libfuzzer_sys::fuzz_target;
 use std::io::Cursor;
 
@@ -34,9 +34,9 @@ fn jumbf() -> Vec<u8> {
 fuzz_target!(|data: &[u8]| {
     let registry = HandlerRegistry::builtin();
     let mut src = Cursor::new(data);
-    let structure = match asset_io::Structure::parse(&registry, &mut src, None) {
+    let structure = match Structure::parse(&registry, &mut src, None) {
         Ok(s) => s,
-        Err(_) => match asset_io::Structure::parse(&registry, &mut src, Some("svg")) {
+        Err(_) => match Structure::parse(&registry, &mut src, Some("svg")) {
             Ok(s) => s,
             Err(_) => return,
         },

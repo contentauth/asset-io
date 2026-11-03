@@ -166,7 +166,8 @@ fn item_info(kind: ItemKind) -> ItemInfo {
 }
 
 /// Parse a PDF into a validated structure.
-pub fn parse<R: std::io::Read + std::io::Seek>(src: &mut R) -> Result<Structure> {
+#[cfg(test)]
+fn parse<R: std::io::Read + std::io::Seek>(src: &mut R) -> Result<Structure> {
     handler().parse(src)
 }
 

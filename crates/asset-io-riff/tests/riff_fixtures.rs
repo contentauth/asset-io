@@ -13,7 +13,7 @@
 
 //! RIFF handler on the real files in tests/fixtures.
 
-use asset_io_core::{HandlerRegistry, ItemKind, NullSink, Updates};
+use asset_io_core::{Asset, HandlerRegistry, ItemKind, NullSink, Updates};
 use std::io::Cursor;
 
 const FILES: &[&str] = &[
@@ -27,20 +27,16 @@ const FILES: &[&str] = &[
     ),
 ];
 
+/// `bytes` as an asset, parsed by the RIFF handler alone.
+fn open(bytes: &[u8]) -> asset_io_core::Result<Asset<Cursor<&[u8]>>> {
+    let registry = HandlerRegistry::new().with_handler(asset_io_riff::RiffHandler);
+    Asset::open(&registry, Cursor::new(bytes), None)
+}
+
 fn write(bytes: &[u8], u: &Updates) -> asset_io_core::Result<Vec<u8>> {
-    let s = asset_io_core::Structure::parse(
-        &HandlerRegistry::new().with_handler(asset_io_riff::RiffHandler),
-        &mut Cursor::new(bytes),
-        None,
-    )?;
-    let mut out = Cursor::new(Vec::new());
-    let dest = s.write(&mut Cursor::new(bytes), &mut out, u, &mut NullSink)?;
-    let out = out.into_inner();
-    let again = asset_io_core::Structure::parse(
-        &HandlerRegistry::new().with_handler(asset_io_riff::RiffHandler),
-        &mut Cursor::new(&out),
-        None,
-    )?;
+    let mut out = Vec::new();
+    let dest = open(bytes)?.write(&mut out, u, &mut NullSink)?;
+    let again = open(&out)?;
     assert_eq!(dest.segments(), again.segments());
     assert_eq!(dest.total_size(), out.len() as u64);
     Ok(out)
@@ -54,12 +50,7 @@ fn real_files_round_trip_and_take_metadata() {
             continue;
         };
         ran += 1;
-        let s = asset_io_core::Structure::parse(
-            &HandlerRegistry::new().with_handler(asset_io_riff::RiffHandler),
-            &mut Cursor::new(&bytes),
-            None,
-        )
-        .unwrap_or_else(|e| panic!("{path}: {e}"));
+        let s = open(&bytes).unwrap_or_else(|e| panic!("{path}: {e}"));
         let covered: u64 = s.regions().map(|r| r.range.len()).sum();
         assert_eq!(covered, bytes.len() as u64, "{path}");
 
@@ -73,33 +64,19 @@ fn real_files_round_trip_and_take_metadata() {
             .set_jumbf(vec![0xAB; 1001])
             .set_xmp(b"<x:xmpmeta/>".to_vec());
         let out = write(&bytes, &u).unwrap_or_else(|e| panic!("{path}: {e}"));
-        let t = asset_io_core::Structure::parse(
-            &HandlerRegistry::new().with_handler(asset_io_riff::RiffHandler),
-            &mut Cursor::new(&out),
-            None,
-        )
-        .unwrap();
+        let t = open(&out).unwrap();
         for (kind, want) in [
             (ItemKind::Jumbf, vec![0xAB; 1001]),
             (ItemKind::Xmp, b"<x:xmpmeta/>".to_vec()),
         ] {
             let e = t.require_item(kind).unwrap();
-            assert_eq!(
-                t.read_item(&mut Cursor::new(&out), e).unwrap(),
-                want,
-                "{path}"
-            );
+            assert_eq!(t.read_item(e).unwrap(), want, "{path}");
         }
 
         // Removing what was added gives back the media, whatever else changed
         // (a WebP gains a VP8X chunk when it takes XMP).
         let back = write(&out, &Updates::new().remove_jumbf().remove_xmp()).unwrap();
-        let b = asset_io_core::Structure::parse(
-            &HandlerRegistry::new().with_handler(asset_io_riff::RiffHandler),
-            &mut Cursor::new(&back),
-            None,
-        )
-        .unwrap();
+        let b = open(&back).unwrap();
         assert!(b.item(ItemKind::Jumbf).unwrap().is_none(), "{path}");
         assert!(b.item(ItemKind::Xmp).unwrap().is_none(), "{path}");
     }

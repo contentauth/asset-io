@@ -1,10 +1,11 @@
 // Copyright 2026 Adobe. All rights reserved.
 // Licensed under the Apache License, Version 2.0 or the MIT license, at your option.
 
+use crate::{layout, ByteOrder, C2PA_TAG, XMP_TAG};
 use asset_io_core::{
-    Action, Error, HandlerRegistry, ItemKind, NullSink, Progress, Structure, Task, Updates,
+    Action, ByteRange, Error, HandlerRegistry, ItemKind, NullSink, Progress, Structure, Task,
+    Updates,
 };
-use asset_io_tiff::{self as tiff, layout, ByteOrder, C2PA_TAG, XMP_TAG};
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
 #[derive(Clone, Copy)]
@@ -152,10 +153,10 @@ fn fixture(f: Format, pages: usize, extra: &[Tag]) -> Vec<u8> {
 }
 
 fn parse(data: &[u8]) -> Structure {
-    asset_io_core::Structure::parse(&registry(), &mut Cursor::new(data), None).unwrap()
+    Structure::parse(&registry(), &mut Cursor::new(data), None).unwrap()
 }
 fn registry() -> HandlerRegistry {
-    HandlerRegistry::new().with_handler(tiff::TiffHandler)
+    HandlerRegistry::new().with_handler(crate::TiffHandler)
 }
 fn drive<T>(mut task: Task<'_, T>, bytes: &[u8]) -> T {
     loop {
@@ -222,7 +223,7 @@ fn both_byte_orders_and_widths_read_write_and_conform() {
             let bytes = fixture(f, pages, &[]);
             let source = parse(&bytes);
             let parsed = drive(
-                asset_io_core::Structure::parse_task(&registry(), bytes.len() as u64, None),
+                Structure::parse_task(&registry(), bytes.len() as u64, None),
                 &bytes,
             );
             assert_eq!(shape(&source), shape(&parsed));
@@ -279,7 +280,7 @@ fn both_byte_orders_and_widths_read_write_and_conform() {
             assert!(metadata(&state, &removed, ItemKind::Jumbf).is_none());
             assert!(metadata(&state, &removed, ItemKind::Xmp).is_none());
             assert_eq!(layout(&state).unwrap().pages().count(), pages);
-            asset_io_core::testing::Conformance::new(tiff::handler())
+            asset_io_core::testing::Conformance::new(crate::handler())
                 .jumbf(Some(vec![0; 128]))
                 .check("synthetic TIFF", &bytes);
         }
@@ -478,7 +479,9 @@ fn malformed_headers_cycles_counts_and_aliases_are_errors() {
     for f in FORMATS {
         let bytes = fixture(f, 1, &[]);
         for cut in 0..bytes.len() {
-            assert!(tiff::parse(&mut Cursor::new(&bytes[..cut])).is_err());
+            assert!(crate::handler()
+                .parse(&mut Cursor::new(&bytes[..cut]))
+                .is_err());
         }
         let mut cyclic = bytes.clone();
         let dir = layout(&parse(&bytes))
@@ -494,7 +497,7 @@ fn malformed_headers_cycles_counts_and_aliases_are_errors() {
             dir.offset(),
             f.width(),
         );
-        assert!(tiff::parse(&mut Cursor::new(cyclic)).is_err());
+        assert!(crate::handler().parse(&mut Cursor::new(cyclic)).is_err());
         let mut subcycle = fixture(
             f,
             1,
@@ -509,7 +512,7 @@ fn malformed_headers_cycles_counts_and_aliases_are_errors() {
             dir.range().offset(),
             f.width(),
         );
-        assert!(tiff::parse(&mut Cursor::new(subcycle)).is_err());
+        assert!(crate::handler().parse(&mut Cursor::new(subcycle)).is_err());
         let mut oversized = bytes.clone();
         set_number(
             &mut oversized,
@@ -518,7 +521,7 @@ fn malformed_headers_cycles_counts_and_aliases_are_errors() {
             65535,
             f.count_width(),
         );
-        assert!(tiff::parse(&mut Cursor::new(oversized)).is_err());
+        assert!(crate::handler().parse(&mut Cursor::new(oversized)).is_err());
         let mut alias = fixture(f, 1, &[(C2PA_TAG, 7, vec![0; 20])]);
         let state = parse(&alias);
         let dir = layout(&state).unwrap().pages().next().unwrap();
@@ -530,9 +533,11 @@ fn malformed_headers_cycles_counts_and_aliases_are_errors() {
             dir.range().offset(),
             f.width(),
         );
-        assert!(tiff::parse(&mut Cursor::new(alias)).is_err());
+        assert!(crate::handler().parse(&mut Cursor::new(alias)).is_err());
         let wrong_type = fixture(f, 1, &[(C2PA_TAG, 1, vec![0; 20])]);
-        assert!(tiff::parse(&mut Cursor::new(wrong_type)).is_err());
+        assert!(crate::handler()
+            .parse(&mut Cursor::new(wrong_type))
+            .is_err());
     }
 }
 
@@ -543,7 +548,7 @@ fn bigtiff_counts_are_bounded_before_allocating() {
         let mut bytes = fixture(f, 1, &[]);
         set_number(&mut bytes, f, 16, u64::MAX, 8);
         assert!(matches!(
-            tiff::parse(&mut Cursor::new(bytes)),
+            crate::handler().parse(&mut Cursor::new(bytes)),
             Err(Error::LimitExceeded { .. })
         ));
     }
@@ -576,7 +581,7 @@ fn c2pa_rs_multipage_fixture_preserves_media_and_manifest_lifecycle() {
     let (removed, state) = rewrite(&replaced, &Updates::new().remove_jumbf());
     assert_eq!(layout(&state).unwrap().pages().count(), count);
     assert!(metadata(&state, &removed, ItemKind::Jumbf).is_none());
-    asset_io_core::testing::Conformance::new(tiff::handler())
+    asset_io_core::testing::Conformance::new(crate::handler())
         .jumbf(Some(vec![0; 128]))
         .mutations(false)
         .check("c2pa-rs MultiPage.tif", bytes);
@@ -650,7 +655,7 @@ fn classic_tiff_refuses_64bit_ifd_offsets_while_bigtiff_plans_them() {
             position: 0,
             length: (1u64 << 32) + 32,
         };
-        let structure = tiff::parse(&mut source).unwrap();
+        let structure = crate::handler().parse(&mut source).unwrap();
         let updates = Updates::new().set_jumbf(vec![0; 100]);
         let planned = structure.write_plan(&mut source, &updates);
         if f.big {
@@ -669,5 +674,63 @@ fn classic_tiff_refuses_64bit_ifd_offsets_while_bigtiff_plans_them() {
         } else {
             assert!(planned.is_err());
         }
+    }
+}
+
+/// C2PA excludes the manifest store's value and the count field of its IFD entry,
+/// as c2pa-rs does. An inline value follows the count, so the two merge.
+#[test]
+fn c2pa_data_hash_exclusions_are_the_store_and_its_count_field() {
+    for f in FORMATS {
+        let bytes = fixture(f, 1, &[]);
+        for length in [1, f.width(), f.width() + 1, 100] {
+            let updates = Updates::new().set_jumbf(vec![0x5a; length]);
+            let planned = parse(&bytes)
+                .plan(&mut Cursor::new(&bytes), &updates)
+                .unwrap();
+            let (output, written) = rewrite(&bytes, &updates);
+            let reparsed = parse(&output);
+            let entry = layout(&reparsed).unwrap().manifest_entry().unwrap();
+            let (count, value) = (entry.count_range(), entry.value_range().unwrap());
+            assert_eq!(count.len(), if f.big { 8 } else { 4 });
+            assert_eq!(count.offset(), entry.range().offset() + 4);
+            assert_eq!(
+                &output[count.offset() as usize..count.end() as usize],
+                f.number(length as u64, count.len() as usize)
+            );
+            let inline = length <= f.width();
+            assert_eq!(value.offset() == count.end(), inline, "length {length}");
+            let expected = if inline {
+                vec![ByteRange::new(count.offset(), value.end() - count.offset()).unwrap()]
+            } else {
+                vec![count, value]
+            };
+            for s in [&planned, &written, &reparsed] {
+                let item = s.require_item(ItemKind::Jumbf).unwrap();
+                assert_eq!(
+                    s.c2pa_data_hash_exclusions(item).unwrap(),
+                    expected,
+                    "big {}, little {}, length {length}",
+                    f.big,
+                    f.little
+                );
+            }
+            // Nothing else in the directory is excluded.
+            let excluded: u64 = expected.iter().map(|r| r.len()).sum();
+            assert_eq!(excluded, count.len() + length as u64);
+        }
+
+        // An older file with its manifest in the first of several IFDs excludes
+        // that entry's count field.
+        let legacy = fixture(f, 2, &[(C2PA_TAG, 7, vec![0x31; 30])]);
+        let structure = parse(&legacy);
+        let map = layout(&structure).unwrap();
+        let first = map.pages().next().unwrap().entry(C2PA_TAG).unwrap();
+        assert!(map.pages().last().unwrap().entry(C2PA_TAG).is_none());
+        let item = structure.require_item(ItemKind::Jumbf).unwrap();
+        assert_eq!(
+            structure.c2pa_data_hash_exclusions(item).unwrap(),
+            [first.count_range(), first.value_range().unwrap()]
+        );
     }
 }

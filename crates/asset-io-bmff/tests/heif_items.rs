@@ -14,9 +14,9 @@
 //! HEIF items (EXIF, thumbnails) on the real files in tests/fixtures.
 
 use asset_io_core::{
-    HandlerRegistry, ItemInfo, ItemKind, NullSink, RelationKind, Structure, Updates,
+    Asset, HandlerRegistry, ItemInfo, ItemKind, NullSink, RelationKind, Structure, Updates,
 };
-use std::io::Cursor;
+use std::io::{Cursor, Read, Seek};
 
 const FILES: &[&str] = &[
     concat!(
@@ -33,16 +33,18 @@ const FILES: &[&str] = &[
     ),
 ];
 
+/// `bytes` as an asset, parsed by the BMFF handler alone.
+fn open(bytes: &[u8]) -> asset_io_core::Result<Asset<Cursor<&[u8]>>> {
+    let registry = HandlerRegistry::new().with_handler(asset_io_bmff::BmffHandler);
+    Asset::open(&registry, Cursor::new(bytes), None)
+}
+
 /// Every HEIF item (those with an item id): what it is and its bytes.
-fn items(s: &Structure, bytes: &[u8]) -> Vec<(ItemInfo, Vec<u8>)> {
-    s.items()
+fn items<S: Read + Seek>(asset: &Asset<S>) -> Vec<(ItemInfo, Vec<u8>)> {
+    asset
+        .items()
         .filter(|e| e.native_id().is_some())
-        .map(|e| {
-            (
-                e.info().clone(),
-                s.read_item(&mut Cursor::new(bytes), e).unwrap(),
-            )
-        })
+        .map(|e| (e.info().clone(), asset.read_item(e).unwrap()))
         .collect()
 }
 
@@ -63,13 +65,8 @@ fn items_survive_a_write_and_stay_readable() {
             continue;
         };
         ran += 1;
-        let s = asset_io_core::Structure::parse(
-            &HandlerRegistry::new().with_handler(asset_io_bmff::BmffHandler),
-            &mut Cursor::new(&bytes),
-            None,
-        )
-        .unwrap_or_else(|e| panic!("{path}: {e}"));
-        let before = items(&s, &bytes);
+        let s = open(&bytes).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let before = items(&s);
         eprintln!(
             "{path}: {} exif, {} thumbnail",
             s.items_of(ItemKind::Exif).count(),
@@ -78,30 +75,24 @@ fn items_survive_a_write_and_stay_readable() {
 
         // Writing a manifest moves the data; the items must move with it, in both
         // the structure the write returns and a fresh parse of the output.
-        let mut out = Cursor::new(Vec::new());
+        let mut out = Vec::new();
         let dest = s
             .write(
-                &mut Cursor::new(&bytes),
                 &mut out,
                 &Updates::new().set_jumbf(vec![0u8; 100]),
                 &mut NullSink,
             )
             .unwrap();
-        let out = out.into_inner();
-        let again = asset_io_core::Structure::parse(
-            &HandlerRegistry::new().with_handler(asset_io_bmff::BmffHandler),
-            &mut Cursor::new(&out),
-            None,
-        )
-        .unwrap();
-        assert_eq!(items(&dest, &out), before, "{path}: returned structure");
-        assert_eq!(items(&again, &out), before, "{path}: reparsed output");
+        let dest = Asset::from_parts(dest, Cursor::new(&out[..]));
+        let again = open(&out).unwrap();
+        assert_eq!(items(&dest), before, "{path}: returned structure");
+        assert_eq!(items(&again), before, "{path}: reparsed output");
 
         #[cfg(feature = "exif")]
         {
             // Real EXIF must parse, or the item was not the TIFF data.
             if s.items_of(ItemKind::Exif).next().is_some() {
-                assert!(s.exif_info(&mut Cursor::new(&bytes)).is_ok(), "{path}");
+                assert!(s.exif_info().is_ok(), "{path}");
             }
         }
     }

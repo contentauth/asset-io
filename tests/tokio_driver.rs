@@ -18,8 +18,8 @@
 #![cfg(all(feature = "jpeg", feature = "png", feature = "bmff", feature = "riff"))]
 
 use asset_io::{
-    Action, Chunk, HandlerRegistry, NullSink, Progress, ReadRequest, Result, Structure, Task,
-    Updates,
+    Action, Asset, Chunk, HandlerRegistry, NullSink, Progress, ReadRequest, Result, Structure,
+    Task, Updates,
 };
 use std::io::{Cursor, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -62,11 +62,7 @@ async fn write_file(
     let registry = HandlerRegistry::builtin();
     let mut src = File::open(&src_path).await?;
     let total = src.metadata().await?.len();
-    let structure = drive(
-        asset_io::Structure::parse_task(&registry, total, None),
-        &mut src,
-    )
-    .await?;
+    let structure = drive(Structure::parse_task(&registry, total, None), &mut src).await?;
     let plan = drive(structure.write_plan_task(&updates), &mut src).await?;
 
     let mut out = File::create(&dest).await?;
@@ -124,14 +120,14 @@ async fn spawned_tasks_write_what_the_blocking_api_writes() {
             let dest: PathBuf = dir.path().join(format!("{j}-{name}"));
             // What the blocking API writes, for comparison.
             let bytes = std::fs::read(&path).unwrap();
-            let s = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), None).unwrap();
-            let mut want = Cursor::new(Vec::new());
-            let want_layout = s
-                .write(&mut Cursor::new(&bytes), &mut want, &u, &mut NullSink)
+            let mut want = Vec::new();
+            let want_layout = Asset::open(&reg, Cursor::new(&bytes), None)
+                .unwrap()
+                .write(&mut want, &u, &mut NullSink)
                 .unwrap_or_else(|e| panic!("{name} updates {j}: {e}"));
             // The same, from a spawned task with async I/O, many at once.
             let handle = tokio::spawn(write_file(path.clone(), dest.clone(), u));
-            handles.push((handle, dest, want.into_inner(), want_layout.total_size()));
+            handles.push((handle, dest, want, want_layout.total_size()));
             n += 1;
         }
     }

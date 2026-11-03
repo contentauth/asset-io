@@ -18,7 +18,7 @@
 //! work; an edit may be refused, but one that is accepted must write a file that
 //! parses to the structure `write` reported.
 
-use asset_io::{HandlerRegistry, NullSink, Updates};
+use asset_io::{HandlerRegistry, NullSink, Structure, Updates};
 use libfuzzer_sys::fuzz_target;
 use std::io::Cursor;
 
@@ -55,8 +55,7 @@ fuzz_target!(|data: &[u8]| {
     file.extend_from_slice(tail);
 
     let registry = HandlerRegistry::builtin();
-    let Ok(structure) = asset_io::Structure::parse(&registry, &mut Cursor::new(&file), Some("jpg"))
-    else {
+    let Ok(structure) = Structure::parse(&registry, &mut Cursor::new(&file), Some("jpg")) else {
         return;
     };
 
@@ -76,7 +75,7 @@ fuzz_target!(|data: &[u8]| {
         };
         let out = out.into_inner();
         assert_eq!(dest.total_size(), out.len() as u64);
-        let again = asset_io::Structure::parse(&registry, &mut Cursor::new(&out), Some("jpg"))
+        let again = Structure::parse(&registry, &mut Cursor::new(&out), Some("jpg"))
             .expect("the output of an accepted edit parses");
         assert_eq!(again.subassets(), dest.subassets());
     }

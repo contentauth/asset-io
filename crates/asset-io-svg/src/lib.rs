@@ -54,7 +54,6 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::name::ResolveResult;
 use quick_xml::{NsReader, Reader};
 use std::borrow::Cow;
-use std::io::{Read, Seek};
 use std::sync::Arc;
 
 const SVG_NS: &[u8] = b"http://www.w3.org/2000/svg";
@@ -140,7 +139,8 @@ impl ContainerHandler for SvgHandler {
 }
 
 /// Parse an SVG into a validated structure.
-pub fn parse<R: Read + Seek>(src: &mut R) -> Result<Structure> {
+#[cfg(test)]
+fn parse<R: std::io::Read + std::io::Seek>(src: &mut R) -> Result<Structure> {
     handler().parse(src)
 }
 

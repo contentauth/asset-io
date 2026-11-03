@@ -69,7 +69,7 @@ impl MappedFile {
     /// Parse the mapped file using an explicit extension or MIME type, or detect
     /// its container from the leading bytes with `None`.
     pub fn parse(&self, registry: &HandlerRegistry, format: Option<&str>) -> Result<Structure> {
-        crate::Structure::parse(registry, &mut Cursor::new(self.as_bytes()), format)
+        Structure::parse(registry, &mut Cursor::new(self.as_bytes()), format)
     }
 }
 

@@ -14,7 +14,7 @@
 //! Parsing a PDF reads what the catalog points at, not the payloads, so its cost does
 //! not grow with their size: `cargo bench -p asset-io-pdf --bench pdf`.
 
-use asset_io_core::{HandlerRegistry, NullSink, Updates};
+use asset_io_core::{HandlerRegistry, NullSink, Structure, Updates};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::io::Cursor;
 
@@ -46,7 +46,7 @@ fn parse(c: &mut Criterion) {
             &data,
             |b, data| {
                 b.iter(|| {
-                    let structure = asset_io_core::Structure::parse(
+                    let structure = Structure::parse(
                         &registry,
                         &mut Cursor::new(black_box(data.as_slice())),
                         Some("pdf"),
@@ -66,9 +66,7 @@ fn plan(c: &mut Criterion) {
     let mut group = c.benchmark_group("pdf_plan");
     for payload_size in [1024, 1024 * 1024, 8 * 1024 * 1024] {
         let data = document(payload_size);
-        let structure =
-            asset_io_core::Structure::parse(&registry, &mut Cursor::new(&data), Some("pdf"))
-                .unwrap();
+        let structure = Structure::parse(&registry, &mut Cursor::new(&data), Some("pdf")).unwrap();
         let updates = Updates::new().set_xmp(b"<x:xmpmeta/>".to_vec());
         group.bench_with_input(
             BenchmarkId::from_parameter(payload_size),
@@ -92,9 +90,7 @@ fn write(c: &mut Criterion) {
     let mut group = c.benchmark_group("pdf_write");
     for payload_size in [1024 * 1024, 8 * 1024 * 1024] {
         let data = document(payload_size);
-        let structure =
-            asset_io_core::Structure::parse(&registry, &mut Cursor::new(&data), Some("pdf"))
-                .unwrap();
+        let structure = Structure::parse(&registry, &mut Cursor::new(&data), Some("pdf")).unwrap();
         let updates = Updates::new().set_xmp(b"<x:xmpmeta/>".to_vec());
         group.throughput(criterion::Throughput::Bytes(data.len() as u64));
         group.bench_with_input(

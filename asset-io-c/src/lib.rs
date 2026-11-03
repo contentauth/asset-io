@@ -214,7 +214,7 @@ fn parse(reg: &HandlerRegistry, format: *const c_char, mut source: Source) -> *m
         Some(cstr_or_return!(format, ptr::null_mut()))
     };
     let structure = ok_or_return!(
-        asset_io::Structure::parse(reg, &mut source, format.as_deref()).map_err(CoreError),
+        Structure::parse(reg, &mut source, format.as_deref()).map_err(CoreError),
         ptr::null_mut()
     );
     box_tracked!(AssetIoAsset {

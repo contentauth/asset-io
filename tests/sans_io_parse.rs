@@ -65,10 +65,10 @@ fn a_task_parses_to_the_structure_the_blocking_parse_gives() {
     let mut checked = 0;
     for name in ["GreenCat.png", "sample1.png"] {
         let Some(bytes) = fixture(name) else { continue };
-        let want = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), Some("png")).unwrap();
+        let want = Structure::parse(&reg, &mut Cursor::new(&bytes), Some("png")).unwrap();
 
         let (got, requests) = drive(
-            asset_io::Structure::parse_task(&reg, bytes.len() as u64, Some("png")),
+            Structure::parse_task(&reg, bytes.len() as u64, Some("png")),
             &bytes,
         );
         assert_eq!(shape(&got.unwrap()), shape(&want), "{name}");
@@ -76,7 +76,7 @@ fn a_task_parses_to_the_structure_the_blocking_parse_gives() {
         assert!(requests < 100, "{name}: {requests} requests");
 
         let (got, _) = drive(
-            asset_io::Structure::parse_task(&reg, bytes.len() as u64, None),
+            Structure::parse_task(&reg, bytes.len() as u64, None),
             &bytes,
         );
         assert_eq!(shape(&got.unwrap()), shape(&want), "{name} (detected)");
@@ -105,9 +105,9 @@ fn a_damaged_file_fails_the_same_way_through_a_task() {
     cuts.push(bytes.len() - 12);
     for cut in cuts {
         let cut = &bytes[..cut];
-        let want = asset_io::Structure::parse(&reg, &mut Cursor::new(cut), Some("png"));
+        let want = Structure::parse(&reg, &mut Cursor::new(cut), Some("png"));
         let (got, _) = drive(
-            asset_io::Structure::parse_task(&reg, cut.len() as u64, Some("png")),
+            Structure::parse_task(&reg, cut.len() as u64, Some("png")),
             cut,
         );
         match (&want, &got) {
@@ -121,19 +121,13 @@ fn a_damaged_file_fails_the_same_way_through_a_task() {
 #[test]
 fn a_format_nobody_claims_is_unsupported() {
     let reg = HandlerRegistry::builtin();
-    let (got, requests) = drive(
-        asset_io::Structure::parse_task(&reg, 10, Some("nope")),
-        b"not a file",
-    );
+    let (got, requests) = drive(Structure::parse_task(&reg, 10, Some("nope")), b"not a file");
     assert!(matches!(got, Err(Error::UnsupportedFormat)));
     assert_eq!(
         requests, 0,
         "an unknown explicit format does not trigger detection"
     );
-    let (got, _) = drive(
-        asset_io::Structure::parse_task(&reg, 12, None),
-        b"not an image",
-    );
+    let (got, _) = drive(Structure::parse_task(&reg, 12, None), b"not an image");
     assert!(matches!(got, Err(Error::UnsupportedFormat)));
 }
 
@@ -143,15 +137,15 @@ fn riff_parses_through_a_task_like_the_blocking_parse() {
     let mut checked = 0;
     for (name, ext) in [("sample1.webp", "webp"), ("sample1.wav", "wav")] {
         let Some(bytes) = fixture(name) else { continue };
-        let want = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), Some(ext)).unwrap();
+        let want = Structure::parse(&reg, &mut Cursor::new(&bytes), Some(ext)).unwrap();
         let (got, requests) = drive(
-            asset_io::Structure::parse_task(&reg, bytes.len() as u64, Some(ext)),
+            Structure::parse_task(&reg, bytes.len() as u64, Some(ext)),
             &bytes,
         );
         assert_eq!(shape(&got.unwrap()), shape(&want), "{name}");
         assert!(requests < 100, "{name}: {requests} requests");
         let (got, _) = drive(
-            asset_io::Structure::parse_task(&reg, bytes.len() as u64, None),
+            Structure::parse_task(&reg, bytes.len() as u64, None),
             &bytes,
         );
         assert_eq!(shape(&got.unwrap()), shape(&want), "{name} (detected)");
@@ -159,9 +153,9 @@ fn riff_parses_through_a_task_like_the_blocking_parse() {
         // Every way of cutting the file short fails or parses the same way.
         for cut in (0..bytes.len().min(200)).chain(bytes.len() - 20..bytes.len()) {
             let part = &bytes[..cut];
-            let a = asset_io::Structure::parse(&reg, &mut Cursor::new(part), Some(ext));
+            let a = Structure::parse(&reg, &mut Cursor::new(part), Some(ext));
             let (b, _) = drive(
-                asset_io::Structure::parse_task(&reg, part.len() as u64, Some(ext)),
+                Structure::parse_task(&reg, part.len() as u64, Some(ext)),
                 part,
             );
             match (&a, &b) {
@@ -236,7 +230,7 @@ fn a_write_plan_task_reads_what_it_needs_and_gives_the_same_plan() {
     ];
     for (i, f) in files.iter().enumerate() {
         let ext = if i < 2 { "webp" } else { "wav" };
-        let s = asset_io::Structure::parse(&reg, &mut Cursor::new(f), Some(ext)).unwrap();
+        let s = Structure::parse(&reg, &mut Cursor::new(f), Some(ext)).unwrap();
         for (j, u) in updates.iter().enumerate() {
             let want = s.write_plan(&mut Cursor::new(f), u).unwrap();
             let (got, requests) = drive(s.write_plan_task(u), f);
@@ -249,7 +243,7 @@ fn a_write_plan_task_reads_what_it_needs_and_gives_the_same_plan() {
     // A plan that cannot be built (no image chunk to take the WebP size from) fails
     // the same way through a task.
     let none = riff(b"WEBP", &[chunk(b"ICCP", b"x")]);
-    let s = asset_io::Structure::parse(&reg, &mut Cursor::new(&none), Some("webp")).unwrap();
+    let s = Structure::parse(&reg, &mut Cursor::new(&none), Some("webp")).unwrap();
     let u = Updates::new().set_xmp(b"<x/>".to_vec());
     assert!(s.write_plan(&mut Cursor::new(&none), &u).is_err());
     assert!(drive(s.write_plan_task(&u), &none).0.is_err());
@@ -261,9 +255,9 @@ fn jpeg_parses_through_a_task_in_large_windows_for_the_scan_data() {
     let mut checked = 0;
     for name in ["P1000708.jpg", "FireflyTrain.jpg", "Designer.jpeg"] {
         let Some(bytes) = fixture(name) else { continue };
-        let want = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), Some("jpg")).unwrap();
+        let want = Structure::parse(&reg, &mut Cursor::new(&bytes), Some("jpg")).unwrap();
         let (got, requests) = drive(
-            asset_io::Structure::parse_task(&reg, bytes.len() as u64, Some("jpg")),
+            Structure::parse_task(&reg, bytes.len() as u64, Some("jpg")),
             &bytes,
         );
         let got = got.unwrap();
@@ -276,7 +270,7 @@ fn jpeg_parses_through_a_task_in_large_windows_for_the_scan_data() {
             bytes.len()
         );
         let (got, _) = drive(
-            asset_io::Structure::parse_task(&reg, bytes.len() as u64, None),
+            Structure::parse_task(&reg, bytes.len() as u64, None),
             &bytes,
         );
         assert_eq!(shape(&got.unwrap()), shape(&want), "{name} (detected)");
@@ -284,9 +278,9 @@ fn jpeg_parses_through_a_task_in_large_windows_for_the_scan_data() {
         // Damaged files fail, or parse, the same way.
         for cut in (0..bytes.len().min(300)).chain(bytes.len() - 30..bytes.len()) {
             let part = &bytes[..cut];
-            let a = asset_io::Structure::parse(&reg, &mut Cursor::new(part), Some("jpg"));
+            let a = Structure::parse(&reg, &mut Cursor::new(part), Some("jpg"));
             let (b, _) = drive(
-                asset_io::Structure::parse_task(&reg, part.len() as u64, Some("jpg")),
+                Structure::parse_task(&reg, part.len() as u64, Some("jpg")),
                 part,
             );
             match (&a, &b) {
@@ -318,7 +312,7 @@ fn a_jpeg_write_plan_task_gives_the_same_plan() {
     let mut checked = 0;
     for name in ["FireflyTrain.jpg", "P1000708.jpg"] {
         let Some(bytes) = fixture(name) else { continue };
-        let s = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), Some("jpg")).unwrap();
+        let s = Structure::parse(&reg, &mut Cursor::new(&bytes), Some("jpg")).unwrap();
         for (j, u) in updates.iter().enumerate() {
             let want = s.write_plan(&mut Cursor::new(&bytes), u).unwrap();
             let (got, requests) = drive(s.write_plan_task(u), &bytes);
@@ -345,24 +339,24 @@ fn bmff_parses_through_a_task_like_the_blocking_parse() {
         ("sample1.m4a", "m4a"),
     ] {
         let Some(bytes) = fixture(name) else { continue };
-        let want = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), Some(ext)).unwrap();
+        let want = Structure::parse(&reg, &mut Cursor::new(&bytes), Some(ext)).unwrap();
         let (got, requests) = drive(
-            asset_io::Structure::parse_task(&reg, bytes.len() as u64, Some(ext)),
+            Structure::parse_task(&reg, bytes.len() as u64, Some(ext)),
             &bytes,
         );
         assert_eq!(shape(&got.unwrap()), shape(&want), "{name}");
         assert!(requests < 100, "{name}: {requests} requests");
         let (got, _) = drive(
-            asset_io::Structure::parse_task(&reg, bytes.len() as u64, None),
+            Structure::parse_task(&reg, bytes.len() as u64, None),
             &bytes,
         );
         assert_eq!(shape(&got.unwrap()), shape(&want), "{name} (detected)");
 
         for cut in (0..bytes.len().min(300)).chain(bytes.len() - 30..bytes.len()) {
             let part = &bytes[..cut];
-            let a = asset_io::Structure::parse(&reg, &mut Cursor::new(part), Some(ext));
+            let a = Structure::parse(&reg, &mut Cursor::new(part), Some(ext));
             let (b, _) = drive(
-                asset_io::Structure::parse_task(&reg, part.len() as u64, Some(ext)),
+                Structure::parse_task(&reg, part.len() as u64, Some(ext)),
                 part,
             );
             match (&a, &b) {
@@ -428,7 +422,7 @@ fn a_fragmented_file_plans_through_a_task_and_every_fragment_is_relocated() {
     use asset_io::Step;
     let reg = HandlerRegistry::builtin();
     let f = fragmented(300);
-    let s = asset_io::Structure::parse(&reg, &mut Cursor::new(&f), Some("mp4")).unwrap();
+    let s = Structure::parse(&reg, &mut Cursor::new(&f), Some("mp4")).unwrap();
     let u = Updates::new().set_jumbf({
         let mut j = 100u32.to_be_bytes().to_vec();
         j.extend(b"jumb");
@@ -451,7 +445,7 @@ fn a_fragmented_file_plans_through_a_task_and_every_fragment_is_relocated() {
 
     // The offsets in the output point at the moof boxes that moved.
     let out = execute(&got, &f);
-    let moved = asset_io::Structure::parse(&reg, &mut Cursor::new(&out), Some("mp4")).unwrap();
+    let moved = Structure::parse(&reg, &mut Cursor::new(&out), Some("mp4")).unwrap();
     assert_eq!(moved.total_size(), out.len() as u64);
     let first_moof = moved
         .segments()
@@ -473,7 +467,7 @@ fn walking_boxes_works_with_a_callback_that_is_not_send() {
     use std::rc::Rc;
     let reg = HandlerRegistry::builtin();
     let f = fragmented(3);
-    let s = asset_io::Structure::parse(&reg, &mut Cursor::new(&f), Some("mp4")).unwrap();
+    let s = Structure::parse(&reg, &mut Cursor::new(&f), Some("mp4")).unwrap();
     // An `Rc` cannot move between threads; the blocking walk does not need it to.
     let seen = Rc::new(std::cell::RefCell::new(Vec::new()));
     let sink = seen.clone();
@@ -503,7 +497,7 @@ fn every_built_in_handler_parses_and_plans_through_a_task() {
     ] {
         let Some(bytes) = fixture(name) else { continue };
         let (s, _) = drive(
-            asset_io::Structure::parse_task(&reg, bytes.len() as u64, Some(ext)),
+            Structure::parse_task(&reg, bytes.len() as u64, Some(ext)),
             &bytes,
         );
         let s = s.unwrap();
