@@ -5,8 +5,9 @@ use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
 use crate::{
     containers::tiff::{layout, ByteOrder, C2PA_TAG, XMP_TAG},
-    Action, ByteRange, Error, HandlerRegistry, ItemKind, NullSink, Progress, Structure, Task,
-    Updates,
+    execute::Action,
+    task::{Progress, Task},
+    ByteRange, Error, HandlerRegistry, ItemKind, NullSink, Structure, Updates,
 };
 
 #[derive(Clone, Copy)]

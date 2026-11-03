@@ -36,8 +36,10 @@ use std::io::SeekFrom;
 use ::tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
-    plan::WritePlan, Action, HandlerRegistry, Item, Progress, Result, Sink, Structure, Task,
-    Updates,
+    execute::Action,
+    plan::WritePlan,
+    task::{Progress, Task},
+    HandlerRegistry, Item, Result, Sink, Structure, Updates,
 };
 
 /// Run a task using asynchronous reads from `src`.

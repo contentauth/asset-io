@@ -33,7 +33,7 @@ use crate::{
 /// Code that reads is written once, as straight-line `async` code over an [`Io`]:
 ///
 /// ```
-/// # use asset_io::{Io, Progress, Result, Task};
+/// # use asset_io::{Result, io::{Io}, task::{Progress, Task}};
 /// async fn first_byte(io: &mut Io) -> Result<u8> {
 ///     let mut b = [0u8; 1];
 ///     io.read_at(0, &mut b).await?;

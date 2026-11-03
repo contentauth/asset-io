@@ -9,7 +9,10 @@ use std::{
     sync::Arc,
 };
 
-use asset_io::{HandlerRegistry, Name, Relation, Role, Structure, TransferEncoding, Updates};
+use asset_io::{
+    container_api::MetadataUpdate, HandlerRegistry, Name, Relation, Role, Structure,
+    TransferEncoding, Updates,
+};
 use cimpl::{
     box_tracked, bytes_or_return, cstr_or_return, deref_mut_or_return, deref_or_return,
     ptr_or_return,
@@ -526,7 +529,7 @@ pub extern "C" fn asset_io_updates_remove_all(updates: *mut AssetIoUpdates) -> i
 pub extern "C" fn asset_io_updates_as_update(updates: *mut AssetIoUpdates) -> i32 {
     boundary(-1, || {
         let mut u = deref_mut_or_return!(updates, AssetIoUpdates, -1);
-        if !matches!(u.0.jumbf(), asset_io::MetadataUpdate::Set(_)) {
+        if !matches!(u.0.jumbf(), MetadataUpdate::Set(_)) {
             invalid("set JUMBF before as_update").set_last();
             return -1;
         }
@@ -710,7 +713,7 @@ mod tests {
         let guard = cimpl::checkout_exclusive::<AssetIoUpdates>(p).unwrap();
         assert_eq!(asset_io_free(p.cast()), 0);
         assert_eq!(asset_io_updates_remove_all(p), -1);
-        assert!(matches!(guard.0.xmp(), asset_io::MetadataUpdate::Keep));
+        assert!(matches!(guard.0.xmp(), MetadataUpdate::Keep));
         drop(guard);
         assert_eq!(asset_io_free(p.cast()), -1);
     }

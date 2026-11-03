@@ -206,8 +206,8 @@ impl Relation {
 }
 
 /// What an item is, apart from where its bytes are. Used to declare items with
-/// [`StructureBuilder::item`](crate::StructureBuilder::item) and
-/// [`PlanBuilder::item`](crate::PlanBuilder::item); see [`Item`] for each field.
+/// [`StructureBuilder::item`](crate::container_api::StructureBuilder::item) and
+/// [`PlanBuilder::item`](crate::container_api::PlanBuilder::item); see [`Item`] for each field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemInfo {
     kind: ItemKind,
@@ -363,7 +363,7 @@ impl Item {
     }
 
     /// Everything known about the item apart from its extents.
-    pub fn info(&self) -> &ItemInfo {
+    pub(crate) fn info(&self) -> &ItemInfo {
         &self.info
     }
 

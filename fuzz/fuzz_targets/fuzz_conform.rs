@@ -15,6 +15,7 @@
 
 use std::io::Cursor;
 
+use asset_io::container_api;
 use asset_io::{testing::Conformance, HandlerRegistry, Structure};
 use libfuzzer_sys::fuzz_target;
 
@@ -41,7 +42,7 @@ fuzz_target!(|data: &[u8]| {
             Err(_) => return,
         },
     };
-    Conformance::new(structure.handler().clone())
+    Conformance::new(container_api::handler(&structure).clone())
         .jumbf(Some(jumbf()))
         .mutations(false)
         .check_if_parses("fuzz input", data);

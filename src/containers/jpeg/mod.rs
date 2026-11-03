@@ -67,9 +67,12 @@ use std::{
 };
 
 use crate::{
-    plan::WritePlan, BoxFuture, ByteRange, ContainerHandler, Encoding, Error, Existing, Extent,
-    FormatSpec, Io, ItemInfo, ItemKind, MetadataSlot, Name, PlanBuilder, ReadSeek, Result, Role,
-    Segment, SegmentId, SegmentKind, Structure, StructureBuilder, Updates, MAX_SEGMENTS,
+    container_api::{
+        BoxFuture, ContainerHandler, Existing, FormatSpec, Io, ItemInfo, MetadataSlot, PlanBuilder,
+        ReadSeek, StructureBuilder, WritePlan, MAX_SEGMENTS,
+    },
+    ByteRange, Encoding, Error, Extent, ItemKind, Name, Result, Role, Segment, SegmentId,
+    SegmentKind, Structure, Updates,
 };
 
 const SOI: u8 = 0xd8;
@@ -737,7 +740,9 @@ fn find_mpf<R: Read + Seek>(
     rd: &mut R,
     primary_end: usize,
 ) -> Result<Option<SegmentId>> {
-    let found = crate::block_on(src.total_size(), rd, |mut io| async move {
+    use crate::container_api::block_on;
+
+    let found = block_on(src.total_size(), rd, |mut io| async move {
         find_all_mpf(src, &mut io, primary_end).await
     })?;
     Ok(found.first().copied())

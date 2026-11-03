@@ -18,7 +18,8 @@
 use std::io::{Cursor, Read, Seek};
 
 use asset_io::{
-    Asset, HandlerRegistry, ItemInfo, ItemKind, NullSink, RelationKind, Structure, Updates,
+    container_api, container_api::ItemInfo, Asset, HandlerRegistry, ItemKind, NullSink,
+    RelationKind, Structure, Updates,
 };
 
 const FILES: &[&str] = &[
@@ -38,13 +39,18 @@ fn items<S: Read + Seek>(asset: &Asset<S>) -> Vec<(ItemInfo, Vec<u8>)> {
     asset
         .items()
         .filter(|e| e.native_id().is_some())
-        .map(|e| (e.info().clone(), asset.read_item(e).unwrap()))
+        .map(|e| {
+            (
+                container_api::item_info(e).clone(),
+                asset.read_item(e).unwrap(),
+            )
+        })
         .collect()
 }
 
 fn is_thumbnail(i: &(ItemInfo, Vec<u8>), s: &Structure) -> bool {
     s.items().any(|e| {
-        e.info() == &i.0
+        container_api::item_info(e) == &i.0
             && e.relations()
                 .iter()
                 .any(|r| r.kind() == RelationKind::Thumbnail)

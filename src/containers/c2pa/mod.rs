@@ -15,10 +15,12 @@
 use std::sync::Arc;
 
 use crate::{
+    container_api::{
+        BoxFuture, ContainerHandler, FormatSpec, Io, ItemInfo, MetadataUpdate, PlanBuilder,
+        StructureBuilder, WritePlan,
+    },
     jumbf::{superbox_type, C2PA_STORE_TYPE},
-    BoxFuture, ContainerHandler, Error, FormatSpec, Io, Item, ItemInfo, ItemKind, MetadataUpdate,
-    Name, PlanBuilder, Result, SegmentId, SegmentKind, Structure, StructureBuilder, Updates,
-    WritePlan,
+    Error, Item, ItemKind, Name, Result, SegmentId, SegmentKind, Structure, Updates,
 };
 
 /// The C2PA sidecar container's [`ContainerHandler::id`].

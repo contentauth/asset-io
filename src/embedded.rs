@@ -7,8 +7,9 @@
 use std::io::{self, Read, Seek, SeekFrom};
 
 use crate::{
-    ByteRange, Encoding, Error, HandlerRegistry, Item, ItemKind, ReadSeek, Result, Structure,
-    TransferEncoding, DETECT_LEN,
+    container_api::{ReadSeek, DETECT_LEN},
+    ByteRange, Encoding, Error, HandlerRegistry, Item, ItemKind, Result, Structure,
+    TransferEncoding,
 };
 
 /// Resource budgets for an embedded scan. Exceeding a budget returns an error,
@@ -156,7 +157,7 @@ impl Structure {
     /// error retained in [`EmbeddedAsset::structure`] if it has one. In addition,
     /// each opaque item ([`ItemKind::Other`] of [`Encoding::Unknown`] content, stored
     /// as is) is reported if `registry` recognises its first
-    /// [`DETECT_LEN`](crate::DETECT_LEN) bytes; one it does not recognise is skipped
+    /// [`DETECT_LEN`](crate::container_api::DETECT_LEN) bytes; one it does not recognise is skipped
     /// silently and counts against no limit. Apple's HEIF `uri ` item holding a
     /// processed JPEG is found this way. A URI is an identifier only: it is never
     /// fetched. This does not carve file headers out of the middle of payloads.

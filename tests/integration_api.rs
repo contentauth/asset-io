@@ -17,7 +17,10 @@
 
 use std::{fs, io::Cursor, path::PathBuf};
 
-use asset_io::{Asset, HandlerRegistry, ItemInfo, ItemKind, NullSink, Structure, Updates};
+use asset_io::{
+    container_api, container_api::ItemInfo, Asset, HandlerRegistry, ItemKind, NullSink, Structure,
+    Updates,
+};
 
 /// `bytes` as an asset, its container detected.
 fn open<'a>(reg: &HandlerRegistry, bytes: &'a [u8]) -> asset_io::Result<Asset<Cursor<&'a [u8]>>> {
@@ -79,7 +82,7 @@ fn shape(s: &Structure) -> (u64, Vec<asset_io::Segment>, Vec<ItemShape>) {
                 .extents()
                 .map(|p| (p.segment().index(), p.range().offset(), p.range().len()))
                 .collect();
-            (e.info().clone(), extents)
+            (container_api::item_info(e).clone(), extents)
         })
         .collect();
     // Declaration order is the handler's business; file order is what a caller sees.
@@ -360,7 +363,7 @@ fn item_kinds_encodings_and_categories_per_container() {
                 ItemKind::EmbeddedAsset => e.encoding() == Encoding::Asset,
                 _ => matches!(e.encoding(), Encoding::IsoBmff | Encoding::Unknown),
             };
-            assert!(ok, "{what}: {:?}", e.info());
+            assert!(ok, "{what}: {:?}", container_api::item_info(e));
             let category = match e.kind() {
                 ItemKind::EmbeddedAsset => ItemCategory::Asset,
                 ItemKind::Other => ItemCategory::Other,

@@ -10,15 +10,65 @@ use std::{
 const CONTAINERS: &[&str] = &["bmff", "c2pa", "jpeg", "pdf", "png", "riff", "svg", "tiff"];
 
 /// Public modules a container may reach through `crate::`; everything else it
-/// uses comes from the crate root's re-exports.
+/// uses comes from the crate root's client re-exports. Advanced client modules
+/// are available to tests; production handlers use `container_api`.
 const PUBLIC_MODULES: &[&str] = &[
+    "container_api",
     "containers",
+    "execute",
+    "io",
     "jumbf",
     "labels",
     "plan",
+    "task",
     "testing",
     "transfer",
 ];
+
+#[test]
+fn root_exports_only_client_types() {
+    let removed = [
+        "ContainerHandler",
+        "FormatSpec",
+        "StructureBuilder",
+        "ItemInfo",
+        "PlanBuilder",
+        "MetadataUpdate",
+        "MetadataSlot",
+        "Existing",
+        "BoxFuture",
+        "ReadSeek",
+        "ReadWriteSeek",
+        "DETECT_LEN",
+        "Crc32",
+        "MAX_SEGMENTS",
+        "MAX_SEGMENT_SIZE",
+        "Io",
+        "Reader",
+        "DEFAULT_WINDOW",
+        "Task",
+        "Progress",
+        "ReadRequest",
+        "block_on",
+        "Action",
+        "Execution",
+        "Step",
+        "WritePlan",
+    ];
+    let root = fs::read_to_string(src().join("lib.rs")).unwrap();
+    for statement in root.split(';') {
+        let Some((_, exports)) = statement.split_once("pub use ") else {
+            continue;
+        };
+        assert!(!exports.contains('*'), "wildcard root export: {exports}");
+        for name in exports.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+            assert!(
+                !removed.contains(&name),
+                "author/advanced root export: {name}"
+            );
+        }
+    }
+}
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).unwrap() {
@@ -74,7 +124,14 @@ fn containers_use_the_public_api_and_not_each_other() {
         assert!(!files.is_empty(), "{name}: no sources");
         for path in files {
             let rel = path.strip_prefix(src()).unwrap().display().to_string();
-            for line in code(&path) {
+            let mut in_tests = path.file_name().is_some_and(|n| n == "tests.rs");
+            for line in fs::read_to_string(&path).unwrap().lines() {
+                if line.trim() == "#[cfg(test)]" {
+                    in_tests = true;
+                }
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
                 for (at, _) in line.match_indices("crate::") {
                     let rest = &line[at + "crate::".len()..];
                     let module: String = rest
@@ -91,6 +148,10 @@ fn containers_use_the_public_api_and_not_each_other() {
                     assert!(
                         PUBLIC_MODULES.contains(&module.as_str()),
                         "{rel}: reaches into crate::{module}: {line}"
+                    );
+                    assert!(
+                        in_tests || !["io", "task", "execute", "plan"].contains(&module.as_str()),
+                        "{rel}: production handler bypasses container_api: {line}"
                     );
                     if module == "containers" {
                         let own = format!("containers::{name}::");

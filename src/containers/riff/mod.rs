@@ -45,9 +45,13 @@
 use std::{borrow::Cow, sync::Arc};
 
 use crate::{
-    jumbf::superbox_type_at, plan::WritePlan, BoxFuture, ContainerHandler, Error, Existing,
-    FormatSpec, Io, ItemInfo, ItemKind, MetadataSlot, MetadataUpdate, Name, PlanBuilder, Result,
-    Role, Segment, SegmentId, SegmentKind, Structure, StructureBuilder, Updates,
+    container_api,
+    container_api::{
+        BoxFuture, ContainerHandler, Existing, FormatSpec, Io, ItemInfo, MetadataSlot,
+        MetadataUpdate, PlanBuilder, StructureBuilder, WritePlan,
+    },
+    jumbf::superbox_type_at,
+    Error, ItemKind, Name, Result, Role, Segment, SegmentId, SegmentKind, Structure, Updates,
 };
 
 const RIFF: [u8; 4] = *b"RIFF";
@@ -123,9 +127,7 @@ impl ContainerHandler for RiffHandler {
         segment: SegmentId,
         element: &Segment,
     ) -> Option<Cow<'static, str>> {
-        let ty = structure
-            .attachment::<ChunkTypes>()
-            .and_then(|t| t.get(segment));
+        let ty = container_api::attachment::<ChunkTypes>(structure).and_then(|t| t.get(segment));
         self.box_name(ty.map_or(element.name(), Name::FourCC))
     }
 
@@ -527,7 +529,7 @@ async fn plan<'a>(src: &Structure, io: &mut Io, updates: &'a Updates) -> Result<
     }
 
     let mut b = PlanBuilder::new(src);
-    let source_types = src.attachment::<ChunkTypes>();
+    let source_types = container_api::attachment::<ChunkTypes>(src);
     let mut types = ChunkTypes::default();
     let riff = b.put_segment(
         SegmentKind::Preamble,
@@ -546,9 +548,10 @@ async fn plan<'a>(src: &Structure, io: &mut Io, updates: &'a Updates) -> Result<
         }
         let info = match op {
             Op::Chunk { item, .. } => item.map(item_info),
-            Op::Copy(sid) | Op::Flags { id: sid, .. } => {
-                src.items_in(*sid).next().map(|e| e.info().clone())
-            }
+            Op::Copy(sid) | Op::Flags { id: sid, .. } => src
+                .items_in(*sid)
+                .next()
+                .map(|e| container_api::item_info(e).clone()),
         };
         if let Some(info) = info {
             b.item(info, &[id])?;
@@ -666,9 +669,13 @@ mod tests {
     fn rewrite(src: &[u8], u: &Updates) -> Result<Vec<u8>> {
         let s = parse(&mut Cursor::new(src))?;
         let mut out = Cursor::new(Vec::new());
-        let dest = s
-            .handler()
-            .write(&s, &mut Cursor::new(src), &mut out, u, &mut NullSink)?;
+        let dest = container_api::handler(&s).write(
+            &s,
+            &mut Cursor::new(src),
+            &mut out,
+            u,
+            &mut NullSink,
+        )?;
         let out = out.into_inner();
         let again = parse(&mut Cursor::new(&out))?;
         assert_eq!(dest.segments(), again.segments());
@@ -841,7 +848,7 @@ mod tests {
         // The new payload is not copied into the plan.
         assert!(plan.steps().iter().any(|st| matches!(
             st,
-            crate::Step::Put { data: Cow::Borrowed(d), .. } if *d == b"<x/>"
+            container_api::Step::Put { data: Cow::Borrowed(d), .. } if *d == b"<x/>"
         )));
     }
 
@@ -908,7 +915,7 @@ mod tests {
         assert!(s.items_of(ItemKind::Jumbf).next().is_none());
 
         let mut out = Cursor::new(Vec::new());
-        s.handler()
+        container_api::handler(&s)
             .write(
                 &s,
                 &mut Cursor::new(&f),
@@ -934,7 +941,7 @@ mod tests {
 
         let s = parse(&mut Cursor::new(&f)).unwrap();
         let mut out = Cursor::new(Vec::new());
-        s.handler()
+        container_api::handler(&s)
             .write(
                 &s,
                 &mut Cursor::new(&f),

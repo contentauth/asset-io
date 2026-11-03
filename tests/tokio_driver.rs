@@ -23,8 +23,9 @@ use std::{
 };
 
 use asset_io::{
-    Action, Asset, Chunk, HandlerRegistry, NullSink, Progress, ReadRequest, Result, Structure,
-    Task, Updates,
+    execute::Action,
+    task::{Progress, ReadRequest, Task},
+    Asset, Chunk, HandlerRegistry, NullSink, Result, Structure, Updates,
 };
 use tokio::{
     fs::File,

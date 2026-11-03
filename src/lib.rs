@@ -11,8 +11,28 @@
 // specific language governing permissions and limitations under
 // each license.
 
-//! Streaming, container-agnostic access to the structure and metadata of media
-//! files (JPEG, PNG, ISO BMFF, ...).
+//! A portable, dynamically extensible container model for media assets.
+//!
+//! `asset-io` provides one abstract model for reading, inspecting and updating a
+//! wide variety of image, audio, video and document formats, including JPEG, PNG,
+//! ISO BMFF (HEIF, AVIF, MP4), RIFF (WebP, WAV, AVI), TIFF, SVG and PDF. Applications
+//! work with common structures and metadata items rather than format-specific
+//! parsers and writers.
+//!
+//! Container support is dynamically extensible: applications register built-in
+//! or third-party handlers with [`HandlerRegistry`] at runtime. Handler authors
+//! use [`container_api`] to add formats without changing the client API.
+//!
+//! The core is portable and independent of any async runtime. The same handler
+//! implementation runs with blocking streams, async adapters or caller-driven
+//! I/O. It is designed for high performance: updates stream the output in a single
+//! pass with bounded buffers, copying unchanged media without loading the whole
+//! asset into memory. [`Sink`]s observe tagged bytes during reads and writes,
+//! allowing callers to hash output without a second pass.
+//!
+//! Used by [c2pa-rs](https://github.com/contentauth/c2pa-rs) for media-container
+//! access, `asset-io` separates container mechanics from manifest interpretation,
+//! hashing and signing.
 //!
 //! A [`Structure`] describes a file as an ordered tiling of [`Segment`]s, each
 //! split into header, payload and trailer, plus [`Item`]s: logical units such as
@@ -31,7 +51,8 @@
 //!   ([`Structure::plan`]) describes an output before it is written.
 //! - **Container**: a structural family (ISO BMFF, JPEG, RIFF). **Format**: a media
 //!   type within one (HEIC and MP4 are both ISO BMFF).
-//! - **Handler**: implements a container's specifications ([`ContainerHandler`]).
+//! - **Handler**: implements a container's specifications
+//!   ([`ContainerHandler`](container_api::ContainerHandler)).
 //! - **Range**: an offset and a length ([`ByteRange`]).
 //! - **Segment**: a unit of the asset's tiling. Segments are ordered, do not
 //!   overlap and cover every byte; a segment is what a writer copies, replaces or
@@ -85,7 +106,8 @@
 //! # Design principles
 //!
 //! - **Container agnostic**: one API for every format. Format knowledge lives in a
-//!   [`ContainerHandler`]; callers never test which format they have.
+//!   [`ContainerHandler`](container_api::ContainerHandler); callers never test
+//!   which format they have.
 //! - **Streaming**: a file is parsed and written in one pass, in bounded memory.
 //! - **Safe on hostile input**: every length is checked, resources are capped,
 //!   and errors are returned rather than guessed around.
@@ -100,6 +122,22 @@
 //! [`HandlerRegistry::builtin`] holds the handlers of the enabled features, and
 //! handlers from other crates are registered at runtime. Without any container
 //! feature, the crate is the API a handler crate builds on, and nothing more.
+//!
+//! # API namespaces
+//!
+//! The root exposes the client model, [`HandlerRegistry`], [`Asset`],
+//! [`Structure`], [`Updates`] and [`Sink`], including C2PA geometry and exact
+//! patching. Handler authors use [`container_api`] for handler traits, builders,
+//! metadata-update decisions and container utilities. Built-in factories and
+//! typed options remain under [`containers`].
+//!
+//! Advanced clients use [`plan`] for declarative write plans, [`execute`] for
+//! caller-driven execution, [`io`] for async reads and [`task`] for read requests
+//! and blocking or caller-driven task execution. The `*_async`, planning and
+//! task methods on [`Structure`] still compose these APIs; no runtime is required.
+//! [`HandlerRegistry::handler`] and [`HandlerRegistry::handlers`] retain handler
+//! lookup and composition, including custom use of
+//! [`ContainerHandler::compose`](container_api::ContainerHandler::compose).
 //!
 //! # Example
 //!
@@ -134,13 +172,14 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod asset;
+pub mod container_api;
 pub mod containers;
 mod crc;
 mod embedded;
 mod error;
-mod execute;
+pub mod execute;
 mod handler;
-mod io;
+pub mod io;
 mod item;
 pub mod jumbf;
 #[cfg(feature = "memory-mapped")]
@@ -153,7 +192,7 @@ mod registry;
 mod segment;
 mod sink;
 mod structure;
-mod task;
+pub mod task;
 pub mod testing;
 mod thumbnail;
 #[cfg(feature = "exif")]
@@ -168,32 +207,22 @@ mod walk;
 mod xmp;
 
 pub use asset::Asset;
-pub use crc::Crc32;
 pub use embedded::{EmbeddedAsset, EmbeddedReader, ScanLimits};
 pub use error::{Error, Result};
-pub use execute::{Action, Execution};
-pub use handler::{C2paHash, ContainerHandler, FormatSpec, ReadSeek, ReadWriteSeek, DETECT_LEN};
-pub use io::{BoxFuture, Io, Reader, DEFAULT_WINDOW};
-pub use item::{Encoding, Extent, Item, ItemCategory, ItemInfo, ItemKind, Relation, RelationKind};
+pub use handler::C2paHash;
+pub use item::{Encoding, Extent, Item, ItemCategory, ItemKind, Relation, RelationKind};
 #[cfg(feature = "memory-mapped")]
 pub use mapped::MappedFile;
-pub use plan::{Step, WritePlan};
-pub use plan_builder::PlanBuilder;
 pub use range::ByteRange;
 pub use registry::HandlerRegistry;
-pub use segment::{
-    labels, Name, Role, Segment, SegmentKind, AFTER_BOX, C2PA_BOX, MAX_SEGMENT_SIZE,
-};
+pub use segment::{labels, Name, Role, Segment, SegmentKind, AFTER_BOX, C2PA_BOX};
 pub use sink::{Chunk, NullSink, Sink};
-pub use structure::{
-    C2paBox, Region, SegmentId, Structure, StructureBuilder, SubAsset, MAX_SEGMENTS,
-};
-pub use task::{block_on, Progress, ReadRequest, Task};
+pub use structure::{C2paBox, Region, SegmentId, Structure, SubAsset};
 pub use thumbnail::Thumbnail;
 #[cfg(feature = "exif")]
 pub use tiff::ExifInfo;
 pub use transfer::TransferEncoding;
-pub use updates::{Existing, MetadataSlot, MetadataUpdate, Updates};
+pub use updates::Updates;
 pub use walk::Node;
 #[cfg(feature = "xmp")]
 pub use xmp::MiniXmp;

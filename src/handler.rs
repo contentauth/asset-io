@@ -199,11 +199,11 @@ pub trait ContainerHandler: std::fmt::Debug + Send + Sync {
     /// Parse the whole structure of an asset, reading it through `io`.
     ///
     /// It is `async` so that the same code can be run by any I/O: see
-    /// [`Task`](crate::Task). Read with [`Io`], whose reads are `.await`ed;
+    /// [`Task`](crate::task::Task). Read with [`Io`], whose reads are `.await`ed;
     /// everything else is ordinary code. [`parse`](Self::parse) and
     /// [`Structure::parse_task`](crate::Structure::parse_task) run it.
     ///
-    /// The result must tile the stream (see [`StructureBuilder`](crate::StructureBuilder))
+    /// The result must tile the stream (see [`StructureBuilder`](crate::container_api::StructureBuilder))
     /// and must be built with `self` as its handler, which is why this takes the
     /// `Arc`: `StructureBuilder::new(self, ...)`. Return
     /// `Box::pin(async move { ... })`.

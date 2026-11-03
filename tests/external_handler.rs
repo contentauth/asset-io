@@ -18,10 +18,14 @@
 use std::{io::Cursor, sync::Arc};
 
 use asset_io::{
-    plan::validate, testing::Conformance, Asset, BoxFuture, ByteRange, Chunk, ContainerHandler,
-    Error, Existing, FormatSpec, HandlerRegistry, Io, ItemInfo, ItemKind, MetadataSlot, Name,
-    PlanBuilder, Result, Role, SegmentId, SegmentKind, Step, Structure, StructureBuilder, Updates,
-    WritePlan,
+    container_api::{
+        attachment, handler, item_info, BoxFuture, ContainerHandler, Existing, FormatSpec, Io,
+        ItemInfo, MetadataSlot, PlanBuilder, Step, StructureBuilder, WritePlan,
+    },
+    plan::validate,
+    testing::Conformance,
+    Asset, ByteRange, Chunk, Error, HandlerRegistry, ItemKind, Name, Result, Role, SegmentId,
+    SegmentKind, Structure, Updates,
 };
 
 /// `TOY!`, then records of `[kind][len][len bytes]`. Kind `X` is XMP.
@@ -139,6 +143,43 @@ fn toy_bytes() -> Vec<u8> {
 
 fn registry() -> HandlerRegistry {
     HandlerRegistry::new().with_handler(Toy)
+}
+
+#[test]
+fn author_state_and_item_descriptions_are_explicitly_scoped() {
+    let registry = registry();
+    let owner = registry.handler("toy").unwrap().clone();
+    let mut b = StructureBuilder::new(owner.clone(), "application/x-toy", 2);
+    b.attach("private handler state");
+    let id = b
+        .push_span(SegmentKind::Metadata, Name::Id(b'X' as u64), 0, 2, 0)
+        .unwrap();
+    b.item_of_segments(ItemInfo::xmp(), &[id]).unwrap();
+    let structure = b.finish().unwrap();
+    assert!(Arc::ptr_eq(handler(&structure), &owner));
+    assert_eq!(
+        attachment::<&str>(&structure),
+        Some(&"private handler state")
+    );
+    assert!(attachment::<u64>(&structure).is_none());
+    let item = structure.items().next().unwrap();
+    assert_eq!(item_info(item), &ItemInfo::xmp());
+    assert_eq!(item.kind(), ItemKind::Xmp);
+
+    let mut plan = PlanBuilder::new(&structure);
+    plan.attach(*attachment::<&str>(&structure).unwrap());
+    plan.copy_segment(id).unwrap();
+    plan.carry_items(|_| true);
+    let plan = plan.finish().unwrap();
+    validate(&plan, 2).unwrap();
+    assert_eq!(
+        attachment::<&str>(plan.structure()),
+        attachment::<&str>(&structure)
+    );
+    assert_eq!(
+        item_info(plan.structure().items().next().unwrap()),
+        item_info(item)
+    );
 }
 
 fn write(updates: &Updates, bytes: &[u8]) -> (Vec<u8>, Structure) {
@@ -261,17 +302,17 @@ fn executor_rejects_steps_that_do_not_match_the_structure() {
 }
 
 /// Run `task` to the end, answering each request from `source` by hand.
-fn run_by_hand<T>(mut task: asset_io::Task<'_, T>, source: &[u8]) -> (Result<T>, usize) {
+fn run_by_hand<T>(mut task: asset_io::task::Task<'_, T>, source: &[u8]) -> (Result<T>, usize) {
     let mut requests = 0;
     loop {
         match task.resume() {
-            Ok(asset_io::Progress::Read(mut req)) => {
+            Ok(asset_io::task::Progress::Read(mut req)) => {
                 requests += 1;
                 let from = (req.offset() as usize).min(source.len());
                 let to = (from + req.window_len()).min(source.len());
                 req.buffer().extend_from_slice(&source[from..to]);
             }
-            Ok(asset_io::Progress::Done(v)) => return (Ok(v), requests),
+            Ok(asset_io::task::Progress::Done(v)) => return (Ok(v), requests),
             Ok(_) => unreachable!(),
             Err(e) => return (Err(e), requests),
         }
@@ -308,12 +349,12 @@ fn a_third_party_handler_runs_under_a_task_with_no_changes() {
     let mut out = Vec::new();
     loop {
         match run.step(&mut asset_io::NullSink).unwrap() {
-            asset_io::Action::Read { offset, buf } => {
+            asset_io::execute::Action::Read { offset, buf } => {
                 let at = offset as usize;
                 buf.copy_from_slice(&bytes[at..at + buf.len()]);
             }
-            asset_io::Action::Write(b) => out.extend_from_slice(b),
-            asset_io::Action::Done => break,
+            asset_io::execute::Action::Write(b) => out.extend_from_slice(b),
+            asset_io::execute::Action::Done => break,
             _ => unreachable!(),
         }
     }
