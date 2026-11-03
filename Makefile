@@ -7,16 +7,15 @@ fmt:
 	cargo fmt --all --check
 
 clippy:
-	cargo clippy --workspace --all-features --all-targets -- -D warnings
+	cargo clippy --all-features --all-targets -- -D warnings
+	cargo clippy --no-default-features --all-targets -- -D warnings
 
 test:
-	cargo test -p asset-io-core --no-default-features
-	cargo test -p asset-io --no-default-features
+	cargo test --no-default-features
 	@set -e; for handler in jpeg png bmff riff svg pdf tiff c2pa; do \
-		cargo test -p asset-io --no-default-features --features $$handler; \
-		cargo test -p asset-io-$$handler; \
+		cargo test --no-default-features --features $$handler; \
 	done
-	cargo test --workspace --all-features
+	cargo test --all-features
 
 # Fuzzing needs nightly and cargo-fuzz (cargo install cargo-fuzz); see fuzz/README.md.
 # FUZZ_TIME is seconds per target.

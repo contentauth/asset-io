@@ -81,7 +81,7 @@ fn custom_registration_and_fallback_preserve_core_interoperability() {
     let mut fallback = HandlerRegistry::with_fallback(Arc::clone(&base));
     assert!(fallback.handler("custom").is_some());
     fallback.add_arc(Arc::new(Custom));
-    let core: &asset_io_core::HandlerRegistry = &fallback;
+    let core: &asset_io::HandlerRegistry = &fallback;
     assert_eq!(core.container_for("custom"), Some("custom"));
     assert!(matches!(
         Asset::open(core, Cursor::new([]), Some("custom")),
@@ -93,7 +93,9 @@ fn custom_registration_and_fallback_preserve_core_interoperability() {
 fn an_existing_fallback_is_not_changed_by_later_mutations() {
     let mut base = Arc::new(HandlerRegistry::new());
     let fallback = HandlerRegistry::with_fallback(Arc::clone(&base));
-    Arc::get_mut(&mut base).unwrap().add_handler(Custom);
+    // A registry shared as a fallback cannot be changed in place; a change copies it.
+    assert!(Arc::get_mut(&mut base).is_none());
+    Arc::make_mut(&mut base).add_handler(Custom);
     assert!(base.handler("custom").is_some());
     assert!(fallback.handler("custom").is_none());
 }

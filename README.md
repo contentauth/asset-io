@@ -60,68 +60,52 @@ A parsed file is a `Structure`: a gapless tiling of `Segment`s (header, payload,
 
 asset-io exposes what each format's own specifications define, including companion specifications (EXIF/TIFF, MPF, JPEG XT, the HEIF item model), and never interprets content that is portable across formats (C2PA manifests, XMP schemas); that belongs to higher-level helpers built on this API. Where such content is placed, including which item is the C2PA manifest store, is container knowledge and is here. See the crate documentation for the full glossary.
 
-## Workspace and build composition
+## Crate layout and features
 
-- [`asset-io-core`](crates/asset-io-core): handler-free structures, registry, I/O,
-  write plans, execution, got and shared conformance checks. It has no container
-  dependencies, even with all its features enabled.
-- Container-family crates under [`crates/`](crates): JPEG, PNG, BMFF, RIFF, SVG,
-  PDF, TIFF/DNG, and raw C2PA sidecars. BMFF keeps HEIF/HEIC/AVIF/MP4/M4A together; RIFF keeps WebP/WAV/AVI
-  together. Crate boundaries follow shared implementation, not file extensions.
-- `asset-io`: this consumer-facing facade re-exports core types and selected
-  container crates through `containers`. Its `HandlerRegistry::builtin()` assembles
-  only enabled handlers; with no features it is empty. `new()` and `default()`
-  always create an empty registry.
-
-Choose a build using Cargo features:
+`asset-io` is one crate. Each built-in container is a module under
+`asset_io::containers` behind a Cargo feature, so a build compiles only the
+containers it enables:
 
 ```toml
 [dependencies]
 asset-io = { version = "0.2", features = ["jpeg", "pdf"] }
 ```
 
-Or depend on core and register container crates explicitly, without the facade:
+No container is enabled by default. `HandlerRegistry::builtin()` holds the
+handlers of the enabled features; `new()` and `default()` are always empty.
+Without any container feature the crate is the handler-free API: structures,
+registry, I/O, write plans, execution and the conformance checks.
 
-```toml
-[dependencies]
-asset-io-core = "0.2"
-asset-io-pdf = "0.2"
-```
+Handlers in other crates depend on `asset-io` with `default-features = false`,
+so they do not force any container on the applications that use them, and are
+registered at runtime:
 
 ```rust
-use asset_io_core::HandlerRegistry;
+use asset_io::HandlerRegistry;
 
-let mut registry = HandlerRegistry::new();
-registry.add_arc(asset_io_pdf::handler());
+let registry = HandlerRegistry::extending_builtin().with_handler(MyHandler);
 ```
 
-The facade registry wraps and dereferences to the core registry, so it can also
-be passed to core APIs such as memory mapping and embedded-asset scanning.
+Container modules keep the boundaries separate crates would:
+[`tests/container_isolation.rs`](tests/container_isolation.rs) checks that the rest
+of the crate depends on no container, that no container uses another, and that
+containers reach the crate only through its public API.
 
-### Test ownership
+### Tests
 
-Private unit tests stay with each implementation. PDF read/write integration
-tests and its benchmark live in its crate; BMFF HEIF, RIFF fixture, and TIFF tests live
-in theirs. Shared real-file fixtures remain in [`tests/fixtures`](tests/fixtures)
-because the facade's cross-container tests and the C bindings also use them.
-Container tests explicitly register their own handler and never depend on the
-facade.
-
-Core tests exercise synthetic handlers, including parsing, detection, metadata
-updates, conformance, and step-by-step execution, without any real-file handler.
-Facade tests check feature-selected registration and cross-container behavior.
+Each container's unit tests live in its module; its integration tests are in
+[`tests/`](tests) and require its feature. The real-file fixtures in
+[`tests/fixtures`](tests/fixtures) are shared by those tests and the C bindings.
+Core tests use synthetic handlers and run with no features.
 
 ```sh
-cargo test -p asset-io-core --no-default-features
-cargo test -p asset-io --no-default-features
-cargo test -p asset-io --features jpeg
-cargo test -p asset-io-pdf
-cargo test --workspace --all-features
+cargo test --no-default-features
+cargo test --no-default-features --features jpeg
+cargo test --all-features
 ```
 
-`cargo test` at the repository root tests the facade; use `--workspace` to include
-all container and core tests. `make ci` checks the handler-free configurations,
-individual facade handlers, and the complete workspace.
+`make ci` runs formatting, Clippy, the handler-free build, each container on its
+own, and everything together.
 
 ## Containers
 
@@ -132,9 +116,9 @@ individual facade handlers, and the complete workspace.
 | `bmff`  | ISO BMFF (MP4, HEIC, AVIF, ...) | yes | yes, with streaming chunk-offset rewrite and merkle boxes |
 | `riff`  | RIFF (WebP, WAV, AVI) | yes | yes; WebP XMP maintains the `VP8X` flag |
 | `svg`   | SVG       | yes  | yes; a splice, nothing re-serialized; the manifest is base64 text |
-| `pdf`   | PDF 1.0–2.0 | XMP and the document's C2PA store, found through the catalog | appends an incremental revision; see the [PDF crate README](crates/asset-io-pdf/README.md) |
-| `tiff`  | TIFF, BigTIFF, DNG | yes | yes, append-only IFD updates; see the [TIFF crate README](crates/asset-io-tiff/README.md) |
-| `c2pa`  | Raw C2PA sidecar | entire file as one JUMBF item | replaces the file; removal emits an empty sidecar; see the [sidecar crate README](crates/asset-io-c2pa/README.md) |
+| `pdf`   | PDF 1.0–2.0 | XMP and the document's C2PA store, found through the catalog | appends an incremental revision; see [its module documentation](src/containers/pdf/README.md) |
+| `tiff`  | TIFF, BigTIFF, DNG | yes | yes, append-only IFD updates; see [its module documentation](src/containers/tiff/README.md) |
+| `c2pa`  | Raw C2PA sidecar | entire file as one JUMBF item | replaces the file; removal emits an empty sidecar; see [its module documentation](src/containers/c2pa/README.md) |
 
 Decoders for transfer encodings are optional features, in neither the defaults nor `all-formats`:
 
@@ -278,14 +262,13 @@ A handler implements `ContainerHandler`:
 
 Handlers use `Io` and `BoxFuture` for asynchronous reads, without constructing or
 driving a `Task`. The shared reader types live in
-[`crates/asset-io-core/src/io.rs`](crates/asset-io-core/src/io.rs); task execution lives
-in [`crates/asset-io-core/src/task.rs`](crates/asset-io-core/src/task.rs).
+[`src/io.rs`](src/io.rs); task execution lives in [`src/task.rs`](src/task.rs).
 Both remain available through the crate-root exports.
 
 - `parse_async(self: Arc<Self>, io: Io)` builds a `Structure` with `StructureBuilder`, reading the stream through `io` (`io.read_at(offset, &mut buf).await?`, `io.reader(at)` for a run of fields, `io.fetch(..)` for a borrowed slice). Everything but the reads is ordinary code. Return `Box::pin(async move { ... })`.
 - `write_plan_async(&self, structure, io, updates)` describes a write as a `WritePlan`: the structure of the output plus ordered `Step`s that copy source bytes or supply new ones. It reads the source only for what it must know (`io`), and does no writing. A handler that cannot write leaves the default. Decide what the output holds from `Updates` (`xmp()`, `jumbf()`, ...; a `MetadataSlot` says whether each existing XMP or JUMBF item is kept, replaced or dropped, and what is left to insert), then describe it in order with a `PlanBuilder`: `copy_segment(id)` for a source segment kept, `put_segment(kind, name, header, payload, trailer)` for a new one, `item(ItemInfo, &[id])` for the item it holds, `carry_items(|item| ..)` for the items of the kept segments, and `finish()`. Decide what a source segment holds from `Structure::items_in(id)`, not from its kind. The builder works out sizes, offsets and the output structure. When a segment is part copied and part changed, `shape_like`/`shape` add it and `copy`, `put` and `relocate` supply its bytes.
 
-The blocking `parse`, `write_plan` and `write` are provided: they run those methods against a `Read + Seek`. The default `write` runs the plan with `WritePlan::execute`, which coalesces reads, feeds the sink and checks the bytes against the structure and role. `plan::validate` checks a plan without any I/O, for a handler's tests. A container with absolute file offsets (ISO BMFF chunk tables) uses `Step::Relocate`, which copies a table of offsets and rewrites them from an `OffsetMap`. Read what to change from `Updates` (`xmp()`, `jumbf()`, ...). Options only one container has live outside `Updates`: attach them with `Updates::set_extension` and read them with `Updates::extension` (ISO BMFF's merkle boxes are `containers::bmff::BmffUpdates`). [`crates/asset-io-core/tests/external_handler.rs`](crates/asset-io-core/tests/external_handler.rs) is a complete handler written with only the public API. Test it with `testing::Conformance::new(handler).check(name, &sample_bytes)`: it checks the promises every handler makes (the structure tiles the stream, a no-op write is byte-identical, plan, write and stepper agree, the sink sees every byte once and in order, set and remove read back, damaged input never panics), so a handler's own tests cover only what is particular to its format.
+The blocking `parse`, `write_plan` and `write` are provided: they run those methods against a `Read + Seek`. The default `write` runs the plan with `WritePlan::execute`, which coalesces reads, feeds the sink and checks the bytes against the structure and role. `plan::validate` checks a plan without any I/O, for a handler's tests. A container with absolute file offsets (ISO BMFF chunk tables) uses `Step::Relocate`, which copies a table of offsets and rewrites them from an `OffsetMap`. Read what to change from `Updates` (`xmp()`, `jumbf()`, ...). Options only one container has live outside `Updates`: attach them with `Updates::set_extension` and read them with `Updates::extension` (ISO BMFF's merkle boxes are `containers::bmff::BmffUpdates`). [`tests/external_handler.rs`](tests/external_handler.rs) is a complete handler written with only the public API. Test it with `testing::Conformance::new(handler).check(name, &sample_bytes)`: it checks the promises every handler makes (the structure tiles the stream, a no-op write is byte-identical, plan, write and stepper agree, the sink sees every byte once and in order, set and remove read back, damaged input never panics), so a handler's own tests cover only what is particular to its format.
 
 Register a handler with `HandlerRegistry::with_handler`; the last handler registered for a format wins. Enums and structs a handler touches are `#[non_exhaustive]`, so new variants and fields are not breaking changes.
 

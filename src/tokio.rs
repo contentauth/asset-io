@@ -27,9 +27,9 @@
 //! ```
 
 use crate::plan::WritePlan;
-use crate::{Action, Error, Item, Progress, Result, Sink, Structure, Task, Updates};
+use crate::HandlerRegistry;
+use crate::{Action, Item, Progress, Result, Sink, Structure, Task, Updates};
 use ::tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
-use asset_io_core::HandlerRegistry;
 use std::io::SeekFrom;
 
 /// Run a task using asynchronous reads from `src`.
@@ -56,7 +56,6 @@ where
                 at = Some(offset + buf.len() as u64);
             }
             Progress::Done(value) => return Ok(value),
-            _ => return Err(Error::UnsupportedFeature("Tokio task progress")),
         }
     }
 }
@@ -175,7 +174,6 @@ where
             }
             Action::Write(bytes) => out.write_all(bytes).await?,
             Action::Done => break,
-            _ => return Err(Error::UnsupportedFeature("Tokio write action")),
         }
     }
     out.flush().await?;
