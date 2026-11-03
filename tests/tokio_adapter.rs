@@ -36,8 +36,7 @@ async fn spawned_adapters_match_blocking_reads_writes_and_sink_bytes() {
         tokio::spawn(async move {
             let registry = HandlerRegistry::builtin();
             let updates = Updates::new().set_jumbf(store());
-            let blocking =
-                Asset::open(&registry, Cursor::new(input.clone()), Some(format)).unwrap();
+            let blocking = Asset::open(Cursor::new(input.clone()), Some(format)).unwrap();
             let mut expected = Cursor::new(Vec::new());
             let expected_layout = blocking
                 .write(&mut expected, &updates, &mut NullSink)

@@ -7,16 +7,11 @@
     feature = "c2pa"
 ))]
 
-use asset_io::{Asset, ByteRange, Error, HandlerRegistry, ItemKind, NullSink, Updates};
+use asset_io::{Asset, ByteRange, Error, ItemKind, NullSink, Updates};
 use std::io::Cursor;
 
 fn open<'a>(format: &str, bytes: &'a [u8]) -> Asset<Cursor<&'a [u8]>> {
-    Asset::open(
-        &HandlerRegistry::builtin(),
-        Cursor::new(bytes),
-        Some(format),
-    )
-    .unwrap()
+    Asset::open(Cursor::new(bytes), Some(format)).unwrap()
 }
 
 fn store(len: usize) -> Vec<u8> {

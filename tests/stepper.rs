@@ -18,20 +18,14 @@
 #![cfg(all(feature = "jpeg", feature = "png", feature = "bmff", feature = "riff"))]
 
 use asset_io::{
-    Action, Asset, ByteRange, Chunk, Error, HandlerRegistry, NullSink, Result, Role, Sink, Updates,
-    WritePlan,
+    Action, Asset, ByteRange, Chunk, Error, NullSink, Result, Role, Sink, Updates, WritePlan,
 };
 use std::io::Cursor;
 use std::path::PathBuf;
 
 /// `bytes` as an asset of `format`.
 fn open<'a>(bytes: &'a [u8], format: &str) -> Asset<Cursor<&'a [u8]>> {
-    Asset::open(
-        &HandlerRegistry::builtin(),
-        Cursor::new(bytes),
-        Some(format),
-    )
-    .unwrap()
+    Asset::open(Cursor::new(bytes), Some(format)).unwrap()
 }
 
 const FILES: &[(&str, &str)] = &[

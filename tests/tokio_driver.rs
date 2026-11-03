@@ -104,7 +104,6 @@ fn updates() -> Vec<Updates> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn spawned_tasks_write_what_the_blocking_api_writes() {
     let dir = tempfile::tempdir().unwrap();
-    let reg = HandlerRegistry::builtin();
     let mut handles = Vec::new();
     let mut n = 0;
     for name in [
@@ -121,7 +120,7 @@ async fn spawned_tasks_write_what_the_blocking_api_writes() {
             // What the blocking API writes, for comparison.
             let bytes = std::fs::read(&path).unwrap();
             let mut want = Vec::new();
-            let want_layout = Asset::open(&reg, Cursor::new(&bytes), None)
+            let want_layout = Asset::open(Cursor::new(&bytes), None)
                 .unwrap()
                 .write(&mut want, &u, &mut NullSink)
                 .unwrap_or_else(|e| panic!("{name} updates {j}: {e}"));

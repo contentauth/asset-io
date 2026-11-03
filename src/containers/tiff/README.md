@@ -28,7 +28,7 @@ Inline TIFF values are supported, including small metadata placeholders.
 use asset_io::{Asset, HandlerRegistry, NullSink, Updates};
 
 let registry = HandlerRegistry::new().with_handler(asset_io::containers::tiff::TiffHandler);
-let asset = Asset::open(&registry, std::fs::File::open("image.dng")?, None)?;
+let asset = Asset::open_with(&registry, std::fs::File::open("image.dng")?, None)?;
 if let Some(store) = asset.c2pa_store()? {
     println!("manifest store: {} bytes", store.len());
 }

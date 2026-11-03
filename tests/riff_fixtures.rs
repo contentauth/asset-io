@@ -26,7 +26,7 @@ const FILES: &[&str] = &[
 /// `bytes` as an asset, parsed by the RIFF handler alone.
 fn open(bytes: &[u8]) -> asset_io::Result<Asset<Cursor<&[u8]>>> {
     let registry = HandlerRegistry::new().with_handler(asset_io::containers::riff::RiffHandler);
-    Asset::open(&registry, Cursor::new(bytes), None)
+    Asset::open_with(&registry, Cursor::new(bytes), None)
 }
 
 fn write(bytes: &[u8], u: &Updates) -> asset_io::Result<Vec<u8>> {

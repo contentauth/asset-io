@@ -33,12 +33,7 @@ fn superbox(ty: [u8; 16], children: &[&[u8]]) -> Vec<u8> {
 }
 
 fn open<'a>(format: &str, bytes: &'a [u8]) -> Asset<Cursor<&'a [u8]>> {
-    Asset::open(
-        &HandlerRegistry::builtin(),
-        Cursor::new(bytes),
-        Some(format),
-    )
-    .unwrap()
+    Asset::open(Cursor::new(bytes), Some(format)).unwrap()
 }
 
 fn write(format: &str, input: &[u8], updates: &Updates) -> Vec<u8> {

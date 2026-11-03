@@ -25,7 +25,7 @@ fn main() -> asset_io::Result<()> {
     };
 
     let registry = HandlerRegistry::builtin();
-    let asset = Asset::open(&registry, File::open(&path)?, None)?;
+    let asset = Asset::open(File::open(&path)?, None)?;
 
     println!("File: {path}");
     println!("  Container: {}", asset.container_id());

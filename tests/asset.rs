@@ -4,6 +4,7 @@
 use asset_io::jumbf::C2PA_STORE_TYPE;
 use asset_io::{Asset, Chunk, Error, HandlerRegistry, ItemKind, NullSink, Structure, Updates};
 use std::io::Cursor;
+use std::sync::Arc;
 
 const JPEG: &[u8] = &[0xff, 0xd8, 0xff, 0xd9];
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\0IEND\xae\x42\x60\x82";
@@ -31,7 +32,7 @@ fn reads_match_the_structure_api_and_geometry_is_available_directly() {
     let registry = HandlerRegistry::builtin();
     let xmp = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/"/>"#.to_vec();
     let mut bytes = Vec::new();
-    Asset::open(&registry, Cursor::new(PNG), Some("png"))
+    Asset::open(Cursor::new(PNG), Some("png"))
         .unwrap()
         .write(
             &mut bytes,
@@ -40,7 +41,7 @@ fn reads_match_the_structure_api_and_geometry_is_available_directly() {
         )
         .unwrap();
 
-    let asset = Asset::open(&registry, Cursor::new(&bytes), None).unwrap();
+    let asset = Asset::open(Cursor::new(&bytes), None).unwrap();
     let mut src = Cursor::new(&bytes);
     let structure = Structure::parse(&registry, &mut src, None).unwrap();
 
@@ -89,13 +90,12 @@ fn reads_match_the_structure_api_and_geometry_is_available_directly() {
 /// structure without parsing the output again, and fill it in place.
 #[test]
 fn a_placeholder_is_found_and_filled_in_the_written_output() {
-    let registry = HandlerRegistry::builtin();
     for (format, input) in [("jpg", JPEG), ("png", PNG), ("svg", SVG)] {
         let placeholder = c2pa_store(&[0; 64]);
         let signed = c2pa_store(&[7; 64]);
         assert_eq!(placeholder.len(), signed.len());
 
-        let asset = Asset::open(&registry, Cursor::new(input), Some(format)).unwrap();
+        let asset = Asset::open(Cursor::new(input), Some(format)).unwrap();
         let mut out = Cursor::new(Vec::new());
         let written = asset
             .write(
@@ -120,24 +120,23 @@ fn a_placeholder_is_found_and_filled_in_the_written_output() {
         output.patch_exact(item, &signed).unwrap();
 
         let bytes = output.into_source().into_inner();
-        let reparsed = Asset::open(&registry, Cursor::new(&bytes), Some(format)).unwrap();
+        let reparsed = Asset::open(Cursor::new(&bytes), Some(format)).unwrap();
         assert_eq!(reparsed.c2pa_store().unwrap(), Some(signed), "{format}");
     }
 }
 
 #[test]
 fn borrowed_and_owned_sources_behave_the_same() {
-    let registry = HandlerRegistry::builtin();
     let mut file = Cursor::new(JPEG.to_vec());
     {
-        let mut borrowed = Asset::open(&registry, &mut file, None).unwrap();
+        let mut borrowed = Asset::open(&mut file, None).unwrap();
         assert_eq!(borrowed.container_id(), "jpeg");
         assert_eq!(borrowed.store().unwrap(), None);
         borrowed.source_mut().set_position(0);
     }
     // The borrow has ended; the caller still owns the stream.
     file.set_position(2);
-    let owned = Asset::open(&registry, file, None).unwrap();
+    let owned = Asset::open(file, None).unwrap();
     assert_eq!(owned.total_size(), JPEG.len() as u64);
     let (structure, source) = owned.into_parts();
     assert_eq!(structure.total_size(), source.get_ref().len() as u64);
@@ -145,24 +144,45 @@ fn borrowed_and_owned_sources_behave_the_same() {
 
 #[test]
 fn opening_reports_format_selection_and_parse_errors() {
-    let registry = HandlerRegistry::builtin();
     assert!(matches!(
-        Asset::open(&registry, Cursor::new(JPEG), Some("unknown")),
+        Asset::open(Cursor::new(JPEG), Some("unknown")),
         Err(Error::UnsupportedFormat)
     ));
     // SVG has no detector: it needs an explicit format.
     assert!(matches!(
-        Asset::open(&registry, Cursor::new(SVG), None),
+        Asset::open(Cursor::new(SVG), None),
         Err(Error::UnsupportedFormat)
     ));
-    assert!(Asset::open(&registry, Cursor::new(SVG), Some("svg")).is_ok());
-    assert!(Asset::open(&registry, Cursor::new(&JPEG[..2]), Some("jpg")).is_err());
+    assert!(Asset::open(Cursor::new(SVG), Some("svg")).is_ok());
+    assert!(Asset::open(Cursor::new(&JPEG[..2]), Some("jpg")).is_err());
+}
+
+/// `open` uses the built-in handlers; `open_with` uses exactly the registry given.
+#[test]
+fn open_uses_the_builtins_and_open_with_the_given_registry() {
+    let builtin = HandlerRegistry::builtin();
+    let opened = Asset::open(Cursor::new(PNG), None).unwrap();
+    let with = Asset::open_with(&builtin, Cursor::new(PNG), None).unwrap();
+    assert_eq!(opened.segments(), with.segments());
+    assert_eq!(opened.container_id(), "png");
+
+    let empty = HandlerRegistry::new();
+    assert!(matches!(
+        Asset::open_with(&empty, Cursor::new(PNG), None),
+        Err(Error::UnsupportedFormat)
+    ));
+    let only_jpeg =
+        HandlerRegistry::new().with_handlers([Arc::clone(builtin.handler("jpg").unwrap())]);
+    assert!(Asset::open_with(&only_jpeg, Cursor::new(JPEG), None).is_ok());
+    assert!(matches!(
+        Asset::open_with(&only_jpeg, Cursor::new(PNG), Some("png")),
+        Err(Error::UnsupportedFormat)
+    ));
 }
 
 #[test]
 fn calling_back_into_the_asset_from_a_sink_is_an_error_not_a_panic() {
-    let registry = HandlerRegistry::builtin();
-    let asset = Asset::open(&registry, Cursor::new(JPEG), None).unwrap();
+    let asset = Asset::open(Cursor::new(JPEG), None).unwrap();
     let mut inner = None;
     let result = asset.read(&mut |_: Chunk<'_>| {
         inner.get_or_insert_with(|| asset.store().map(|_| ()));

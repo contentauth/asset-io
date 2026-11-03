@@ -6,6 +6,7 @@ A parsed file is a `Structure`: a gapless tiling of `Segment`s (header, payload,
 
 ## Concepts
 
+- A **structure** (`Structure`) is the parsed description of an asset: its segments, items and sub-assets, and the handler that parsed it. It holds no bytes, so its reads take the stream as an argument. An **`Asset`** pairs a structure with the stream it was parsed from, so its reads need no stream argument. A planned structure (`Structure::plan`) describes an output before it is written.
 - A **segment** is a unit of the tiling: what a writer copies, replaces or moves. Its `SegmentKind` is its dominant purpose: `Preamble`, `Metadata`, `MediaData` or `Other`. Its **role**s split it into framing (header, trailer) and payload.
 - An **item** has an `ItemKind` (the specification that defines it: `Xmp`, `Jumbf`, `Exif`, `EmbeddedAsset`, `Other`), an `Encoding` (`Xml`, `Tiff`, `Jumbf`, `IsoBmff`, `Asset`, `Unknown`) and a category derived from its kind (metadata or asset). Its native identifiers are kept as they are: `native_type()` (a HEIF item type such as `jpeg` or `hvc1`), `native_id()` (a HEIF `item_ID`), `uri()`, `media_type()`, `jumbf_type()`, and a container-defined `label()` (`manifest`, `update`, `merkle`, ...).
 - A **relation** is a reference from one item to another that keeps its native type (`thmb`, `auxl`, `cdsc`, `dimg`), with a common `RelationKind`.
@@ -78,13 +79,20 @@ registry, I/O, write plans, execution and the conformance checks.
 
 Handlers in other crates depend on `asset-io` with `default-features = false`,
 so they do not force any container on the applications that use them, and are
-registered at runtime:
+registered at runtime. A registry is composed by adding handlers; the last
+registered wins a format string and is tried first when detecting:
 
 ```rust
-use asset_io::HandlerRegistry;
+use asset_io::{Asset, HandlerRegistry};
 
-let registry = HandlerRegistry::extending_builtin().with_handler(MyHandler);
+// The built-in handlers, then a crate's handlers and the application's own.
+let registry = HandlerRegistry::with_builtin()
+    .with_handlers(other_crate::handlers())
+    .with_handler(MyHandler);
+let asset = Asset::open_with(&registry, std::fs::File::open("image.raw")?, None)?;
 ```
+
+`extend_from(&other)` adds another registry's handlers the same way.
 
 Container modules keep the boundaries separate crates would:
 [`tests/container_isolation.rs`](tests/container_isolation.rs) checks that the rest
@@ -144,16 +152,19 @@ The API separates resolution, format behavior, and I/O execution:
 | `Asset` | A `Structure` together with the blocking stream it was parsed from, so reads, writes and patches need no source argument |
 | `asset_io::tokio` | Drive parsing, reads, and writes with Tokio streams |
 
+`Asset::open(source, format)` uses the built-in handlers;
+`Asset::open_with(&registry, source, format)` takes a registry, and is what a
+library should use so its caller's handlers apply.
+
 The parsing functions and `Asset::open` take an optional format: `Some("jpg")` or
 `Some("image/jpeg")` selects the named handler, while `None` detects the format.
 An unsupported explicit format is an error, never a request to try detection.
 Handlers without a detector (such as SVG) require an explicit format.
 
 ```rust
-use asset_io::{Asset, HandlerRegistry, ItemKind, NullSink, Updates};
+use asset_io::{Asset, ItemKind, NullSink, Updates};
 
-let registry = HandlerRegistry::builtin();
-let asset = Asset::open(&registry, std::fs::File::open("image.jpg")?, None)?;
+let asset = Asset::open(std::fs::File::open("image.jpg")?, None)?;
 
 if let Some(jumbf) = asset.item(ItemKind::Jumbf)? {
     let bytes = asset.read_item(jumbf)?;
@@ -319,7 +330,7 @@ use asset_io::{Asset, Encoding, HandlerRegistry, ScanLimits};
 
 # fn main() -> asset_io::Result<()> {
 let registry = HandlerRegistry::builtin();
-let mut photo = Asset::open(&registry, std::fs::File::open("photo.heic")?, None)?;
+let mut photo = Asset::open_with(&registry, std::fs::File::open("photo.heic")?, None)?;
 let embedded = photo.scan_embedded(&registry, ScanLimits::default())?;
 for found in &embedded {
     match &found.structure {

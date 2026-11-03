@@ -14,11 +14,11 @@
 //! Registry of container handlers.
 //!
 //! Handlers are looked up by format string (a file extension or MIME type) or by
-//! matching caller-supplied header bytes. A registry can extend another one: a
-//! caller's custom handlers are consulted first and the fallback only for formats
-//! they do not claim. [`HandlerRegistry::new`] is empty;
+//! matching caller-supplied header bytes. [`HandlerRegistry::new`] is empty;
 //! [`HandlerRegistry::builtin`] holds the handlers of the enabled container
-//! features.
+//! features. Registries are composed by adding handlers: the last registered
+//! wins, so a caller's handlers override built-in ones for the formats they
+//! claim, and are tried first when detecting.
 //!
 //! A registry only resolves handlers and format metadata; it never reads or
 //! parses a stream. Use [`Structure::parse`](crate::Structure::parse),
@@ -35,31 +35,33 @@ fn normalize(format: &str) -> String {
     format.trim().trim_start_matches('.').to_ascii_lowercase()
 }
 
-/// Handlers keyed by format string, with an optional fallback registry.
+/// Container handlers, keyed by the format strings they declare.
 ///
 /// Registering a handler for a format string that is already claimed replaces the
-/// earlier claim in this registry ("last registered wins"). The fallback is never
-/// modified.
+/// earlier claim ("last registered wins"), and detection tries the most recently
+/// registered handler first. Registering a handler again moves it to the end.
+///
+/// Compose registries by adding handlers, not by layering them:
+///
+/// ```
+/// # use asset_io::HandlerRegistry;
+/// // Every enabled built-in handler, then the caller's own, which take precedence.
+/// let registry = HandlerRegistry::with_builtin().with_handlers(Vec::new());
+/// # let _ = registry;
+/// ```
+///
+/// A registry is a list of shared handlers, so cloning or extending one is cheap.
 #[derive(Debug, Default, Clone)]
 pub struct HandlerRegistry {
     by_format: HashMap<String, Arc<dyn ContainerHandler>>,
     /// Registration order, for detection (most recent first).
     ordered: Vec<Arc<dyn ContainerHandler>>,
-    fallback: Option<Arc<HandlerRegistry>>,
 }
 
 impl HandlerRegistry {
-    /// An empty registry with no fallback.
+    /// An empty registry.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// An empty registry that defers to `fallback` for anything it does not handle.
-    pub fn with_fallback(fallback: Arc<HandlerRegistry>) -> Self {
-        Self {
-            fallback: Some(fallback),
-            ..Self::default()
-        }
     }
 
     /// The handlers of every enabled container feature, shared. Empty when no
@@ -73,15 +75,33 @@ impl HandlerRegistry {
         }))
     }
 
-    /// An empty registry that defers to the [built-in](Self::builtin) handlers.
-    pub fn extending_builtin() -> Self {
-        Self::with_fallback(Self::builtin())
+    /// An owned registry holding the [built-in](Self::builtin) handlers, to add
+    /// more to.
+    pub fn with_builtin() -> Self {
+        Self::builtin().as_ref().clone()
     }
 
     /// Register `handler`, returning the registry for chaining.
     pub fn with_handler(mut self, handler: impl ContainerHandler + 'static) -> Self {
         self.add_handler(handler);
         self
+    }
+
+    /// Register each of `handlers` in order, returning the registry for chaining.
+    /// A crate that provides several handlers can export them as one list for
+    /// this.
+    pub fn with_handlers(
+        mut self,
+        handlers: impl IntoIterator<Item = Arc<dyn ContainerHandler>>,
+    ) -> Self {
+        self.extend(handlers);
+        self
+    }
+
+    /// Register every handler of `other`, in its registration order, so they take
+    /// precedence over handlers registered here before.
+    pub fn extend_from(&mut self, other: &HandlerRegistry) {
+        self.extend(other.ordered.iter().cloned());
     }
 
     /// Register `handler` for every format string it declares.
@@ -96,15 +116,18 @@ impl HandlerRegistry {
                 self.by_format.insert(normalize(f), handler.clone());
             }
         }
+        self.ordered.retain(|h| !Arc::ptr_eq(h, &handler));
         self.ordered.push(handler);
+    }
+
+    /// Every registered handler, in registration order.
+    pub fn handlers(&self) -> impl Iterator<Item = &Arc<dyn ContainerHandler>> {
+        self.ordered.iter()
     }
 
     /// The handler for a format string (extension or MIME type).
     pub fn handler(&self, format: &str) -> Option<&Arc<dyn ContainerHandler>> {
-        let key = normalize(format);
-        self.by_format
-            .get(&key)
-            .or_else(|| self.fallback.as_deref().and_then(|f| f.handler(format)))
+        self.by_format.get(&normalize(format))
     }
 
     /// The [id](ContainerHandler::id) of the container for a format string. Two
@@ -113,17 +136,14 @@ impl HandlerRegistry {
         Some(self.handler(format)?.id())
     }
 
-    /// The format a format string names, from the handler that serves it. The
-    /// fallback is consulted only when this registry does not claim the format.
+    /// The format a format string names, from the handler that serves it.
     pub fn format_for(&self, format: &str) -> Option<&FormatSpec> {
         let key = normalize(format);
-        match self.by_format.get(&key) {
-            Some(h) => h
-                .formats()
-                .iter()
-                .find(|spec| spec.format_strings().any(|f| normalize(f) == key)),
-            None => self.fallback.as_deref().and_then(|f| f.format_for(format)),
-        }
+        self.by_format
+            .get(&key)?
+            .formats()
+            .iter()
+            .find(|spec| spec.format_strings().any(|f| normalize(f) == key))
     }
 
     /// The media type for a format string (extension or media type): `"heic"`
@@ -140,30 +160,26 @@ impl HandlerRegistry {
         self.format_for(format).map(|spec| spec.extension)
     }
 
-    /// The handler that recognises `header` (the leading bytes of a stream). Handlers
-    /// registered here are tried most-recent first, then the fallback's.
+    /// The handler that recognises `header` (the leading bytes of a stream).
+    /// Handlers are tried most recently registered first.
     pub fn detect(&self, header: &[u8]) -> Option<&Arc<dyn ContainerHandler>> {
-        let n = header.len().min(DETECT_LEN);
-        let header = &header[..n];
-        self.ordered
-            .iter()
-            .rev()
-            .find(|h| h.detect(header))
-            .or_else(|| self.fallback.as_deref().and_then(|f| f.detect(header)))
+        let header = &header[..header.len().min(DETECT_LEN)];
+        self.ordered.iter().rev().find(|h| h.detect(header))
     }
 
-    /// Every format string this registry (and its fallback) serves, sorted.
+    /// Every format string this registry serves, sorted.
     pub fn formats(&self) -> Vec<String> {
         let mut v: Vec<String> = self.by_format.keys().cloned().collect();
-        if let Some(f) = &self.fallback {
-            for k in f.formats() {
-                if !v.contains(&k) {
-                    v.push(k);
-                }
-            }
-        }
         v.sort();
         v
+    }
+}
+
+impl Extend<Arc<dyn ContainerHandler>> for HandlerRegistry {
+    fn extend<I: IntoIterator<Item = Arc<dyn ContainerHandler>>>(&mut self, handlers: I) {
+        for handler in handlers {
+            self.add_arc(handler);
+        }
     }
 }
 
@@ -287,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn later_registration_wins_and_fallback_is_consulted() {
+    fn later_registration_wins_and_composition_copies_handlers() {
         #[derive(Debug)]
         struct Toy2;
         impl ContainerHandler for Toy2 {
@@ -312,11 +328,13 @@ mod tests {
                 Err(Error::UnsupportedFormat)
             }
         }
-        let base = Arc::new(HandlerRegistry::new().with_handler(Toy));
-        let over = HandlerRegistry::with_fallback(base.clone()).with_handler(Toy2);
+        let base = HandlerRegistry::new().with_handler(Toy);
+        let mut over = HandlerRegistry::new();
+        over.extend_from(&base);
+        over.add_handler(Toy2);
 
-        // The override shadows the fallback for "toy"; the fallback still serves
-        // the format string the override does not claim.
+        // The later handler wins "toy"; the earlier one still serves the format
+        // string the later one does not claim.
         assert!(matches!(
             Structure::parse(&over, &mut Cursor::new(toy_bytes()), Some("toy")),
             Err(Error::InvalidFormat(_))
@@ -327,7 +345,23 @@ mod tests {
             Some("application/x-toy")
         )
         .is_ok());
-        // The fallback itself is untouched.
+        assert_eq!(over.container_for("toy"), Some("toy2"));
+        // The registry it was composed from is untouched.
+        assert_eq!(base.container_for("toy"), Some("toy"));
         assert!(Structure::parse(&base, &mut Cursor::new(toy_bytes()), Some("toy")).is_ok());
+
+        // Composing the other way round gives the other precedence.
+        let mut under = HandlerRegistry::new().with_handler(Toy2);
+        under.extend_from(&base);
+        assert_eq!(under.container_for("toy"), Some("toy"));
+
+        // Registering a handler again moves it last and reclaims its formats,
+        // without listing it twice.
+        let toy = Arc::clone(base.handler("toy").unwrap());
+        let again = over.clone().with_handlers([toy]);
+        assert_eq!(again.container_for("toy"), Some("toy"));
+        let ids: Vec<_> = again.handlers().map(|h| h.id()).collect();
+        assert_eq!(ids, ["toy2", "toy"]);
+        assert_eq!(again.formats(), over.formats());
     }
 }

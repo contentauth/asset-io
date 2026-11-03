@@ -174,9 +174,10 @@ mod tests {
     }
 
     #[test]
-    fn detection_preserves_registration_order_and_fallback_precedence() {
-        let base = Arc::new(HandlerRegistry::new().with_handler(handler("fallback", true)));
-        let mut registry = HandlerRegistry::with_fallback(Arc::clone(&base));
+    fn detection_and_format_selection_prefer_the_latest_registration() {
+        let base = HandlerRegistry::new().with_handler(handler("base", true));
+        let mut registry = HandlerRegistry::new();
+        registry.extend_from(&base);
         registry.add_handler(handler("first", true));
         registry.add_handler(handler("latest", true));
         for format in [None, Some("test")] {
@@ -185,13 +186,13 @@ mod tests {
             let (structure, _) = drive(Structure::parse_task(&registry, 4, format), b"TEST");
             assert_eq!(structure.unwrap().container_id(), "latest");
         }
-        let registry = HandlerRegistry::with_fallback(base);
+        // The registry composed from is unchanged.
         for format in [None, Some("test")] {
             assert_eq!(
-                Structure::parse(&registry, &mut Cursor::new(b"TEST"), format)
+                Structure::parse(&base, &mut Cursor::new(b"TEST"), format)
                     .unwrap()
                     .container_id(),
-                "fallback"
+                "base"
             );
         }
     }

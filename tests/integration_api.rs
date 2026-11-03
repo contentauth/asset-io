@@ -22,7 +22,7 @@ use std::path::PathBuf;
 
 /// `bytes` as an asset, its container detected.
 fn open<'a>(reg: &HandlerRegistry, bytes: &'a [u8]) -> asset_io::Result<Asset<Cursor<&'a [u8]>>> {
-    Asset::open(reg, Cursor::new(bytes), None)
+    Asset::open_with(reg, Cursor::new(bytes), None)
 }
 
 fn fixtures() -> Vec<(String, Vec<u8>)> {
@@ -265,7 +265,7 @@ fn compose_splits_a_large_jpeg_store_like_write() {
     let Some((_, bytes)) = fixtures().into_iter().find(|(n, _)| n.ends_with(".jpg")) else {
         return;
     };
-    let s = Asset::open(&reg, Cursor::new(&bytes), Some("jpg")).unwrap();
+    let s = Asset::open(Cursor::new(&bytes), Some("jpg")).unwrap();
     let mut out = Vec::new();
     let dest = s
         .write(&mut out, &Updates::new().set_jumbf(jumbf), &mut NullSink)
@@ -342,8 +342,8 @@ fn media_types_by_format_string() {
     assert_eq!(reg.container_for("heic"), reg.container_for("mp4"));
     assert_eq!(reg.container_for("wav"), reg.container_for("webp"));
 
-    // A caller's registry extends the built-ins and still answers for them.
-    let ext = HandlerRegistry::extending_builtin();
+    // A caller's registry built from the built-ins still answers for them.
+    let ext = HandlerRegistry::with_builtin();
     assert_eq!(ext.media_type_for("heic"), Some("image/heic"));
 }
 

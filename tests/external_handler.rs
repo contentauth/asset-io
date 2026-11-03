@@ -143,7 +143,7 @@ fn registry() -> HandlerRegistry {
 }
 
 fn write(updates: &Updates, bytes: &[u8]) -> (Vec<u8>, Structure) {
-    let asset = Asset::open(&registry(), Cursor::new(bytes), Some("toy")).unwrap();
+    let asset = Asset::open_with(&registry(), Cursor::new(bytes), Some("toy")).unwrap();
     let mut out = Vec::new();
     let structure = asset
         .write(&mut out, updates, &mut |_: Chunk<'_>| Ok(()))
@@ -170,7 +170,7 @@ fn set_replaces_in_place_and_remove_drops() {
 #[test]
 fn plan_is_data_that_can_be_checked_and_inspected() {
     let bytes = toy_bytes();
-    let asset = Asset::open(&registry(), Cursor::new(&bytes), Some("toy")).unwrap();
+    let asset = Asset::open_with(&registry(), Cursor::new(&bytes), Some("toy")).unwrap();
     let updates = Updates::new().set_xmp(b"zz".to_vec());
     let plan = asset.write_plan(&updates).unwrap();
     validate(&plan, bytes.len() as u64).unwrap();

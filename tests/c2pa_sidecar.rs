@@ -16,7 +16,7 @@ fn parse<R: Read + Seek>(source: &mut R) -> asset_io::Result<Structure> {
 /// `bytes` as a sidecar. Detection is conservative, so the format is named.
 fn open(bytes: &[u8]) -> Asset<Cursor<&[u8]>> {
     let registry = HandlerRegistry::new().with_handler(asset_io::containers::c2pa::C2paHandler);
-    Asset::open(&registry, Cursor::new(bytes), Some("c2pa")).unwrap()
+    Asset::open_with(&registry, Cursor::new(bytes), Some("c2pa")).unwrap()
 }
 
 const STORE_TYPE: [u8; 16] = [
@@ -68,7 +68,7 @@ fn aliases_and_conservative_detection() {
     let bytes = store(STORE_TYPE);
     assert_eq!(registry.detect(&bytes).unwrap().id(), "c2pa");
     assert_eq!(
-        Asset::open(&registry, Cursor::new(&bytes), None)
+        Asset::open_with(&registry, Cursor::new(&bytes), None)
             .unwrap()
             .container_id(),
         "c2pa"
@@ -199,7 +199,7 @@ fn patches_require_the_exact_length_and_never_pad() {
     let source = b"original store";
     // A writable copy, opened directly, so it can be patched in place.
     let registry = HandlerRegistry::new().with_handler(asset_io::containers::c2pa::C2paHandler);
-    let output = Asset::open(&registry, Cursor::new(source.to_vec()), Some("c2pa")).unwrap();
+    let output = Asset::open_with(&registry, Cursor::new(source.to_vec()), Some("c2pa")).unwrap();
     let item = output.require_item(ItemKind::Jumbf).unwrap();
     for replacement in [b"short".as_slice(), b"replacement too long".as_slice()] {
         assert!(output.patch(item, replacement).is_err());

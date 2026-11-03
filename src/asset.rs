@@ -36,10 +36,10 @@ use std::ops::Deref;
 /// arguments:
 ///
 /// ```no_run
-/// # use asset_io::{Asset, HandlerRegistry, NullSink, Updates};
+/// # use asset_io::{Asset, NullSink, Updates};
 /// # fn main() -> asset_io::Result<()> {
-/// # let registry = HandlerRegistry::new();
-/// let asset = Asset::open(&registry, std::fs::File::open("image.jpg")?, None)?;
+/// // Enable the `jpeg` feature for this example.
+/// let asset = Asset::open(std::fs::File::open("image.jpg")?, None)?;
 /// if let Some(item) = asset.c2pa_item()? {
 ///     let exclusions = asset.c2pa_data_hash_exclusions(item)?;
 ///     let store = asset.read_content(item)?;
@@ -114,12 +114,27 @@ impl<S> Asset<S> {
 }
 
 impl<S: Read + Seek> Asset<S> {
-    /// Parse `source` with a handler from `registry`; see [`Structure::parse`].
+    /// Parse `source` with the [built-in](HandlerRegistry::builtin) handlers of
+    /// the enabled container features.
     ///
     /// `Some(format)` selects a handler by extension or MIME type; `None` detects
     /// the container from its leading bytes. An unsupported explicit format fails
-    /// without falling back to detection.
-    pub fn open(registry: &HandlerRegistry, mut source: S, format: Option<&str>) -> Result<Self> {
+    /// without falling back to detection. With no container feature enabled,
+    /// every format is unsupported.
+    ///
+    /// For applications. A library should take a registry from its caller and
+    /// use [`open_with`](Self::open_with), so the caller's handlers are used.
+    pub fn open(source: S, format: Option<&str>) -> Result<Self> {
+        Self::open_with(&HandlerRegistry::builtin(), source, format)
+    }
+
+    /// Parse `source` with a handler from `registry`; see [`Structure::parse`].
+    /// Format selection is as for [`open`](Self::open).
+    pub fn open_with(
+        registry: &HandlerRegistry,
+        mut source: S,
+        format: Option<&str>,
+    ) -> Result<Self> {
         let structure = Structure::parse(registry, &mut source, format)?;
         Ok(Self::from_parts(structure, source))
     }

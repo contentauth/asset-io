@@ -29,7 +29,7 @@ const FILES: &[&str] = &[
 /// `bytes` as an asset, parsed by the BMFF handler alone.
 fn open(bytes: &[u8]) -> asset_io::Result<Asset<Cursor<&[u8]>>> {
     let registry = HandlerRegistry::new().with_handler(asset_io::containers::bmff::BmffHandler);
-    Asset::open(&registry, Cursor::new(bytes), None)
+    Asset::open_with(&registry, Cursor::new(bytes), None)
 }
 
 /// Every HEIF item (those with an item id): what it is and its bytes.

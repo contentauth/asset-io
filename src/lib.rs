@@ -23,7 +23,12 @@
 //! # Glossary
 //!
 //! - **Asset**: a complete byte stream. Assets are recursive: an asset can contain
-//!   embedded assets.
+//!   embedded assets. The [`Asset`] type pairs one with its parsed structure.
+//! - **Structure**: the parsed description of an asset ([`Structure`]): its
+//!   segments, items and sub-assets, and the handler that parsed it. It is
+//!   geometry only and holds no bytes, so its reads take the stream as an
+//!   argument; an [`Asset`] holds the stream for them. A planned structure
+//!   ([`Structure::plan`]) describes an output before it is written.
 //! - **Container**: a structural family (ISO BMFF, JPEG, RIFF). **Format**: a media
 //!   type within one (HEIC and MP4 are both ISO BMFF).
 //! - **Handler**: implements a container's specifications ([`ContainerHandler`]).
@@ -99,12 +104,11 @@
 //! # Example
 //!
 //! ```no_run
-//! use asset_io::{Asset, HandlerRegistry, ItemKind, NullSink, Updates};
+//! use asset_io::{Asset, ItemKind, NullSink, Updates};
 //!
 //! # fn main() -> asset_io::Result<()> {
 //! // Enable the `jpeg` feature for this example.
-//! let registry = HandlerRegistry::builtin();
-//! let asset = Asset::open(&registry, std::fs::File::open("image.jpg")?, None)?;
+//! let asset = Asset::open(std::fs::File::open("image.jpg")?, None)?;
 //!
 //! // Read a metadata item, which may have extents in several segments.
 //! if let Some(jumbf) = asset.item(ItemKind::Jumbf)? {
