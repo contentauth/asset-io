@@ -235,6 +235,11 @@ output.patch_exact(item, &signed_store)?;
 `Structure` remains the I/O-free core: async and caller-driven code composes
 its `*_async` and `*_task` methods directly.
 
+The [Wasm/JavaScript proof](asset-io-wasm/README.md) exposes caller-driven parsing
+to JavaScript. Rust returns a read request, JavaScript awaits its own file or
+Blob I/O, then supplies bytes and resumes. No Rust executor or WASI filesystem
+is required. This proof currently covers parsing, not metadata reads or writes.
+
 ### Tokio
 
 Enable `tokio` alongside the container features to use `asset_io::tokio` with
