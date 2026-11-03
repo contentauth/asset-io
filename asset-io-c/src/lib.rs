@@ -1,12 +1,6 @@
 //! Application C ABI. Handles are cimpl-tracked opaque identifiers, never Rust addresses.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use asset_io::{HandlerRegistry, Name, Relation, Role, Structure, TransferEncoding, Updates};
-use cimpl::{
-    box_tracked, bytes_or_return, cstr_or_return, deref_mut_or_return, deref_or_return,
-    ptr_or_return,
-};
-use serde_json::{json, Value};
 use std::{
     ffi::{c_char, c_void},
     io::{self, Cursor, Read, Seek, SeekFrom},
@@ -14,6 +8,13 @@ use std::{
     ptr,
     sync::Arc,
 };
+
+use asset_io::{HandlerRegistry, Name, Relation, Role, Structure, TransferEncoding, Updates};
+use cimpl::{
+    box_tracked, bytes_or_return, cstr_or_return, deref_mut_or_return, deref_or_return,
+    ptr_or_return,
+};
+use serde_json::{json, Value};
 
 macro_rules! ok_or_return {
     ($result:expr, $failure:expr) => {

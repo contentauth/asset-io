@@ -13,20 +13,24 @@
 
 //! Validated container structure.
 
-use crate::error::{Error, Result};
-use crate::handler::{ContainerHandler, ReadSeek, ReadWriteSeek};
-use crate::io::Io;
-use crate::item::{Extent, Item, ItemInfo, ItemKind};
-use crate::range::ByteRange;
-use crate::segment::{Name, Role, Segment};
-use crate::segment::{SegmentKind, DEFAULT_CHUNK_SIZE, MAX_SEGMENT_SIZE};
-use crate::sink::{Chunk, Sink};
-use crate::task::block_on;
-use crate::transfer::TransferEncoding;
-use crate::walk::Node;
-use std::borrow::Cow;
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::sync::Arc;
+use std::{
+    borrow::Cow,
+    io::{Read, Seek, SeekFrom, Write},
+    sync::Arc,
+};
+
+use crate::{
+    error::{Error, Result},
+    handler::{ContainerHandler, ReadSeek, ReadWriteSeek},
+    io::Io,
+    item::{Extent, Item, ItemInfo, ItemKind},
+    range::ByteRange,
+    segment::{Name, Role, Segment, SegmentKind, DEFAULT_CHUNK_SIZE, MAX_SEGMENT_SIZE},
+    sink::{Chunk, Sink},
+    task::block_on,
+    transfer::TransferEncoding,
+    walk::Node,
+};
 
 /// Upper bound on segments per asset. Bounds memory use on hostile inputs
 /// made of many tiny elements.
@@ -1419,16 +1423,19 @@ mod tests {
         fn id(&self) -> &'static str {
             "test"
         }
+
         fn formats(&self) -> &[crate::FormatSpec] {
             const F: &[crate::FormatSpec] = &[crate::FormatSpec::new("application/x-test", "test")];
             F
         }
+
         fn parse_async(
             self: Arc<Self>,
             _: crate::Io,
         ) -> crate::BoxFuture<'static, Result<Structure>> {
             Box::pin(async { Err(Error::UnsupportedFormat) })
         }
+
         fn write(
             &self,
             _: &Structure,

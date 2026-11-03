@@ -13,8 +13,7 @@
 
 //! Hierarchical view of a container.
 
-use crate::range::ByteRange;
-use crate::segment::Name;
+use crate::{range::ByteRange, segment::Name};
 
 /// One element met while [walking](crate::Structure::walk) a container's tree.
 ///

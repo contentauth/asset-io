@@ -14,9 +14,10 @@
 //! Parsing a PDF reads what the catalog points at, not the payloads, so its cost does
 //! not grow with their size: `cargo bench -p asset-io-pdf --bench pdf`.
 
+use std::io::Cursor;
+
 use asset_io::{HandlerRegistry, NullSink, Structure, Updates};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use std::io::Cursor;
 
 fn document(payload_size: usize) -> Vec<u8> {
     let mut data = b"%PDF-1.7\n".to_vec();

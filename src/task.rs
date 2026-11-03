@@ -13,14 +13,19 @@
 
 //! Code that reads a stream, written once, run by any I/O; see [`Task`].
 
-use crate::error::{Error, Result};
-use crate::io::{Io, Link};
-use std::future::Future;
-use std::io::{Read, Seek, SeekFrom};
-use std::marker::PhantomData;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll, Waker};
+use std::{
+    future::Future,
+    io::{Read, Seek, SeekFrom},
+    marker::PhantomData,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll, Waker},
+};
+
+use crate::{
+    error::{Error, Result},
+    io::{Io, Link},
+};
 
 /// A suspended computation that reads a stream: run it with [`run`](Self::run), or
 /// drive it yourself with [`resume`](Self::resume).
@@ -37,7 +42,9 @@ use std::task::{Context, Poll, Waker};
 ///
 /// # fn main() -> Result<()> {
 /// let data = [7u8, 8, 9];
-/// let mut task = Task::new(data.len() as u64, |mut io| async move { first_byte(&mut io).await });
+/// let mut task = Task::new(data.len() as u64, |mut io| async move {
+///     first_byte(&mut io).await
+/// });
 /// let first = loop {
 ///     match task.resume()? {
 ///         // The task has nothing to read from; it asks. Answer however you like.
@@ -267,9 +274,10 @@ impl ReadRequest<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::*;
     use crate::io::DEFAULT_WINDOW;
-    use std::io::Cursor;
 
     /// Records `[len][len bytes]`; the sum of each record's bytes.
     async fn sums(io: &mut Io) -> Result<Vec<u32>> {
@@ -489,10 +497,10 @@ mod tests {
         assert_eq!(a, 4);
         assert_eq!(b, 0x0506);
         assert_eq!(c, 0x0807);
-        assert_eq!(d, 0x090A_0B0C);
-        assert_eq!(e, 0x100F_0E0D);
+        assert_eq!(d, 0x090a_0b0c);
+        assert_eq!(e, 0x100f_0e0d);
         assert_eq!(f, 0x1112_1314_1516_1718);
-        assert_eq!(g, 0x201F_1E1D_1C1B_1A19);
+        assert_eq!(g, 0x201f_1e1d_1c1b_1a19);
         assert_eq!(arr, [0x21, 0x22]);
         assert_eq!(pos, 4 + 1 + 2 + 2 + 4 + 4 + 8 + 8 + 2);
         assert_eq!(taken, vec![pos as u8 + 3, pos as u8 + 4]);
@@ -575,6 +583,7 @@ mod tests {
         struct Never;
         impl Future for Never {
             type Output = ();
+
             fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
                 Poll::Pending
             }

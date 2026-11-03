@@ -4,11 +4,12 @@
 
 #![cfg(all(feature = "bmff", feature = "jpeg"))]
 
+use std::io::{Cursor, Read, Seek, SeekFrom};
+
 use asset_io::{
     Asset, ByteRange, Encoding, Error, HandlerRegistry, ItemInfo, ItemKind, Name, NullSink,
     ScanLimits, SegmentId, SegmentKind, Structure, StructureBuilder, TransferEncoding, Updates,
 };
-use std::io::{Cursor, Read, Seek, SeekFrom};
 
 const URI: &[u8] = b"tag:apple.com,2025:photo:metadata:provenance:processedimage\0";
 

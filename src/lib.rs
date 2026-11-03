@@ -119,7 +119,9 @@
 //! // Write a copy with changes. Every output byte also goes to a sink, tagged
 //! // with its segment and role, so it can be hashed without a second pass.
 //! let mut out = std::fs::File::create("out.jpg")?;
-//! let updates = Updates::new().set_xmp(b"<x:xmpmeta/>".to_vec()).remove_jumbf();
+//! let updates = Updates::new()
+//!     .set_xmp(b"<x:xmpmeta/>".to_vec())
+//!     .remove_jumbf();
 //! asset.write(&mut out, &updates, &mut NullSink)?;
 //! # Ok(())
 //! # }

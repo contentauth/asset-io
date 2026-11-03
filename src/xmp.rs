@@ -46,13 +46,13 @@
 //! // Get multiple values in one pass
 //! let values = xmp.get_many(&["dc:title", "dc:creator", "dc:format"]);
 //! assert_eq!(values[0], Some("Photo".to_string()));
-//! assert_eq!(values[2], None);  // Not found
+//! assert_eq!(values[2], None); // Not found
 //!
 //! // Apply multiple updates at once
 //! let updates = [
 //!     ("dc:title", Some("New Photo")),
 //!     ("dc:subject", Some("Landscape")),
-//!     ("dc:creator", None),  // None = remove
+//!     ("dc:creator", None), // None = remove
 //! ];
 //! let updated = xmp.apply_updates(&updates).unwrap();
 //! ```
@@ -92,8 +92,9 @@
 //!
 //! For full XMP support, consider the `xmp-toolkit` crate instead.
 
-use crate::error::Result;
 use std::io::Cursor;
+
+use crate::error::Result;
 
 const RDF_DESCRIPTION: &[u8] = b"rdf:Description";
 const XMP_PACKET_END: &str = "<?xpacket end=\"w\"?>";

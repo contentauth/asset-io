@@ -24,8 +24,9 @@
 //! ([`Structure::read_content`](crate::Structure::read_content)). The helpers here
 //! are also what handlers use for the same wrappings elsewhere in a file.
 
-use crate::{Error, Result};
 use std::borrow::Cow;
+
+use crate::{Error, Result};
 
 /// Largest content a compressed item may decode to (64 MiB).
 pub const MAX_DECODED_LEN: usize = 64 * 1024 * 1024;
@@ -664,9 +665,11 @@ mod tests {
 
     #[cfg(feature = "flate")]
     mod flate {
-        use super::*;
-        use flate2::{write::ZlibEncoder, Compression};
         use std::io::Write;
+
+        use flate2::{write::ZlibEncoder, Compression};
+
+        use super::*;
 
         fn deflate(data: &[u8]) -> Vec<u8> {
             let mut e = ZlibEncoder::new(Vec::new(), Compression::default());

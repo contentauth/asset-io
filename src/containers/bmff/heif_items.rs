@@ -34,9 +34,9 @@
 //! `idat` (1). A zero extent length means "to the end of the file" and is not
 //! supported either.
 
-use crate::transfer::MAX_LABEL_LEN;
-use crate::{Error, Result, TransferEncoding};
 use std::collections::{HashMap, HashSet};
+
+use crate::{transfer::MAX_LABEL_LEN, Error, Result, TransferEncoding};
 
 const IINF: [u8; 4] = *b"iinf";
 const INFE: [u8; 4] = *b"infe";
@@ -643,8 +643,7 @@ pub(super) mod build {
 
 #[cfg(test)]
 mod tests {
-    use super::build::*;
-    use super::*;
+    use super::{build::*, *};
 
     #[test]
     fn finds_exif_and_thumbnail_items() {

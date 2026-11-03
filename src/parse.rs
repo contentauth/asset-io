@@ -7,9 +7,9 @@
 //! Parsing: select a handler from a registry, then run its parser to build a
 //! [`Structure`].
 
+use std::{io::SeekFrom, sync::Arc};
+
 use crate::{block_on, Error, HandlerRegistry, Io, ReadSeek, Result, Structure, Task, DETECT_LEN};
-use std::io::SeekFrom;
-use std::sync::Arc;
 
 impl Structure {
     /// Parse a complete stream with blocking I/O.
@@ -76,12 +76,15 @@ impl Structure {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        io::{Cursor, Read, Seek},
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
     use super::*;
     use crate::{
         BoxFuture, ContainerHandler, FormatSpec, Name, Progress, SegmentKind, StructureBuilder,
     };
-    use std::io::{Cursor, Read, Seek};
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Debug)]
     struct TestHandler {

@@ -13,12 +13,9 @@
 
 //! Memory-mapped files, for zero-copy reads.
 
-use crate::error::Result;
-use crate::registry::HandlerRegistry;
-use crate::structure::Structure;
-use std::fs::File;
-use std::io::Cursor;
-use std::ops::Deref;
+use std::{fs::File, io::Cursor, ops::Deref};
+
+use crate::{error::Result, registry::HandlerRegistry, structure::Structure};
 
 /// A read-only memory map of a file.
 ///
@@ -75,6 +72,7 @@ impl MappedFile {
 
 impl Deref for MappedFile {
     type Target = [u8];
+
     fn deref(&self) -> &[u8] {
         &self.map
     }

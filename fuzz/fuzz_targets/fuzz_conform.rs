@@ -13,14 +13,14 @@
 
 #![no_main]
 
-use asset_io::testing::Conformance;
-use asset_io::{HandlerRegistry, Structure};
-use libfuzzer_sys::fuzz_target;
 use std::io::Cursor;
+
+use asset_io::{testing::Conformance, HandlerRegistry, Structure};
+use libfuzzer_sys::fuzz_target;
 
 /// A JUMBF with a description box, so a format that wants a type has one.
 fn jumbf() -> Vec<u8> {
-    let mut v = vec![0x5Au8; 200];
+    let mut v = vec![0x5au8; 200];
     v[0..4].copy_from_slice(&200u32.to_be_bytes());
     v[4..8].copy_from_slice(b"jumb");
     v[8..12].copy_from_slice(&192u32.to_be_bytes());

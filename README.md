@@ -112,8 +112,10 @@ cargo test --no-default-features --features jpeg
 cargo test --all-features
 ```
 
-`make ci` runs formatting, Clippy, the handler-free build, each container on its
-own, and everything together.
+`make ci` runs the format check, the docs build, Clippy, the handler-free build,
+each container on its own, and everything together. Formatting follows c2pa-rs:
+`rustfmt.toml` uses options only nightly rustfmt has, so format with `make fmt`
+(`cargo +nightly fmt`).
 
 ## Containers
 

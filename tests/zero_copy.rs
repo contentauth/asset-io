@@ -15,9 +15,9 @@
 
 #![cfg(all(feature = "jpeg", feature = "png", feature = "bmff"))]
 
+use std::{borrow::Cow, io::Cursor};
+
 use asset_io::{ByteRange, Chunk, Error, HandlerRegistry, NullSink, Result, Role, Structure};
-use std::borrow::Cow;
-use std::io::Cursor;
 
 const FILES: &[&str] = &[
     "tests/fixtures/FireflyTrain.jpg",
@@ -79,6 +79,7 @@ fn unwanted_runs_are_skipped_and_cancel_stops() {
         fn wants(&self, _: &asset_io::Segment, role: Role) -> bool {
             role == Role::Payload
         }
+
         fn chunk(&mut self, c: Chunk<'_>) -> Result<()> {
             assert_eq!(c.role, Role::Payload);
             self.0 += c.data.len() as u64;

@@ -28,11 +28,12 @@
 //! So handlers only say where things are; finding the thumbnail inside them is
 //! done here, once.
 
-use crate::error::Result;
-use crate::item::RelationKind;
-use crate::structure::Structure;
-use std::borrow::Cow;
-use std::io::{Read, Seek};
+use std::{
+    borrow::Cow,
+    io::{Read, Seek},
+};
+
+use crate::{error::Result, item::RelationKind, structure::Structure};
 
 /// An embedded thumbnail with its data
 ///

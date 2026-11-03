@@ -1,10 +1,12 @@
 //! `Asset`: a parsed structure together with the blocking stream it describes.
 #![cfg(all(feature = "jpeg", feature = "png", feature = "svg"))]
 
-use asset_io::jumbf::C2PA_STORE_TYPE;
-use asset_io::{Asset, Chunk, Error, HandlerRegistry, ItemKind, NullSink, Structure, Updates};
-use std::io::Cursor;
-use std::sync::Arc;
+use std::{io::Cursor, sync::Arc};
+
+use asset_io::{
+    jumbf::C2PA_STORE_TYPE, Asset, Chunk, Error, HandlerRegistry, ItemKind, NullSink, Structure,
+    Updates,
+};
 
 const JPEG: &[u8] = &[0xff, 0xd8, 0xff, 0xd9];
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\0IEND\xae\x42\x60\x82";

@@ -22,8 +22,9 @@
 //! [`addition_to`] and [`extend`] convert between a store and the original-plus-update
 //! pair ISO BMFF keeps; [`Structure::store`](crate::Structure::store) uses them.
 
-use crate::error::{Error, Result};
 use std::ops::Range;
+
+use crate::error::{Error, Result};
 
 /// Most children looked at in one superbox.
 const MAX_CHILDREN: usize = 1 << 16;
@@ -312,7 +313,7 @@ mod tests {
         // A corrupted byte anywhere must give an error or a result, never a panic.
         for i in 0..longer.len() {
             let mut c = longer.clone();
-            c[i] ^= 0xFF;
+            c[i] ^= 0xff;
             let _ = addition_to(&store, &c);
         }
     }

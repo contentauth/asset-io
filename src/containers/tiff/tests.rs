@@ -1,12 +1,13 @@
 // Copyright 2026 Adobe. All rights reserved.
 // Licensed under the Apache License, Version 2.0 or the MIT license, at your option.
 
-use crate::containers::tiff::{layout, ByteOrder, C2PA_TAG, XMP_TAG};
+use std::io::{self, Cursor, Read, Seek, SeekFrom};
+
 use crate::{
+    containers::tiff::{layout, ByteOrder, C2PA_TAG, XMP_TAG},
     Action, ByteRange, Error, HandlerRegistry, ItemKind, NullSink, Progress, Structure, Task,
     Updates,
 };
-use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
 #[derive(Clone, Copy)]
 struct Format {
@@ -21,6 +22,7 @@ impl Format {
             4
         }
     }
+
     fn count_width(self) -> usize {
         if self.big {
             8
@@ -28,6 +30,7 @@ impl Format {
             2
         }
     }
+
     fn entry_width(self) -> usize {
         if self.big {
             20
@@ -35,6 +38,7 @@ impl Format {
             12
         }
     }
+
     fn header_len(self) -> usize {
         if self.big {
             16
@@ -42,6 +46,7 @@ impl Format {
             8
         }
     }
+
     fn number(self, value: u64, width: usize) -> Vec<u8> {
         if self.little {
             value.to_le_bytes()[..width].to_vec()

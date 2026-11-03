@@ -13,13 +13,16 @@
 
 //! Running a [`WritePlan`] one piece of I/O at a time; see [`Execution`].
 
-use crate::error::{Error, Result};
-use crate::plan::{Relocate, Step, WritePlan};
-use crate::range::ByteRange;
-use crate::segment::Role;
-use crate::sink::{Chunk, Sink};
-use crate::structure::{SegmentId, Structure};
 use std::mem;
+
+use crate::{
+    error::{Error, Result},
+    plan::{Relocate, Step, WritePlan},
+    range::ByteRange,
+    segment::Role,
+    sink::{Chunk, Sink},
+    structure::{SegmentId, Structure},
+};
 
 /// What the caller of [`Execution::step`] must do before calling it again.
 #[derive(Debug)]

@@ -4,11 +4,12 @@
 
 //! Opt-in discovery and scanning of embedded files without copying their data.
 
+use std::io::{self, Read, Seek, SeekFrom};
+
 use crate::{
     ByteRange, Encoding, Error, HandlerRegistry, Item, ItemKind, ReadSeek, Result, Structure,
     TransferEncoding, DETECT_LEN,
 };
-use std::io::{self, Read, Seek, SeekFrom};
 
 /// Resource budgets for an embedded scan. Exceeding a budget returns an error,
 /// not a truncated result. The root asset is not counted.

@@ -33,26 +33,34 @@
 //! used directly in a `#[test]`; [`try_check`](Conformance::try_check) returns the
 //! description instead.
 
-use crate::error::{Error, Result};
-use crate::execute::Action;
-use crate::handler::ContainerHandler;
-use crate::item::ItemKind;
-use crate::plan::{validate, WritePlan};
-use crate::segment::{Role, SegmentKind};
-use crate::sink::{Chunk, Sink};
-use crate::structure::Structure;
-use crate::task::{Progress, Task};
-use crate::updates::Updates;
-use std::io::Cursor;
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::Arc;
+use std::{
+    io::Cursor,
+    panic::{catch_unwind, AssertUnwindSafe},
+    sync::Arc,
+};
+
+use crate::{
+    error::{Error, Result},
+    execute::Action,
+    handler::ContainerHandler,
+    item::ItemKind,
+    plan::{validate, WritePlan},
+    segment::{Role, SegmentKind},
+    sink::{Chunk, Sink},
+    structure::Structure,
+    task::{Progress, Task},
+    updates::Updates,
+};
 
 /// Compression helpers for synthetic container fixtures.
 #[cfg(feature = "flate")]
 pub mod compress {
-    use flate2::write::{DeflateEncoder, ZlibEncoder};
-    use flate2::Compression;
     use std::io::Write;
+
+    use flate2::{
+        write::{DeflateEncoder, ZlibEncoder},
+        Compression,
+    };
 
     /// Encode a fixture as a zlib stream.
     pub fn zlib(data: &[u8]) -> Vec<u8> {
@@ -380,7 +388,7 @@ impl Conformance {
         for cut in cuts {
             inputs.push((format!("truncated to {cut} bytes"), sample[..cut].to_vec()));
         }
-        let mut rng = 0x9E37_79B9_7F4A_7C15u64;
+        let mut rng = 0x9e37_79b9_7f4a_7c15u64;
         for _ in 0..96.min(n * 2) {
             rng ^= rng << 13;
             rng ^= rng >> 7;
@@ -664,6 +672,7 @@ impl Sink for Pick {
     fn wants(&self, _: &crate::segment::Segment, role: Role) -> bool {
         role != Role::Payload
     }
+
     fn chunk(&mut self, c: Chunk<'_>) -> Result<()> {
         self.0.extend_from_slice(c.data);
         Ok(())

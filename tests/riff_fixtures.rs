@@ -15,8 +15,9 @@
 
 #![cfg(feature = "riff")]
 
-use asset_io::{Asset, HandlerRegistry, ItemKind, NullSink, Updates};
 use std::io::Cursor;
+
+use asset_io::{Asset, HandlerRegistry, ItemKind, NullSink, Updates};
 
 const FILES: &[&str] = &[
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample1.webp"),
@@ -57,12 +58,12 @@ fn real_files_round_trip_and_take_metadata() {
         );
 
         let u = Updates::new()
-            .set_jumbf(vec![0xAB; 1001])
+            .set_jumbf(vec![0xab; 1001])
             .set_xmp(b"<x:xmpmeta/>".to_vec());
         let out = write(&bytes, &u).unwrap_or_else(|e| panic!("{path}: {e}"));
         let t = open(&out).unwrap();
         for (kind, want) in [
-            (ItemKind::Jumbf, vec![0xAB; 1001]),
+            (ItemKind::Jumbf, vec![0xab; 1001]),
             (ItemKind::Xmp, b"<x:xmpmeta/>".to_vec()),
         ] {
             let e = t.require_item(kind).unwrap();

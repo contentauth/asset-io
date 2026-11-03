@@ -8,12 +8,15 @@
 
 mod write;
 
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+
 use crate::{
     BoxFuture, ByteRange, ContainerHandler, Error, FormatSpec, Io, Item, ItemInfo, ItemKind, Name,
     Result, SegmentId, SegmentKind, Structure, StructureBuilder, Updates, WritePlan,
 };
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 /// TIFF tag holding a C2PA manifest store, of type UNDEFINED (7).
 pub(crate) const C2PA_TAG: u16 = 0xcd41;
@@ -71,15 +74,18 @@ impl Entry {
     pub fn field_type(&self) -> u16 {
         self.field_type
     }
+
     /// The complete 12-byte or 20-byte directory entry.
     #[cfg(test)]
     pub fn range(&self) -> ByteRange {
         self.range
     }
+
     /// Stored value, including inline values. Unknown field types have no range.
     pub fn value_range(&self) -> Option<ByteRange> {
         self.value
     }
+
     /// The value-count field, independent of the value/offset field.
     ///
     /// Callers constructing TIFF C2PA data-hash exclusions need this field as well
@@ -108,9 +114,11 @@ impl Directory {
     pub fn range(&self) -> ByteRange {
         self.range
     }
+
     pub fn entries(&self) -> impl Iterator<Item = &Entry> {
         self.entries.values()
     }
+
     pub fn entry(&self, tag: u16) -> Option<&Entry> {
         self.entries.get(&tag)
     }
@@ -131,18 +139,22 @@ impl TiffLayout {
     pub fn byte_order(&self) -> ByteOrder {
         self.order
     }
+
     #[cfg(test)]
     pub fn is_big_tiff(&self) -> bool {
         self.big
     }
+
     /// Main IFD chain in logical page order, including a dedicated manifest IFD.
     pub fn pages(&self) -> impl Iterator<Item = &Directory> {
         self.pages.iter().map(|at| &self.directories[at])
     }
+
     /// All reachable directories, in physical file order.
     pub fn directories(&self) -> impl Iterator<Item = &Directory> {
         self.directories.values()
     }
+
     /// The last IFD's C2PA tag, falling back to the first IFD for older files.
     pub fn manifest_entry(&self) -> Option<&Entry> {
         self.pages()
@@ -150,9 +162,11 @@ impl TiffLayout {
             .and_then(|d| d.entry(C2PA_TAG))
             .or_else(|| self.pages().next().and_then(|d| d.entry(C2PA_TAG)))
     }
+
     pub fn xmp_entry(&self) -> Option<&Entry> {
         self.pages().next().and_then(|d| d.entry(XMP_TAG))
     }
+
     fn width(&self) -> usize {
         if self.big {
             8
@@ -160,6 +174,7 @@ impl TiffLayout {
             4
         }
     }
+
     fn count_width(&self) -> usize {
         if self.big {
             8
@@ -167,6 +182,7 @@ impl TiffLayout {
             2
         }
     }
+
     fn entry_width(&self) -> usize {
         if self.big {
             20
@@ -174,6 +190,7 @@ impl TiffLayout {
             12
         }
     }
+
     fn header_len(&self) -> u64 {
         if self.big {
             16
@@ -203,6 +220,7 @@ impl ContainerHandler for TiffHandler {
     fn id(&self) -> &'static str {
         ID
     }
+
     fn formats(&self) -> &[FormatSpec] {
         const FORMATS: &[FormatSpec] = &[
             FormatSpec::new("image/tiff", "tif").extension_aliases(&["tiff"]),
@@ -210,18 +228,21 @@ impl ContainerHandler for TiffHandler {
         ];
         FORMATS
     }
+
     fn detect(&self, header: &[u8]) -> bool {
         header.starts_with(b"II\x2a\0")
             || header.starts_with(b"MM\0\x2a")
             || header.starts_with(b"II\x2b\0")
             || header.starts_with(b"MM\0\x2b")
     }
+
     fn parse_async(self: Arc<Self>, mut io: Io) -> BoxFuture<'static, Result<Structure>> {
         Box::pin(async move {
             let state = read_layout(&mut io).await?;
             structure(self, io.len(), Arc::new(state))
         })
     }
+
     fn write_plan_async<'f, 'a: 'f>(
         &'f self,
         source: &'f Structure,
@@ -230,12 +251,14 @@ impl ContainerHandler for TiffHandler {
     ) -> BoxFuture<'f, Result<WritePlan<'a>>> {
         Box::pin(async move { write::plan(source, updates) })
     }
+
     fn compose(&self, kind: ItemKind, data: &[u8]) -> Result<Vec<u8>> {
         match kind {
             ItemKind::Jumbf | ItemKind::Xmp => Ok(data.to_vec()),
             _ => Err(Error::UnsupportedFormat),
         }
     }
+
     // C2PA excludes the manifest store's value bytes and the count field of its IFD
     // entry, which a store of another size changes (as c2pa-rs's TIFF handler does).
     // An inline value sits in the entry's value field, right after the count.

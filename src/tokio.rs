@@ -20,17 +20,25 @@
 //! let updates = asset_io::Updates::new().remove_jumbf();
 //! let mut out = tokio::fs::File::create("out.jpg").await?;
 //! asset_io::tokio::write(
-//!     &structure, &mut src, &mut out, &updates, &mut asset_io::NullSink,
-//! ).await?;
+//!     &structure,
+//!     &mut src,
+//!     &mut out,
+//!     &updates,
+//!     &mut asset_io::NullSink,
+//! )
+//! .await?;
 //! # Ok(())
 //! # }
 //! ```
 
-use crate::plan::WritePlan;
-use crate::HandlerRegistry;
-use crate::{Action, Item, Progress, Result, Sink, Structure, Task, Updates};
-use ::tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 use std::io::SeekFrom;
+
+use ::tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
+
+use crate::{
+    plan::WritePlan, Action, HandlerRegistry, Item, Progress, Result, Sink, Structure, Task,
+    Updates,
+};
 
 /// Run a task using asynchronous reads from `src`.
 ///

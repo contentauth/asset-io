@@ -13,21 +13,26 @@
 
 //! A parsed asset together with the blocking stream it was parsed from.
 
-use crate::embedded::{EmbeddedAsset, ScanLimits};
-use crate::error::{Error, Result};
-use crate::item::Item;
-use crate::plan::WritePlan;
-use crate::range::ByteRange;
-use crate::registry::HandlerRegistry;
-use crate::sink::Sink;
-use crate::structure::{C2paBox, Structure};
-use crate::thumbnail::Thumbnail;
-use crate::updates::Updates;
-use crate::walk::Node;
-use std::cell::{RefCell, RefMut};
-use std::fmt;
-use std::io::{Read, Seek, Write};
-use std::ops::Deref;
+use std::{
+    cell::{RefCell, RefMut},
+    fmt,
+    io::{Read, Seek, Write},
+    ops::Deref,
+};
+
+use crate::{
+    embedded::{EmbeddedAsset, ScanLimits},
+    error::{Error, Result},
+    item::Item,
+    plan::WritePlan,
+    range::ByteRange,
+    registry::HandlerRegistry,
+    sink::Sink,
+    structure::{C2paBox, Structure},
+    thumbnail::Thumbnail,
+    updates::Updates,
+    walk::Node,
+};
 
 /// A parsed [`Structure`] together with the blocking stream it describes.
 ///
@@ -43,7 +48,11 @@ use std::ops::Deref;
 /// if let Some(item) = asset.c2pa_item()? {
 ///     let exclusions = asset.c2pa_data_hash_exclusions(item)?;
 ///     let store = asset.read_content(item)?;
-///     println!("{} store bytes, {} excluded ranges", store.len(), exclusions.len());
+///     println!(
+///         "{} store bytes, {} excluded ranges",
+///         store.len(),
+///         exclusions.len()
+///     );
 /// }
 /// let mut out = std::fs::File::create("out.jpg")?;
 /// asset.write(&mut out, &Updates::new().remove_jumbf(), &mut NullSink)?;

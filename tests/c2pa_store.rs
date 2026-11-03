@@ -7,11 +7,11 @@
     feature = "bmff"
 ))]
 
-use asset_io::jumbf::C2PA_STORE_TYPE;
-use asset_io::{Asset, Error, HandlerRegistry, ItemKind, NullSink, Structure, Updates};
-use std::fs;
-use std::io::Cursor;
-use std::path::PathBuf;
+use std::{fs, io::Cursor, path::PathBuf};
+
+use asset_io::{
+    jumbf::C2PA_STORE_TYPE, Asset, Error, HandlerRegistry, ItemKind, NullSink, Structure, Updates,
+};
 
 fn boxed(ty: &[u8; 4], body: &[u8]) -> Vec<u8> {
     let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();

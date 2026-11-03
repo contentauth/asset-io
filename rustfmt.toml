@@ -1,0 +1,15 @@
+# Matches c2pa-rs. These options need nightly rustfmt:
+#
+#   rustup toolchain add nightly
+#   cargo +nightly fmt
+#
+# `make fmt` formats and `make check-format` checks, as CI does.
+
+blank_lines_upper_bound = 1
+edition = "2021"
+format_code_in_doc_comments = true
+group_imports = "StdExternalCrate"
+hex_literal_case = "Lower"
+imports_granularity = "Crate"
+reorder_impl_items = true
+unstable_features = true

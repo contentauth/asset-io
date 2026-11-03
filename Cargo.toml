@@ -10,6 +10,7 @@ keywords = ["asset", "c2pa", "xmp", "jumbf", "metadata"]
 categories = ["multimedia", "parsing"]
 exclude = ["tests/", "fuzz/", "fuzz.sh", "FUZZING_SETUP.md", "Makefile", "asset-io-c/", ".github/", ".vscode/"]
 rust-version = "1.88"
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

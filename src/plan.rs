@@ -21,16 +21,21 @@
 //! can run the same plan some other way (asynchronously, or from a state machine
 //! that does no I/O itself), because the plan is plain data.
 
-use crate::error::{Error, Result};
-use crate::execute::{Action, Execution};
-use crate::range::ByteRange;
-use crate::segment::{Role, Segment};
-use crate::sink::Sink;
-use crate::structure::{SegmentId, Structure};
-use crate::task::Task;
-use std::borrow::Cow;
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::sync::Arc;
+use std::{
+    borrow::Cow,
+    io::{Read, Seek, SeekFrom, Write},
+    sync::Arc,
+};
+
+use crate::{
+    error::{Error, Result},
+    execute::{Action, Execution},
+    range::ByteRange,
+    segment::{Role, Segment},
+    sink::Sink,
+    structure::{SegmentId, Structure},
+    task::Task,
+};
 
 /// Where bytes moved: `(end of the old region, size change)` for each edit.
 ///

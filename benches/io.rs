@@ -21,14 +21,13 @@
 //! copy cost, not disk speed. `sha256` and `copy` are baselines: a read or write
 //! cannot go faster than the work it feeds.
 
+use std::{hint::black_box, io::Cursor, path::PathBuf};
+
 use asset_io::{
     Chunk, HandlerRegistry, ItemKind, NullSink, Result, Role, SegmentKind, Structure, Updates,
 };
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use sha2::{Digest, Sha256};
-use std::hint::black_box;
-use std::io::Cursor;
-use std::path::PathBuf;
 
 const BIG: usize = 32 << 20;
 
@@ -55,7 +54,7 @@ fn bx(ty: &[u8; 4], payload: &[u8]) -> Vec<u8> {
 
 /// Deterministic filler with no 0xFF bytes, so it is valid JPEG entropy data.
 fn filler(n: usize) -> Vec<u8> {
-    let mut x = 0x9E37_79B9_7F4A_7C15u64;
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
     (0..n)
         .map(|_| {
             x ^= x << 13;
@@ -69,15 +68,15 @@ fn filler(n: usize) -> Vec<u8> {
 fn synthetic_jpeg(scan: usize) -> Vec<u8> {
     let xmp = b"<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"></x:xmpmeta>";
     let sig = b"http://ns.adobe.com/xap/1.0/\0";
-    let mut v = vec![0xFF, 0xD8, 0xFF, 0xE1];
+    let mut v = vec![0xff, 0xd8, 0xff, 0xe1];
     v.extend_from_slice(&((2 + sig.len() + xmp.len()) as u16).to_be_bytes());
     v.extend_from_slice(sig);
     v.extend_from_slice(xmp);
     v.extend_from_slice(&[
-        0xFF, 0xDA, 0x00, 0x0C, 0x03, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11, 0x00, 0x3F, 0x00,
+        0xff, 0xda, 0x00, 0x0c, 0x03, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11, 0x00, 0x3f, 0x00,
     ]);
     v.extend_from_slice(&filler(scan));
-    v.extend_from_slice(&[0xFF, 0xD9]);
+    v.extend_from_slice(&[0xff, 0xd9]);
     v
 }
 
@@ -244,6 +243,7 @@ fn bench_read(c: &mut Criterion) {
             fn wants(&self, seg: &asset_io::Segment, _: Role) -> bool {
                 seg.kind() != SegmentKind::MediaData && seg.range().len() < (1 << 20)
             }
+
             fn chunk(&mut self, c: Chunk<'_>) -> Result<()> {
                 self.0 += c.data.len() as u64;
                 Ok(())

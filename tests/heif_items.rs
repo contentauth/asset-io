@@ -15,10 +15,11 @@
 
 #![cfg(feature = "bmff")]
 
+use std::io::{Cursor, Read, Seek};
+
 use asset_io::{
     Asset, HandlerRegistry, ItemInfo, ItemKind, NullSink, RelationKind, Structure, Updates,
 };
-use std::io::{Cursor, Read, Seek};
 
 const FILES: &[&str] = &[
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample1.heic"),

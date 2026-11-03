@@ -11,8 +11,25 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rustfmt.toml follows c2pa-rs and uses options only nightly rustfmt has.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: |
+          for manifest in Cargo.toml asset-io-c/Cargo.toml fuzz/Cargo.toml; do
+            cargo fmt --manifest-path "$manifest" -- --check
+          done
+
   ci:
-    name: Format / Clippy / Test
+    name: Clippy / Docs / Test
     runs-on: ubuntu-latest
 
     steps:
@@ -21,7 +38,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -33,13 +50,15 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      - name: Check formatting
-        run: cargo fmt --all --check
-
       - name: Clippy (all features)
         run: |
           cargo clippy --all-features --all-targets -- -D warnings
           cargo clippy --no-default-features --all-targets -- -D warnings
+
+      - name: Docs
+        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
 
       - name: Tests without handlers
         run: |
@@ -62,11 +81,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
 
-      - name: Check formatting and lint
+      - name: Lint
         run: |
-          cargo fmt --manifest-path asset-io-c/Cargo.toml --check
           cargo clippy --locked --manifest-path asset-io-c/Cargo.toml --all-features --all-targets -- -D warnings
 
       - name: Test minimal, default and full bindings

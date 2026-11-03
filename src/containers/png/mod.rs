@@ -22,15 +22,16 @@
 //! [`Zlib`](TransferEncoding::Zlib) transfer encoding. New XMP is written
 //! uncompressed.
 
-use crate::jumbf::superbox_type;
-use crate::plan::WritePlan;
-use crate::{
-    BoxFuture, ContainerHandler, Crc32, Error, Existing, FormatSpec, Io, ItemInfo, ItemKind,
-    MetadataSlot, Name, PlanBuilder, ReadWriteSeek, Result, Segment, SegmentId, SegmentKind,
-    Structure, StructureBuilder, TransferEncoding, Updates,
+use std::{
+    io::{Read, Seek, SeekFrom, Write},
+    sync::Arc,
 };
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::sync::Arc;
+
+use crate::{
+    jumbf::superbox_type, plan::WritePlan, BoxFuture, ContainerHandler, Crc32, Error, Existing,
+    FormatSpec, Io, ItemInfo, ItemKind, MetadataSlot, Name, PlanBuilder, ReadWriteSeek, Result,
+    Segment, SegmentId, SegmentKind, Structure, StructureBuilder, TransferEncoding, Updates,
+};
 
 const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const ITXT: [u8; 4] = *b"iTXt";
@@ -47,7 +48,7 @@ const XMP_ITXT_PREFIX: &[u8; XMP_PREFIX_LEN] = b"XML:com.adobe.xmp\0\0\0\0\0";
 const XMP_KEYWORD: &[u8] = b"XML:com.adobe.xmp\0";
 
 /// Largest legal chunk data length (PNG spec: 2^31 - 1).
-const MAX_CHUNK_LEN: u64 = 0x7FFF_FFFF;
+const MAX_CHUNK_LEN: u64 = 0x7fff_ffff;
 
 /// How much of an iTXt chunk to look at when deciding whether it holds XMP.
 const PEEK: usize = 256;
@@ -424,9 +425,10 @@ pub(crate) fn fix_crc<W: Read + Write + Seek>(out: &mut W, seg: &Segment) -> Res
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::*;
     use crate::testing::{write, Conformance};
-    use std::io::Cursor;
 
     fn chunk(ty: &[u8; 4], data: &[u8]) -> Vec<u8> {
         let mut v = Vec::new();
@@ -564,7 +566,7 @@ mod tests {
         assert!(parse(&mut Cursor::new(png)).is_err());
 
         let mut bad = SIGNATURE.to_vec();
-        bad.extend_from_slice(&0x7FFF_FFF0u32.to_be_bytes());
+        bad.extend_from_slice(&0x7fff_fff0u32.to_be_bytes());
         bad.extend_from_slice(b"IDAT");
         bad.extend_from_slice(&[0; 16]);
         assert!(parse(&mut Cursor::new(bad)).is_err());
@@ -591,7 +593,7 @@ mod tests {
         assert_eq!((t.offset(), t.len()), (clean.len() as u64, 8));
 
         // An edit moves it with the file, and what was planned is what is written.
-        let updates = Updates::new().set_jumbf(vec![0xAB; 100]);
+        let updates = Updates::new().set_jumbf(vec![0xab; 100]);
         let mut out = Cursor::new(Vec::new());
         let dest = write(
             &s,
@@ -615,7 +617,7 @@ mod tests {
         let png = sample_png();
         let s = parse(&mut Cursor::new(png.clone())).unwrap();
         let updates = Updates::new()
-            .set_jumbf(vec![0xAB; 100])
+            .set_jumbf(vec![0xab; 100])
             .set_xmp(b"<x/>".to_vec());
         let mut out = Cursor::new(Vec::new());
         write(

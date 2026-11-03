@@ -59,23 +59,25 @@
 //!
 //! Not yet ported: EXIF thumbnail location.
 
-use crate::plan::WritePlan;
-use crate::{
-    BoxFuture, ByteRange, ContainerHandler, Encoding, Error, Existing, Extent, FormatSpec, Io,
-    ItemInfo, ItemKind, MetadataSlot, Name, PlanBuilder, ReadSeek, Result, Role, Segment,
-    SegmentId, SegmentKind, Structure, StructureBuilder, Updates, MAX_SEGMENTS,
+use std::{
+    borrow::Cow,
+    collections::BTreeMap,
+    io::{Read, Seek},
+    sync::Arc,
 };
-use std::borrow::Cow;
-use std::collections::BTreeMap;
-use std::io::{Read, Seek};
-use std::sync::Arc;
 
-const SOI: u8 = 0xD8;
-const EOI: u8 = 0xD9;
-const SOS: u8 = 0xDA;
-const APP1: u8 = 0xE1;
-const APP2: u8 = 0xE2;
-const APP11: u8 = 0xEB;
+use crate::{
+    plan::WritePlan, BoxFuture, ByteRange, ContainerHandler, Encoding, Error, Existing, Extent,
+    FormatSpec, Io, ItemInfo, ItemKind, MetadataSlot, Name, PlanBuilder, ReadSeek, Result, Role,
+    Segment, SegmentId, SegmentKind, Structure, StructureBuilder, Updates, MAX_SEGMENTS,
+};
+
+const SOI: u8 = 0xd8;
+const EOI: u8 = 0xd9;
+const SOS: u8 = 0xda;
+const APP1: u8 = 0xe1;
+const APP2: u8 = 0xe2;
+const APP11: u8 = 0xeb;
 
 /// Start of the Multi-Picture Format APP2 payload.
 const MPF_SIGNATURE: &[u8] = b"MPF\0";
@@ -97,7 +99,7 @@ const EXT_PREFIX_LEN: usize = EXT_SIG_LEN + 32 + 4 + 4;
 const MAX_HEADER: usize = 4 + EXT_PREFIX_LEN;
 
 /// Largest value of a marker's length field.
-const MAX_LEN_FIELD: u64 = 0xFFFF;
+const MAX_LEN_FIELD: u64 = 0xffff;
 /// Largest standard XMP packet one APP1 can carry.
 const MAX_STD_XMP: u64 = MAX_LEN_FIELD - 2 - XMP_SIG_LEN as u64;
 /// Extended XMP payload per segment.
@@ -153,22 +155,22 @@ pub const ID: &str = "jpeg";
 fn marker_symbol(m: u8) -> Cow<'static, str> {
     match m {
         0x01 => "TEM".into(),
-        0xC4 => "DHT".into(),
-        0xC8 => "JPG".into(),
-        0xCC => "DAC".into(),
-        0xC0..=0xCF => Cow::Owned(format!("SOF{}", m - 0xC0)),
-        0xD0..=0xD7 => Cow::Owned(format!("RST{}", m - 0xD0)),
-        0xD8 => "SOI".into(),
-        0xD9 => "EOI".into(),
-        0xDA => "SOS".into(),
-        0xDB => "DQT".into(),
-        0xDC => "DNL".into(),
-        0xDD => "DRI".into(),
-        0xDE => "DHP".into(),
-        0xDF => "EXP".into(),
-        0xE0..=0xEF => Cow::Owned(format!("APP{}", m - 0xE0)),
-        0xF0..=0xFD => Cow::Owned(format!("JPG{}", m - 0xF0)),
-        0xFE => "COM".into(),
+        0xc4 => "DHT".into(),
+        0xc8 => "JPG".into(),
+        0xcc => "DAC".into(),
+        0xc0..=0xcf => Cow::Owned(format!("SOF{}", m - 0xc0)),
+        0xd0..=0xd7 => Cow::Owned(format!("RST{}", m - 0xd0)),
+        0xd8 => "SOI".into(),
+        0xd9 => "EOI".into(),
+        0xda => "SOS".into(),
+        0xdb => "DQT".into(),
+        0xdc => "DNL".into(),
+        0xdd => "DRI".into(),
+        0xde => "DHP".into(),
+        0xdf => "EXP".into(),
+        0xe0..=0xef => Cow::Owned(format!("APP{}", m - 0xe0)),
+        0xf0..=0xfd => Cow::Owned(format!("JPG{}", m - 0xf0)),
+        0xfe => "COM".into(),
         // 0x02..=0xBF are reserved (RES); 0x00 and 0xFF are never markers.
         _ => "RES".into(),
     }
@@ -195,7 +197,7 @@ impl ContainerHandler for JpegHandler {
     }
 
     fn detect(&self, header: &[u8]) -> bool {
-        header.starts_with(&[0xFF, SOI, 0xFF])
+        header.starts_with(&[0xff, SOI, 0xff])
     }
 
     fn parse_async(self: Arc<Self>, io: Io) -> BoxFuture<'static, Result<Structure>> {
@@ -237,7 +239,7 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<St
     }
     let mut soi = [0u8; 2];
     io.read_at(0, &mut soi).await?;
-    if soi != [0xFF, SOI] {
+    if soi != [0xff, SOI] {
         return Err(Error::InvalidFormat("Not a JPEG file".into()));
     }
 
@@ -345,7 +347,7 @@ async fn scan_image(
 
         // A marker is FF xx, optionally preceded by FF fill bytes.
         let first = r.u8().await?;
-        if first != 0xFF {
+        if first != 0xff {
             return Err(Error::invalid_segment(
                 offset,
                 format!("expected marker prefix 0xFF, found 0x{first:02X}"),
@@ -354,7 +356,7 @@ async fn scan_image(
         let mut fill = 0u64;
         let marker = loop {
             let m = r.u8().await?;
-            if m == 0xFF {
+            if m == 0xff {
                 fill += 1;
             } else {
                 break m;
@@ -377,7 +379,7 @@ async fn scan_image(
                 b.push_span(SegmentKind::Other, Name::Marker(EOI), 2, 0, 0)?;
                 return Ok(mstart + 2);
             }
-            0x01 | 0xD0..=0xD7 | SOI => {
+            0x01 | 0xd0..=0xd7 | SOI => {
                 b.push_span(SegmentKind::Other, Name::Marker(marker), 2, 0, 0)?;
                 offset = mstart + 2;
                 continue;
@@ -598,7 +600,7 @@ async fn scan_image(
 async fn next_is_image(io: &mut Io, offset: u64) -> Result<bool> {
     let mut m = [0u8; 3];
     io.read_at(offset, &mut m).await?;
-    Ok(m == [0xFF, SOI, 0xFF])
+    Ok(m == [0xff, SOI, 0xff])
 }
 
 /// The Multi-Picture Format index: where each entry's size and offset fields are
@@ -621,7 +623,7 @@ impl MpIndex {
             little,
             entries: Vec::new(),
         };
-        if me.u16(p, 2)? != 0x2A {
+        if me.u16(p, 2)? != 0x2a {
             return None;
         }
         let ifd = me.u32(p, 4)? as usize;
@@ -647,7 +649,7 @@ impl MpIndex {
             );
             match tag {
                 // NumberOfImages: one LONG.
-                0xB001 => {
+                0xb001 => {
                     if images.is_some() || ty != 4 || n != 1 {
                         return None;
                     }
@@ -655,7 +657,7 @@ impl MpIndex {
                 }
                 // MPEntry: UNDEFINED, 16 bytes per image. A second one would leave
                 // readers disagreeing about which index is the real one.
-                0xB002 => {
+                0xb002 => {
                     if array.is_some() || ty != 7 {
                         return None;
                     }
@@ -881,7 +883,7 @@ impl Entropy {
         while *idx < chunk.len() {
             if !self.prev_ff {
                 // Entropy data is almost all non-0xFF: skip to the next 0xFF.
-                match memchr::memchr(0xFF, &chunk[*idx..]) {
+                match memchr::memchr(0xff, &chunk[*idx..]) {
                     Some(p) => {
                         *idx += p + 1;
                         self.prev_ff = true;
@@ -896,8 +898,8 @@ impl Entropy {
             *idx += 1;
             match byte {
                 0x00 => self.prev_ff = false,
-                0xFF => {} // fill: the last FF is the marker prefix
-                0xD0..=0xD7 => {
+                0xff => {} // fill: the last FF is the marker prefix
+                0xd0..=0xd7 => {
                     self.prev_ff = false;
                     return Some(Event::Rst(at - 1, byte));
                 }
@@ -1134,7 +1136,7 @@ fn put_marker_len(hdr: &mut [u8], marker: u8, header_len: u32, payload_len: u64)
         what: "JPEG segment length",
         limit: MAX_LEN_FIELD,
     })?;
-    hdr[0] = 0xFF;
+    hdr[0] = 0xff;
     hdr[1] = marker;
     hdr[2..4].copy_from_slice(&v.to_be_bytes());
     Ok(())
@@ -1297,29 +1299,33 @@ fn read_xmp<R: Read + Seek>(s: &Structure, src: &mut R) -> Result<Option<Vec<u8>
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::testing::{write, Conformance};
-    use crate::{Chunk, NullSink, Sink};
-    use sha2::{Digest, Sha256};
     use std::io::Cursor;
 
+    use sha2::{Digest, Sha256};
+
+    use super::*;
+    use crate::{
+        testing::{write, Conformance},
+        Chunk, NullSink, Sink,
+    };
+
     fn marker(m: u8, data: &[u8]) -> Vec<u8> {
-        let mut v = vec![0xFF, m];
+        let mut v = vec![0xff, m];
         v.extend_from_slice(&((data.len() + 2) as u16).to_be_bytes());
         v.extend_from_slice(data);
         v
     }
 
     fn sample_jpeg() -> Vec<u8> {
-        let mut v = vec![0xFF, SOI];
-        v.extend(marker(0xE0, b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0"));
-        v.extend(marker(0xDB, &[0u8; 65]));
-        v.extend(marker(0xDB, &[1u8; 65])); // second DQT
-        v.extend(marker(0xC0, &[8, 0, 1, 0, 1, 1, 1, 0x11, 0]));
-        v.extend(marker(0xC4, &[0u8; 20]));
-        v.extend(marker(SOS, &[1, 1, 0, 0, 0x3F, 0]));
-        v.extend_from_slice(&[0x12, 0x34, 0xFF, 0x00, 0x56]);
-        v.extend_from_slice(&[0xFF, EOI]);
+        let mut v = vec![0xff, SOI];
+        v.extend(marker(0xe0, b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0"));
+        v.extend(marker(0xdb, &[0u8; 65]));
+        v.extend(marker(0xdb, &[1u8; 65])); // second DQT
+        v.extend(marker(0xc0, &[8, 0, 1, 0, 1, 1, 1, 0x11, 0]));
+        v.extend(marker(0xc4, &[0u8; 20]));
+        v.extend(marker(SOS, &[1, 1, 0, 0, 0x3f, 0]));
+        v.extend_from_slice(&[0x12, 0x34, 0xff, 0x00, 0x56]);
+        v.extend_from_slice(&[0xff, EOI]);
         v
     }
 
@@ -1350,23 +1356,23 @@ mod tests {
     #[test]
     fn box_names() {
         let n = |m| marker_symbol(m).into_owned();
-        assert_eq!(n(0xD8), "SOI");
-        assert_eq!(n(0xD9), "EOI");
-        assert_eq!(n(0xDA), "SOS");
-        assert_eq!(n(0xE0), "APP0");
-        assert_eq!(n(0xEB), "APP11");
-        assert_eq!(n(0xEF), "APP15");
-        assert_eq!(n(0xC0), "SOF0");
-        assert_eq!(n(0xC2), "SOF2");
-        assert_eq!(n(0xC4), "DHT");
-        assert_eq!(n(0xCC), "DAC");
-        assert_eq!(n(0xD0), "RST0");
-        assert_eq!(n(0xD7), "RST7");
-        assert_eq!(n(0xDB), "DQT");
-        assert_eq!(n(0xDD), "DRI");
-        assert_eq!(n(0xF0), "JPG0");
-        assert_eq!(n(0xFD), "JPG13");
-        assert_eq!(n(0xFE), "COM");
+        assert_eq!(n(0xd8), "SOI");
+        assert_eq!(n(0xd9), "EOI");
+        assert_eq!(n(0xda), "SOS");
+        assert_eq!(n(0xe0), "APP0");
+        assert_eq!(n(0xeb), "APP11");
+        assert_eq!(n(0xef), "APP15");
+        assert_eq!(n(0xc0), "SOF0");
+        assert_eq!(n(0xc2), "SOF2");
+        assert_eq!(n(0xc4), "DHT");
+        assert_eq!(n(0xcc), "DAC");
+        assert_eq!(n(0xd0), "RST0");
+        assert_eq!(n(0xd7), "RST7");
+        assert_eq!(n(0xdb), "DQT");
+        assert_eq!(n(0xdd), "DRI");
+        assert_eq!(n(0xf0), "JPG0");
+        assert_eq!(n(0xfd), "JPG13");
+        assert_eq!(n(0xfe), "COM");
         assert_eq!(n(0x10), "RES");
         assert!(JpegHandler.box_name(Name::None).is_none());
     }
@@ -1387,13 +1393,13 @@ mod tests {
     fn conforms() {
         let c = Conformance::new(handler()).jumbf(Some(fake_jumbf(70_000)));
         c.check("sample", &sample_jpeg());
-        c.check("minimal", &[0xFF, SOI, 0xFF, EOI]);
+        c.check("minimal", &[0xff, SOI, 0xff, EOI]);
 
-        let mut fill = vec![0xFF, SOI];
-        fill.extend(marker(0xE0, b"JFIF\0"));
-        fill.push(0xFF); // fill byte before the next marker
-        fill.extend(marker(0xDB, &[0u8; 65]));
-        fill.extend_from_slice(&[0xFF, EOI]);
+        let mut fill = vec![0xff, SOI];
+        fill.extend(marker(0xe0, b"JFIF\0"));
+        fill.push(0xff); // fill byte before the next marker
+        fill.extend(marker(0xdb, &[0u8; 65]));
+        fill.extend_from_slice(&[0xff, EOI]);
         fill.extend_from_slice(b"trailing");
         c.check("fill bytes and trailing data", &fill);
 
@@ -1418,16 +1424,16 @@ mod tests {
     fn rejects_malformed_input() {
         let j = sample_jpeg();
         assert!(parse(&mut Cursor::new(j[..j.len() - 10].to_vec())).is_err());
-        let bad = vec![0xFF, SOI, 0xFF, 0xE0, 0xFF, 0xFF, 1, 2, 3];
+        let bad = vec![0xff, SOI, 0xff, 0xe0, 0xff, 0xff, 1, 2, 3];
         assert!(parse(&mut Cursor::new(bad)).is_err());
-        let short_len = vec![0xFF, SOI, 0xFF, 0xE0, 0x00, 0x01, 0xFF, EOI];
+        let short_len = vec![0xff, SOI, 0xff, 0xe0, 0x00, 0x01, 0xff, EOI];
         assert!(parse(&mut Cursor::new(short_len)).is_err());
         assert!(parse(&mut Cursor::new(vec![1, 2, 3, 4])).is_err());
     }
 
     #[test]
     fn minimal_file_still_gets_metadata() {
-        let j = vec![0xFF, SOI, 0xFF, EOI];
+        let j = vec![0xff, SOI, 0xff, EOI];
         let updates = Updates::new().set_jumbf(fake_jumbf(100));
         let (out, dest) = do_write(&j, &updates);
         let e = dest.require_item(ItemKind::Jumbf).unwrap();
@@ -1501,24 +1507,24 @@ mod tests {
     /// Progressive-style file: two scans, restart markers in the first, and a
     /// manifest placed after the last scan.
     fn multi_scan_jpeg() -> Vec<u8> {
-        let mut j = vec![0xFF, SOI];
-        j.extend(marker(0xE0, b"JFIF\0"));
-        j.extend(marker(0xC2, &[8, 0, 1, 0, 1, 1, 1, 0x11, 0]));
-        j.extend(marker(0xC4, &[0u8; 20]));
-        j.extend(marker(SOS, &[1, 1, 0, 0, 0x3F, 0]));
+        let mut j = vec![0xff, SOI];
+        j.extend(marker(0xe0, b"JFIF\0"));
+        j.extend(marker(0xc2, &[8, 0, 1, 0, 1, 1, 1, 0x11, 0]));
+        j.extend(marker(0xc4, &[0u8; 20]));
+        j.extend(marker(SOS, &[1, 1, 0, 0, 0x3f, 0]));
         // stuffed byte, RST0, fill + RST1
         j.extend_from_slice(&[
-            0x11, 0xFF, 0x00, 0x22, 0xFF, 0xD0, 0x33, 0xFF, 0xFF, 0xD1, 0x44,
+            0x11, 0xff, 0x00, 0x22, 0xff, 0xd0, 0x33, 0xff, 0xff, 0xd1, 0x44,
         ]);
-        j.extend(marker(0xC4, &[0u8; 20]));
-        j.extend(marker(SOS, &[1, 1, 0, 0, 0x3F, 0]));
+        j.extend(marker(0xc4, &[0u8; 20]));
+        j.extend(marker(SOS, &[1, 1, 0, 0, 0x3f, 0]));
         j.extend_from_slice(&[0x55, 0x66]);
         let mut d = b"JP".to_vec();
         d.extend_from_slice(&0x0211u16.to_be_bytes());
         d.extend_from_slice(&1u32.to_be_bytes());
         d.extend(fake_jumbf(60));
         j.extend(marker(APP11, &d));
-        j.extend_from_slice(&[0xFF, EOI]);
+        j.extend_from_slice(&[0xff, EOI]);
         j
     }
 
@@ -1578,13 +1584,13 @@ mod tests {
             names,
             [
                 m(SOI),
-                m(0xE0),
-                m(0xC2),
-                m(0xC4),
+                m(0xe0),
+                m(0xc2),
+                m(0xc4),
                 m(SOS),
-                m(0xD0),
-                m(0xD1),
-                m(0xC4),
+                m(0xd0),
+                m(0xd1),
+                m(0xc4),
                 m(SOS),
                 m(APP11),
                 m(EOI)
@@ -1594,10 +1600,10 @@ mod tests {
         for (name, r) in &els {
             assert_eq!(r.offset(), next);
             next = r.end();
-            if let Name::Marker(c @ 0xD0..=0xD7) = name {
+            if let Name::Marker(c @ 0xd0..=0xd7) = name {
                 assert_eq!(
                     &j[r.offset() as usize..r.offset() as usize + 2],
-                    &[0xFF, *c]
+                    &[0xff, *c]
                 );
             }
         }
@@ -1617,12 +1623,12 @@ mod tests {
 
     #[test]
     fn restart_markers_do_not_inflate_the_structure() {
-        let mut j = vec![0xFF, SOI];
-        j.extend(marker(SOS, &[1, 1, 0, 0, 0x3F, 0]));
+        let mut j = vec![0xff, SOI];
+        j.extend(marker(SOS, &[1, 1, 0, 0, 0x3f, 0]));
         for i in 0..20_000u32 {
-            j.extend_from_slice(&[0x01, 0xFF, 0xD0 + (i % 8) as u8]);
+            j.extend_from_slice(&[0x01, 0xff, 0xd0 + (i % 8) as u8]);
         }
-        j.extend_from_slice(&[0xFF, EOI]);
+        j.extend_from_slice(&[0xff, EOI]);
         let s = parse(&mut Cursor::new(j.clone())).unwrap();
         assert!(s.segments().len() <= 4, "{} segments", s.segments().len());
         // SOI, the scan up to its first restart marker, 20 000 restart elements, EOI.
@@ -1631,15 +1637,15 @@ mod tests {
 
     #[test]
     fn a_restart_marker_may_open_the_entropy_data() {
-        let mut j = vec![0xFF, SOI];
-        j.extend(marker(SOS, &[1, 1, 0, 0, 0x3F, 0]));
+        let mut j = vec![0xff, SOI];
+        j.extend(marker(SOS, &[1, 1, 0, 0, 0x3f, 0]));
         let sos_end = j.len() as u64;
-        j.extend_from_slice(&[0xFF, 0xD0, 0x01, 0xFF, 0xD1, 0x02, 0xFF, EOI]);
+        j.extend_from_slice(&[0xff, 0xd0, 0x01, 0xff, 0xd1, 0x02, 0xff, EOI]);
         let s = parse(&mut Cursor::new(j.clone())).unwrap();
         let els = elements_of(&s);
         let names: Vec<Name> = els.iter().map(|(n, _)| *n).collect();
         let m = Name::Marker;
-        assert_eq!(names, [m(SOI), m(SOS), m(0xD0), m(0xD1), m(EOI)]);
+        assert_eq!(names, [m(SOI), m(SOS), m(0xd0), m(0xd1), m(EOI)]);
         assert_eq!(els[1].1.end(), sos_end, "the scan box is its header");
     }
 
@@ -1683,7 +1689,7 @@ mod tests {
         let e = ok.require_item(ItemKind::Jumbf).unwrap();
         assert_eq!(e.extent_count(), 2);
 
-        let gap = marker(0xFE, b"comment"); // COM between the packets
+        let gap = marker(0xfe, b"comment"); // COM between the packets
         assert!(matches!(
             parse(&mut Cursor::new(build(&gap))),
             Err(Error::InvalidFormat(_))
@@ -1693,8 +1699,8 @@ mod tests {
     #[test]
     fn jumbf_type_comes_from_the_description_box() {
         let uuid = [
-            0x63, 0x32, 0x70, 0x61, 0x00, 0x11, 0x00, 0x10, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38,
-            0x9B, 0x71,
+            0x63, 0x32, 0x70, 0x61, 0x00, 0x11, 0x00, 0x10, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38,
+            0x9b, 0x71,
         ];
         let mut b = Vec::new();
         b.extend_from_slice(&60u32.to_be_bytes());
@@ -1725,7 +1731,7 @@ mod tests {
         let j = sample_jpeg();
         let body = fake_jumbf(100);
         let mut data = b"JP".to_vec();
-        data.extend_from_slice(&0xF400u16.to_be_bytes());
+        data.extend_from_slice(&0xf400u16.to_be_bytes());
         data.extend_from_slice(&0u32.to_be_bytes());
         data.extend_from_slice(&body);
         let mut with = j[..2].to_vec();
@@ -1914,6 +1920,7 @@ mod tests {
             fn wants(&self, seg: &Segment, role: Role) -> bool {
                 !(seg.name() == Name::Marker(APP11) && role == Role::Payload)
             }
+
             fn chunk(&mut self, c: Chunk<'_>) -> Result<()> {
                 self.0.update(c.data);
                 Ok(())
@@ -2053,12 +2060,12 @@ mod tests {
 
     /// Image 2 of an MPF file: a complete small JPEG.
     fn second_image() -> Vec<u8> {
-        let mut v = vec![0xFF, SOI];
-        v.extend(marker(0xE0, b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0"));
-        v.extend(marker(0xDB, &[2u8; 65]));
-        v.extend(marker(SOS, &[1, 1, 0, 0, 0x3F, 0]));
-        v.extend_from_slice(&[0x9A, 0xBC, 0xFF, 0x00, 0xDE]);
-        v.extend_from_slice(&[0xFF, EOI]);
+        let mut v = vec![0xff, SOI];
+        v.extend(marker(0xe0, b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0"));
+        v.extend(marker(0xdb, &[2u8; 65]));
+        v.extend(marker(SOS, &[1, 1, 0, 0, 0x3f, 0]));
+        v.extend_from_slice(&[0x9a, 0xbc, 0xff, 0x00, 0xde]);
+        v.extend_from_slice(&[0xff, EOI]);
         v
     }
 
@@ -2082,18 +2089,18 @@ mod tests {
         let build = |first_len: u32, second_off: u32| -> Vec<u8> {
             let mut b = Vec::new();
             b.extend_from_slice(if little { b"II" } else { b"MM" });
-            b.extend_from_slice(&u16b(0x2A));
+            b.extend_from_slice(&u16b(0x2a));
             b.extend_from_slice(&u32b(8));
             b.extend_from_slice(&u16b(3));
             for (tag, ty, count, val) in [
-                (0xB000u16, 7u16, 4u32, u32::from_be_bytes(*b"0100")),
-                (0xB001, 4, 1, 2),
-                (0xB002, 7, 32, 50),
+                (0xb000u16, 7u16, 4u32, u32::from_be_bytes(*b"0100")),
+                (0xb001, 4, 1, 2),
+                (0xb002, 7, 32, 50),
             ] {
                 b.extend_from_slice(&u16b(tag));
                 b.extend_from_slice(&u16b(ty));
                 b.extend_from_slice(&u32b(count));
-                b.extend_from_slice(&if tag == 0xB000 {
+                b.extend_from_slice(&if tag == 0xb000 {
                     val.to_be_bytes()
                 } else {
                     u32b(val)
@@ -2111,15 +2118,15 @@ mod tests {
             b
         };
         let head = |block: &[u8]| -> Vec<u8> {
-            let mut v = vec![0xFF, SOI];
-            v.extend(marker(0xE0, b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0"));
+            let mut v = vec![0xff, SOI];
+            v.extend(marker(0xe0, b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0"));
             let mut app2 = MPF_SIGNATURE.to_vec();
             app2.extend_from_slice(block);
             v.extend(marker(APP2, &app2));
-            v.extend(marker(0xDB, &[0u8; 65]));
-            v.extend(marker(SOS, &[1, 1, 0, 0, 0x3F, 0]));
-            v.extend_from_slice(&[0x12, 0x34, 0xFF, 0x00, 0x56]);
-            v.extend_from_slice(&[0xFF, EOI]);
+            v.extend(marker(0xdb, &[0u8; 65]));
+            v.extend(marker(SOS, &[1, 1, 0, 0, 0x3f, 0]));
+            v.extend_from_slice(&[0x12, 0x34, 0xff, 0x00, 0x56]);
+            v.extend_from_slice(&[0xff, EOI]);
             v
         };
         let first_len = head(&build(0, 0)).len() as u32;
@@ -2531,18 +2538,18 @@ mod tests {
                     b
                 };
                 vec![
-                    ("magic", with(&|b| w16(b, 2, 0x2B))),
+                    ("magic", with(&|b| w16(b, 2, 0x2b))),
                     ("byte order", with(&|b| b[0] = b'X')),
                     ("IFD inside the header", with(&|b| w32(b, 4, 4))),
-                    ("IFD past the end", with(&|b| w32(b, 4, 0xFFFF_FFF0))),
-                    ("huge entry count", with(&|b| w16(b, 8, 0xFFFF))),
+                    ("IFD past the end", with(&|b| w32(b, 4, 0xffff_fff0))),
+                    ("huge entry count", with(&|b| w16(b, 8, 0xffff))),
                     ("array inside the header", with(&|b| w32(b, 42, 0))),
                     ("array over the IFD", with(&|b| w32(b, 42, 20))),
                     ("array past the end", with(&|b| w32(b, 42, end - 16))),
                     ("length not a multiple of 16", with(&|b| w32(b, 38, 31))),
                     ("empty array", with(&|b| w32(b, 38, 0))),
                     ("array of the wrong type", with(&|b| w16(b, 36, 4))),
-                    ("second MPEntry", with(&|b| w16(b, 22, 0xB002))),
+                    ("second MPEntry", with(&|b| w16(b, 22, 0xb002))),
                     ("image count disagrees", with(&|b| w32(b, 30, 3))),
                     ("image count of the wrong type", with(&|b| w16(b, 24, 3))),
                 ]
@@ -2602,10 +2609,10 @@ mod tests {
             for pos in 0..block.len() {
                 let o = block[pos];
                 for v in [
-                    o ^ 0xFF,
+                    o ^ 0xff,
                     0,
                     1,
-                    0xFF,
+                    0xff,
                     o.wrapping_add(1),
                     o.wrapping_sub(1),
                     o ^ 0x80,

@@ -94,16 +94,16 @@
 
 mod heif_items;
 
-use crate::plan::{OffsetMap, Relocate, WritePlan};
+use std::{borrow::Cow, io::SeekFrom, sync::Arc};
+
 use crate::{
-    block_on, BoxFuture, ByteRange, ContainerHandler, Encoding, Error, Existing, FormatSpec, Io,
-    Item, ItemInfo, ItemKind, MetadataSlot, MetadataUpdate, Name, Node, PlanBuilder, ReadSeek,
-    Relation, RelationKind, Result, Role, Segment, SegmentId, SegmentKind, Structure,
-    StructureBuilder, Updates, MAX_SEGMENT_SIZE,
+    block_on,
+    plan::{OffsetMap, Relocate, WritePlan},
+    BoxFuture, ByteRange, ContainerHandler, Encoding, Error, Existing, FormatSpec, Io, Item,
+    ItemInfo, ItemKind, MetadataSlot, MetadataUpdate, Name, Node, PlanBuilder, ReadSeek, Relation,
+    RelationKind, Result, Role, Segment, SegmentId, SegmentKind, Structure, StructureBuilder,
+    Updates, MAX_SEGMENT_SIZE,
 };
-use std::borrow::Cow;
-use std::io::SeekFrom;
-use std::sync::Arc;
 
 /// C2PA content provenance box type, `D8FEC3D6-1B0E-483C-9297-5828877EC481`.
 const C2PA_UUID: [u8; 16] = [
@@ -1704,9 +1704,10 @@ fn patched_steps(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::*;
     use crate::TransferEncoding;
-    use std::io::Cursor;
 
     fn boxed(ty: &[u8; 4], body: &[u8]) -> Vec<u8> {
         let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
@@ -1915,8 +1916,7 @@ mod tests {
 
     // ---- writing ----
 
-    use crate::testing::Conformance;
-    use crate::{Chunk, NullSink};
+    use crate::{testing::Conformance, Chunk, NullSink};
 
     fn full(ty: &[u8; 4], version: u8, flags: u32, body: &[u8]) -> Vec<u8> {
         let mut b = vec![version];
@@ -2165,6 +2165,7 @@ mod tests {
                     .collect();
                 Ok(())
             }
+
             fn chunk(&mut self, c: Chunk<'_>) -> Result<()> {
                 if c.role == Role::Payload && self.mdat.contains(&c.segment.index()) {
                     self.sum += c.data.iter().map(|&b| b as u64).sum::<u64>();
@@ -2340,11 +2341,11 @@ mod tests {
     #[test]
     fn offsets_that_cannot_move_are_errors() {
         // 32-bit chunk offset that would pass 4 GiB.
-        let (f, _) = media_file(&[], &[], Some(0xFFFF_FFF8));
+        let (f, _) = media_file(&[], &[], Some(0xffff_fff8));
         assert!(rewrite(&f, &Updates::new().set_jumbf(b"S".to_vec())).is_err());
 
         // A table claiming more entries than its box holds.
-        let mut body = 0xFFFF_FFFFu32.to_be_bytes().to_vec();
+        let mut body = 0xffff_ffffu32.to_be_bytes().to_vec();
         body.extend_from_slice(&[0u8; 4]);
         let f = file(&[
             ftyp(),
@@ -2706,7 +2707,7 @@ mod tests {
         // A meta box that is not HEIF items at all.
         let junk = file(&[
             ftyp(),
-            boxed(b"meta", &[0, 0, 0, 0, 0xDE, 0xAD, 0xBE, 0xEF, 1, 2, 3]),
+            boxed(b"meta", &[0, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef, 1, 2, 3]),
             boxed(b"mdat", b"x"),
         ]);
         let s = parse(&mut Cursor::new(&junk)).unwrap();

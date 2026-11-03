@@ -13,10 +13,10 @@
 
 #![no_main]
 
-use asset_io::containers::bmff::BmffUpdates;
-use asset_io::{HandlerRegistry, NullSink, Structure, Updates};
-use libfuzzer_sys::fuzz_target;
 use std::io::Cursor;
+
+use asset_io::{containers::bmff::BmffUpdates, HandlerRegistry, NullSink, Structure, Updates};
+use libfuzzer_sys::fuzz_target;
 
 const XPACKET: &[u8] = b"<?xpacket begin=\"\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\
 <x:xmpmeta xmlns:x=\"adobe:ns:meta/\"/><?xpacket end=\"w\"?>";

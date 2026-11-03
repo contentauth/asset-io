@@ -1,8 +1,9 @@
-use asset_io_c::*;
 use std::{
     ffi::{c_void, CString},
     ptr,
 };
+
+use asset_io_c::*;
 
 struct Handle<T>(*mut T);
 impl<T> Drop for Handle<T> {

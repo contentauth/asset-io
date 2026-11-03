@@ -24,11 +24,9 @@
 //! - IFD (Image File Directory): tag count, tags (12 bytes each), next IFD offset
 //! - Tags: tag ID (2), type (2), count (4), value/offset (4)
 
-use crate::error::Result;
-use crate::item::ItemKind;
-use crate::structure::Structure;
-use crate::thumbnail::Thumbnail;
 use std::io::{Cursor, Read, Seek, SeekFrom};
+
+use crate::{error::Result, item::ItemKind, structure::Structure, thumbnail::Thumbnail};
 
 /// TIFF/EXIF tag IDs
 #[allow(dead_code)]
@@ -36,21 +34,21 @@ mod tags {
     // IFD0 (main image) tags
     pub const IMAGE_WIDTH: u16 = 0x0100;
     pub const IMAGE_LENGTH: u16 = 0x0101;
-    pub const MAKE: u16 = 0x010F;
+    pub const MAKE: u16 = 0x010f;
     pub const MODEL: u16 = 0x0110;
     pub const ORIENTATION: u16 = 0x0112;
     pub const SOFTWARE: u16 = 0x0131;
     pub const DATE_TIME: u16 = 0x0132;
-    pub const ARTIST: u16 = 0x013B;
+    pub const ARTIST: u16 = 0x013b;
     pub const COPYRIGHT: u16 = 0x8298;
     pub const EXIF_IFD_POINTER: u16 = 0x8769;
 
     // EXIF sub-IFD tags
-    pub const EXPOSURE_TIME: u16 = 0x829A;
-    pub const F_NUMBER: u16 = 0x829D;
+    pub const EXPOSURE_TIME: u16 = 0x829a;
+    pub const F_NUMBER: u16 = 0x829d;
     pub const ISO_SPEED: u16 = 0x8827;
     pub const DATE_TIME_ORIGINAL: u16 = 0x9003;
-    pub const FOCAL_LENGTH: u16 = 0x920A;
+    pub const FOCAL_LENGTH: u16 = 0x920a;
 
     // IFD1 (thumbnail) tags
     pub const JPEG_INTERCHANGE_FORMAT: u16 = 0x0201;
@@ -172,7 +170,7 @@ pub fn parse_thumbnail_info(exif_data: &[u8]) -> Result<Option<ThumbnailInfo>> {
 
     // Check magic number (0x002A)
     let magic = byte_order.read_u16(&header[2..4]);
-    if magic != 0x002A {
+    if magic != 0x002a {
         return Ok(None);
     }
 
@@ -221,7 +219,7 @@ pub fn parse_exif_info(exif_data: &[u8]) -> Result<Option<ExifInfo>> {
     };
 
     let magic = byte_order.read_u16(&header[2..4]);
-    if magic != 0x002A {
+    if magic != 0x002a {
         return Ok(None);
     }
 

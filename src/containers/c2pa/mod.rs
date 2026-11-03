@@ -10,16 +10,16 @@
 //! entire stream. An empty sidecar has neither. Explicit parsing accepts opaque
 //! bytes; detection recognizes the standard-length C2PA JUMBF prefix, not every
 //! JUMBF type. This handler does not validate manifests or signatures.
-//!
 #![doc = include_str!("README.md")]
 
-use crate::jumbf::{superbox_type, C2PA_STORE_TYPE};
+use std::sync::Arc;
+
 use crate::{
+    jumbf::{superbox_type, C2PA_STORE_TYPE},
     BoxFuture, ContainerHandler, Error, FormatSpec, Io, Item, ItemInfo, ItemKind, MetadataUpdate,
     Name, PlanBuilder, Result, SegmentId, SegmentKind, Structure, StructureBuilder, Updates,
     WritePlan,
 };
-use std::sync::Arc;
 
 /// The C2PA sidecar container's [`ContainerHandler::id`].
 pub const ID: &str = "c2pa";

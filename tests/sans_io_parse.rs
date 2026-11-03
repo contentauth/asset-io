@@ -16,9 +16,9 @@
 
 #![cfg(all(feature = "png", feature = "riff", feature = "jpeg", feature = "bmff"))]
 
+use std::{io::Cursor, path::PathBuf};
+
 use asset_io::{Error, HandlerRegistry, NullSink, Progress, Result, Structure, Task, Updates};
-use std::io::Cursor;
-use std::path::PathBuf;
 
 fn fixture(name: &str) -> Option<Vec<u8>> {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

@@ -42,19 +42,22 @@
 //! it all. A manifest that is not in `svg > metadata` is not one; several are
 //! ambiguous, as in any container.
 
-use crate::jumbf::superbox_type;
-use crate::plan::WritePlan;
-use crate::transfer::{base64_decode, base64_encode};
+use std::{borrow::Cow, sync::Arc};
+
+use quick_xml::{
+    events::{BytesStart, Event},
+    name::ResolveResult,
+    NsReader, Reader,
+};
+
 use crate::{
+    jumbf::superbox_type,
+    plan::WritePlan,
+    transfer::{base64_decode, base64_encode},
     BoxFuture, ByteRange, ContainerHandler, Error, Existing, FormatSpec, Io, ItemInfo, ItemKind,
     MetadataSlot, MetadataUpdate, Name, PlanBuilder, Result, Role, Segment, SegmentId, SegmentKind,
     Structure, StructureBuilder, TransferEncoding, Updates, MAX_SEGMENT_SIZE,
 };
-use quick_xml::events::{BytesStart, Event};
-use quick_xml::name::ResolveResult;
-use quick_xml::{NsReader, Reader};
-use std::borrow::Cow;
-use std::sync::Arc;
 
 const SVG_NS: &[u8] = b"http://www.w3.org/2000/svg";
 const C2PA_NS: &[u8] = b"http://c2pa.org/manifest";
@@ -814,10 +817,10 @@ fn check_packet(packet: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::testing::Conformance;
-    use crate::NullSink;
     use std::io::Cursor;
+
+    use super::*;
+    use crate::{testing::Conformance, NullSink};
 
     const NS: &str = "http://www.w3.org/2000/svg";
     const PACKET: &str = "<?xpacket begin=\"\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\
@@ -832,7 +835,7 @@ mod tests {
         v[4..8].copy_from_slice(b"jumb");
         v[8..12].copy_from_slice(&((n - 8) as u32).to_be_bytes());
         v[12..16].copy_from_slice(b"jumd");
-        v[16..32].copy_from_slice(&[0xC2; 16]);
+        v[16..32].copy_from_slice(&[0xc2; 16]);
         v
     }
 
@@ -934,7 +937,7 @@ mod tests {
 
         // The item is stored as text; its data is what that decodes to.
         let e = s.require_item(ItemKind::Jumbf).unwrap();
-        assert_eq!(e.jumbf_type(), Some([0xC2; 16]));
+        assert_eq!(e.jumbf_type(), Some([0xc2; 16]));
         assert_eq!(
             s.read_item(&mut Cursor::new(svg.as_bytes()), e).unwrap(),
             text.as_bytes()
@@ -965,7 +968,7 @@ mod tests {
                     untyped.require_item(ItemKind::Jumbf).unwrap(),
                 )
                 .unwrap(),
-            Some([0xC2; 16])
+            Some([0xc2; 16])
         );
     }
 

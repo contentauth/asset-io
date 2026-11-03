@@ -31,28 +31,29 @@
 //! [`Structure::store`](crate::Structure::store) and
 //! [`Structure::read_content`](crate::Structure::read_content) decode them. See
 //! below for the rules and the limits.
-//!
 #![doc = include_str!("README.md")]
 
 mod flate;
 mod lexer;
 mod write;
 
-use crate::plan::WritePlan;
-use crate::transfer::inflate;
-use crate::{
-    BoxFuture, ByteRange, ContainerHandler, Error, FormatSpec, Io, Item, ItemInfo, ItemKind,
-    MetadataUpdate, Name, PlanBuilder, Result, Role, SegmentId, SegmentKind, Structure,
-    StructureBuilder, TransferEncoding, Updates, MAX_SEGMENT_SIZE,
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
 };
+
 use flate::Decode;
 use lexer::{
     invalid, required, unsigned, whitespace, Dictionary, Lex, Lexer, Reference, Stop, Value,
     MAX_DEPTH, MAX_SYNTAX_BYTES,
 };
-use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+
+use crate::{
+    plan::WritePlan, transfer::inflate, BoxFuture, ByteRange, ContainerHandler, Error, FormatSpec,
+    Io, Item, ItemInfo, ItemKind, MetadataUpdate, Name, PlanBuilder, Result, Role, SegmentId,
+    SegmentKind, Structure, StructureBuilder, TransferEncoding, Updates, MAX_SEGMENT_SIZE,
+};
 
 const MAX_ENTRIES: usize = 1_000_000;
 const MAX_CLASSIC_ENTRIES: usize = 100_000;
@@ -1145,8 +1146,9 @@ async fn startxref(io: &mut Io, size: u64) -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::Cursor;
+
+    use super::*;
 
     #[test]
     fn the_fixture_exposes_its_xmp() {

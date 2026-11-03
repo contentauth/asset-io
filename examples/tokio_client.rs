@@ -24,9 +24,10 @@
 //! cargo run --example tokio_client --features all-formats,tokio -- edit in.jpg out.jpg new.xmp
 //! ```
 
+use std::time::Instant;
+
 use asset_io::{tokio as asset, Chunk, HandlerRegistry, ItemKind, Result, Structure, Updates};
 use sha2::{Digest, Sha256};
-use std::time::Instant;
 use tokio::fs::File;
 
 /// Parse a file and describe it.

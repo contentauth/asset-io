@@ -23,14 +23,13 @@
     feature = "pdf"
 ))]
 
-use asset_io::testing::Conformance;
-use asset_io::HandlerRegistry;
-use std::fs;
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
+
+use asset_io::{testing::Conformance, HandlerRegistry};
 
 /// A JUMBF superbox of `n` bytes.
 fn jumbf(n: usize) -> Vec<u8> {
-    let mut v = vec![0x5Au8; n];
+    let mut v = vec![0x5au8; n];
     v[0..4].copy_from_slice(&(n as u32).to_be_bytes());
     v[4..8].copy_from_slice(b"jumb");
     v

@@ -1,8 +1,8 @@
+use std::{io::Cursor, sync::Arc};
+
 use asset_io::{
     Asset, BoxFuture, ContainerHandler, Error, FormatSpec, HandlerRegistry, Io, Result, Structure,
 };
-use std::io::Cursor;
-use std::sync::Arc;
 
 #[derive(Debug)]
 struct Custom;

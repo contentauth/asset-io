@@ -13,11 +13,9 @@
 
 //! Items: logical units defined by a format, assembled from extents.
 
-use crate::range::ByteRange;
-use crate::segment::Name;
-use crate::structure::SegmentId;
-use crate::transfer::TransferEncoding;
 use std::borrow::Cow;
+
+use crate::{range::ByteRange, segment::Name, structure::SegmentId, transfer::TransferEncoding};
 
 /// The specification that defines an [`Item`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

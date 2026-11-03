@@ -42,15 +42,13 @@
 //! `VP8X` chunk: it is set (or cleared when the XMP is removed), and a `VP8X` chunk
 //! is created from the `VP8` or `VP8L` image size if the file has none.
 
-use crate::jumbf::superbox_type_at;
-use crate::plan::WritePlan;
+use std::{borrow::Cow, sync::Arc};
+
 use crate::{
-    BoxFuture, ContainerHandler, Error, Existing, FormatSpec, Io, ItemInfo, ItemKind, MetadataSlot,
-    MetadataUpdate, Name, PlanBuilder, Result, Role, Segment, SegmentId, SegmentKind, Structure,
-    StructureBuilder, Updates,
+    jumbf::superbox_type_at, plan::WritePlan, BoxFuture, ContainerHandler, Error, Existing,
+    FormatSpec, Io, ItemInfo, ItemKind, MetadataSlot, MetadataUpdate, Name, PlanBuilder, Result,
+    Role, Segment, SegmentId, SegmentKind, Structure, StructureBuilder, Updates,
 };
-use std::borrow::Cow;
-use std::sync::Arc;
 
 const RIFF: [u8; 4] = *b"RIFF";
 const LIST: [u8; 4] = *b"LIST";
@@ -635,10 +633,10 @@ fn emit<'a>(b: &mut PlanBuilder<'_, 'a>, op: &Op<'a>, pad: bool) -> Result<Segme
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::testing::Conformance;
-    use crate::NullSink;
     use std::io::Cursor;
+
+    use super::*;
+    use crate::{testing::Conformance, NullSink};
 
     fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
         let mut v = id.to_vec();

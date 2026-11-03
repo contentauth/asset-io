@@ -17,9 +17,10 @@
 #![cfg(feature = "pdf")]
 
 mod pdf_support;
+use std::io::{Cursor, Read, Seek, SeekFrom};
+
 use asset_io::{Error, HandlerRegistry, ItemKind, Segment, SegmentKind, TransferEncoding};
 use pdf_support::*;
-use std::io::{Cursor, Read, Seek, SeekFrom};
 
 #[test]
 fn detects_pdf_and_extracts_exact_payload_ranges() {
@@ -972,6 +973,7 @@ fn a_sink_that_skips_the_store_sees_exactly_the_rest() {
         fn wants(&self, segment: &Segment, role: Role) -> bool {
             !(segment.range().contains(&self.1) && role == Role::Payload)
         }
+
         fn chunk(&mut self, chunk: Chunk<'_>) -> asset_io::Result<()> {
             self.0.extend_from_slice(chunk.data);
             Ok(())

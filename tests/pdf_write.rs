@@ -19,9 +19,10 @@
 
 mod pdf_support;
 
+use std::io::Cursor;
+
 use asset_io::{Chunk, Error, ItemKind, Role, Segment, SegmentKind, Sink, Updates};
 use pdf_support::*;
-use std::io::Cursor;
 
 #[test]
 fn unregistered_attachment_edits_fail_but_noop_copies_exactly() {
@@ -95,6 +96,7 @@ fn a_sink_sees_the_output_with_superseded_data_as_ordinary_bytes() {
         fn wants(&self, segment: &Segment, role: Role) -> bool {
             !(segment.kind() == SegmentKind::Metadata && role == Role::Payload)
         }
+
         fn chunk(&mut self, c: Chunk<'_>) -> asset_io::Result<()> {
             self.0.extend_from_slice(c.data);
             Ok(())

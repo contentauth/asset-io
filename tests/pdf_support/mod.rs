@@ -16,11 +16,14 @@
 
 #![allow(dead_code)]
 
+use std::{
+    collections::BTreeMap,
+    io::{Cursor, Read, Seek, SeekFrom, Write},
+};
+
 use asset_io::{
     Error, HandlerRegistry, ItemKind, NullSink, Segment, SegmentKind, Structure, Updates,
 };
-use std::collections::BTreeMap;
-use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 
 /// A parsed document and the stream it came from.
 pub struct Asset<R> {

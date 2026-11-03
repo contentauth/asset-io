@@ -20,20 +20,25 @@
 //! the container (subdividing scans, box names, patching trailers, rewriting) works
 //! on any structure without the caller knowing the format.
 
-use crate::error::{Error, Result};
-use crate::io::{BoxFuture, Io};
-use crate::item::{Item, ItemKind};
-use crate::plan::WritePlan;
-use crate::range::ByteRange;
-use crate::segment::{Name, Segment};
-use crate::sink::Sink;
-use crate::structure::{SegmentId, Structure};
-use crate::task::block_on;
-use crate::walk::Node;
-use crate::Updates;
-use std::borrow::Cow;
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::sync::Arc;
+use std::{
+    borrow::Cow,
+    io::{Read, Seek, SeekFrom, Write},
+    sync::Arc,
+};
+
+use crate::{
+    error::{Error, Result},
+    io::{BoxFuture, Io},
+    item::{Item, ItemKind},
+    plan::WritePlan,
+    range::ByteRange,
+    segment::{Name, Segment},
+    sink::Sink,
+    structure::{SegmentId, Structure},
+    task::block_on,
+    walk::Node,
+    Updates,
+};
 
 /// A readable, seekable stream. Blanket-implemented, so any `Read + Seek` works.
 pub trait ReadSeek: Read + Seek {}

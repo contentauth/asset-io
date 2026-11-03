@@ -15,10 +15,9 @@
 //! writing, the store as a reader sees it, and media types by format string.
 #![cfg(all(feature = "jpeg", feature = "png", feature = "bmff", feature = "riff"))]
 
+use std::{fs, io::Cursor, path::PathBuf};
+
 use asset_io::{Asset, HandlerRegistry, ItemInfo, ItemKind, NullSink, Structure, Updates};
-use std::fs;
-use std::io::Cursor;
-use std::path::PathBuf;
 
 /// `bytes` as an asset, its container detected.
 fn open<'a>(reg: &HandlerRegistry, bytes: &'a [u8]) -> asset_io::Result<Asset<Cursor<&'a [u8]>>> {
@@ -248,7 +247,7 @@ fn compose_is_what_write_inserts() {
 #[test]
 fn compose_splits_a_large_jpeg_store_like_write() {
     let reg = HandlerRegistry::builtin();
-    let children = vec![0x5Au8; 200_000];
+    let children = vec![0x5au8; 200_000];
     let jumbf = store(1, &[&children]);
     let composed = reg
         .handler("jpg")
@@ -258,7 +257,7 @@ fn compose_splits_a_large_jpeg_store_like_write() {
     // Four APP11 segments, each with its own marker.
     let markers = composed
         .windows(2)
-        .filter(|w| w[0] == 0xFF && w[1] == 0xEB)
+        .filter(|w| w[0] == 0xff && w[1] == 0xeb)
         .count();
     assert!(markers >= 4, "{markers} APP11 markers");
 

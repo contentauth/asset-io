@@ -7,8 +7,9 @@
     feature = "c2pa"
 ))]
 
-use asset_io::{Asset, ByteRange, Error, ItemKind, NullSink, Updates};
 use std::io::Cursor;
+
+use asset_io::{Asset, ByteRange, Error, ItemKind, NullSink, Updates};
 
 fn open<'a>(format: &str, bytes: &'a [u8]) -> Asset<Cursor<&'a [u8]>> {
     Asset::open(Cursor::new(bytes), Some(format)).unwrap()

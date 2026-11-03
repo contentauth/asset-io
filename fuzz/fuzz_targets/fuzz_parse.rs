@@ -13,9 +13,10 @@
 
 #![no_main]
 
+use std::io::Cursor;
+
 use asset_io::{HandlerRegistry, Structure};
 use libfuzzer_sys::fuzz_target;
-use std::io::Cursor;
 
 fuzz_target!(|data: &[u8]| {
     // Any input must parse or return an error; never panic.

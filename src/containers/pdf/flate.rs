@@ -15,8 +15,7 @@
 //! decoding itself is the core's (see [`TransferEncoding`]).
 
 use super::lexer::{invalid, Dictionary, Value};
-use crate::transfer::undo_png_predictor;
-use crate::{Error, Result, TransferEncoding};
+use crate::{transfer::undo_png_predictor, Error, Result, TransferEncoding};
 
 /// How a stream is encoded: Flate, then optionally a PNG predictor over rows of
 /// `columns` single-byte samples. A stream with no filter has no `Decode`.

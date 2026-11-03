@@ -17,11 +17,11 @@
 
 #![cfg(all(feature = "jpeg", feature = "png", feature = "bmff", feature = "riff"))]
 
+use std::{io::Cursor, path::PathBuf};
+
 use asset_io::{
     Action, Asset, ByteRange, Chunk, Error, NullSink, Result, Role, Sink, Updates, WritePlan,
 };
-use std::io::Cursor;
-use std::path::PathBuf;
 
 /// `bytes` as an asset of `format`.
 fn open<'a>(bytes: &'a [u8], format: &str) -> Asset<Cursor<&'a [u8]>> {

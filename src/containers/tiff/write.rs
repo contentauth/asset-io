@@ -4,9 +4,10 @@
 // or the MIT license (http://opensource.org/licenses/MIT),
 // at your option.
 
+use std::borrow::Cow;
+
 use super::*;
 use crate::{MetadataUpdate, Role};
-use std::borrow::Cow;
 
 enum Data<'a> {
     New(&'a [u8]),

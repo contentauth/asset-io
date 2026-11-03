@@ -21,7 +21,7 @@ const fn make_table() -> [u32; 256] {
         let mut k = 0;
         while k < 8 {
             c = if c & 1 != 0 {
-                0xEDB8_8320 ^ (c >> 1)
+                0xedb8_8320 ^ (c >> 1)
             } else {
                 c >> 1
             };
@@ -42,21 +42,21 @@ pub struct Crc32(u32);
 impl Crc32 {
     /// Start a new checksum.
     pub fn new() -> Self {
-        Self(0xFFFF_FFFF)
+        Self(0xffff_ffff)
     }
 
     /// Feed bytes.
     pub fn update(&mut self, data: &[u8]) {
         let mut c = self.0;
         for &b in data {
-            c = TABLE[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8);
+            c = TABLE[((c ^ b as u32) & 0xff) as usize] ^ (c >> 8);
         }
         self.0 = c;
     }
 
     /// Finish and return the checksum.
     pub fn finalize(self) -> u32 {
-        self.0 ^ 0xFFFF_FFFF
+        self.0 ^ 0xffff_ffff
     }
 }
 
@@ -74,7 +74,7 @@ mod tests {
     fn known_vector() {
         let mut c = Crc32::new();
         c.update(b"123456789");
-        assert_eq!(c.finalize(), 0xCBF4_3926);
+        assert_eq!(c.finalize(), 0xcbf4_3926);
     }
 
     #[test]

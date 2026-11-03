@@ -15,15 +15,14 @@
 //! it writes by describing a plan. If this file stops compiling, a third party's
 //! handler would too.
 
-use asset_io::plan::validate;
-use asset_io::testing::Conformance;
+use std::{io::Cursor, sync::Arc};
+
 use asset_io::{
-    Asset, BoxFuture, ByteRange, Chunk, ContainerHandler, Error, Existing, FormatSpec,
-    HandlerRegistry, Io, ItemInfo, ItemKind, MetadataSlot, Name, PlanBuilder, Result, Role,
-    SegmentId, SegmentKind, Step, Structure, StructureBuilder, Updates, WritePlan,
+    plan::validate, testing::Conformance, Asset, BoxFuture, ByteRange, Chunk, ContainerHandler,
+    Error, Existing, FormatSpec, HandlerRegistry, Io, ItemInfo, ItemKind, MetadataSlot, Name,
+    PlanBuilder, Result, Role, SegmentId, SegmentKind, Step, Structure, StructureBuilder, Updates,
+    WritePlan,
 };
-use std::io::Cursor;
-use std::sync::Arc;
 
 /// `TOY!`, then records of `[kind][len][len bytes]`. Kind `X` is XMP.
 #[derive(Debug)]

@@ -2,8 +2,10 @@
 //! separate crates would: the rest of the crate depends on no container, no
 //! container depends on another, and containers use only the public API.
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 const CONTAINERS: &[&str] = &["bmff", "c2pa", "jpeg", "pdf", "png", "riff", "svg", "tiff"];
 

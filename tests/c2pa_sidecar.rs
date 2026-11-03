@@ -1,12 +1,12 @@
 #![cfg(feature = "c2pa")]
 
-use asset_io::containers::c2pa::handler;
-use asset_io::testing::Conformance;
-use asset_io::{
-    plan::validate, Asset, Encoding, Error, HandlerRegistry, ItemKind, NullSink, Progress,
-    SegmentKind, Structure, TransferEncoding, Updates, DEFAULT_WINDOW,
-};
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
+
+use asset_io::{
+    containers::c2pa::handler, plan::validate, testing::Conformance, Asset, Encoding, Error,
+    HandlerRegistry, ItemKind, NullSink, Progress, SegmentKind, Structure, TransferEncoding,
+    Updates, DEFAULT_WINDOW,
+};
 
 /// Parse with the sidecar handler directly, from any reader.
 fn parse<R: Read + Seek>(source: &mut R) -> asset_io::Result<Structure> {

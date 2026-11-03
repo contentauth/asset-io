@@ -15,8 +15,9 @@
 //!
 //! Run: `cargo run --example inspect --features all-formats,xmp,exif -- <file> [--embedded]`
 
-use asset_io::{Asset, HandlerRegistry, Item, Name, Role, ScanLimits, TransferEncoding};
 use std::{env, fs::File};
+
+use asset_io::{Asset, HandlerRegistry, Item, Name, Role, ScanLimits, TransferEncoding};
 
 fn main() -> asset_io::Result<()> {
     let Some(path) = env::args().nth(1) else {

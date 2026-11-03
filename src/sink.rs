@@ -14,9 +14,11 @@
 //! Streaming observation: a [`Sink`] sees every byte of an asset, in order, as it
 //! is written ([`Structure::write`]) or read ([`Structure::read`]).
 
-use crate::error::Result;
-use crate::segment::Role;
-use crate::structure::{SegmentId, Structure};
+use crate::{
+    error::Result,
+    segment::Role,
+    structure::{SegmentId, Structure},
+};
 
 /// A run of bytes, borrowed from the buffer being read or written. No copy is made.
 #[derive(Debug, Clone, Copy)]
@@ -75,6 +77,7 @@ impl Sink for NullSink {
     fn wants(&self, _: &crate::segment::Segment, _: Role) -> bool {
         false
     }
+
     fn chunk(&mut self, _: Chunk<'_>) -> Result<()> {
         Ok(())
     }

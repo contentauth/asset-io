@@ -26,9 +26,12 @@
 //! [`Structure::parse_task`](crate::Structure::parse_task) to select a handler and
 //! run its parser.
 
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+};
+
 use crate::handler::{ContainerHandler, FormatSpec, DETECT_LEN};
-use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
 
 /// Matching is case-insensitive and ignores surrounding whitespace and a leading dot.
 fn normalize(format: &str) -> String {
@@ -185,15 +188,13 @@ impl Extend<Arc<dyn ContainerHandler>> for HandlerRegistry {
 
 #[cfg(test)]
 mod tests {
+    use std::{borrow::Cow, io::Cursor};
+
     use super::*;
-    use crate::segment::SegmentKind;
-    use crate::Updates;
     use crate::{
-        BoxFuture, ContainerHandler, Error, Io, Name, ReadSeek, Result, Sink, Structure,
-        StructureBuilder,
+        segment::SegmentKind, BoxFuture, ContainerHandler, Error, Io, Name, ReadSeek, Result, Sink,
+        Structure, StructureBuilder, Updates,
     };
-    use std::borrow::Cow;
-    use std::io::Cursor;
 
     /// A made-up container: `TOY!` then records of `[len][len bytes]`.
     /// Records are named by index with `Name::Id`, shown as `rec<N>`.
@@ -204,13 +205,16 @@ mod tests {
         fn id(&self) -> &'static str {
             "toy"
         }
+
         fn formats(&self) -> &[FormatSpec] {
             const F: &[FormatSpec] = &[FormatSpec::new("application/x-toy", "toy")];
             F
         }
+
         fn detect(&self, header: &[u8]) -> bool {
             header.starts_with(b"TOY!")
         }
+
         fn parse_async(self: Arc<Self>, mut io: Io) -> BoxFuture<'static, Result<Structure>> {
             Box::pin(async move {
                 let data = io.read_vec(0, io.len() as usize).await?;
@@ -230,6 +234,7 @@ mod tests {
                 b.finish()
             })
         }
+
         fn write(
             &self,
             _: &Structure,
@@ -240,6 +245,7 @@ mod tests {
         ) -> Result<Structure> {
             Err(Error::UnsupportedFormat)
         }
+
         fn box_name(&self, name: Name) -> Option<Cow<'static, str>> {
             match name {
                 Name::Id(n) => Some(Cow::Owned(format!("rec{n}"))),
@@ -310,13 +316,16 @@ mod tests {
             fn id(&self) -> &'static str {
                 "toy2"
             }
+
             fn formats(&self) -> &[FormatSpec] {
                 const F: &[FormatSpec] = &[FormatSpec::new("application/x-toy2", "toy")];
                 F
             }
+
             fn parse_async(self: Arc<Self>, _: Io) -> BoxFuture<'static, Result<Structure>> {
                 Box::pin(async { Err(Error::InvalidFormat("toy2".into())) })
             }
+
             fn write(
                 &self,
                 _: &Structure,

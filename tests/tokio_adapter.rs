@@ -1,9 +1,10 @@
 #![cfg(all(feature = "tokio", feature = "jpeg", feature = "png", feature = "svg"))]
 
+use std::io::Cursor;
+
 use asset_io::{
     tokio as asset, Asset, Chunk, Error, HandlerRegistry, ItemKind, NullSink, Task, Updates,
 };
-use std::io::Cursor;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 fn inputs() -> [(&'static str, Vec<u8>); 3] {

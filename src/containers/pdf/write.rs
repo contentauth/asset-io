@@ -19,15 +19,20 @@
 //! structure's attachment as a [`Context`]. Planning is then a pure function of that
 //! and the update, which is what lets it be a [`WritePlan`](crate::WritePlan).
 
-use super::lexer::{
-    delimiter, invalid, required, Dictionary, Reference, Value, MAX_DEPTH, MAX_NODES,
-    MAX_SYNTAX_BYTES,
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io::Write,
+    sync::Arc,
 };
-use super::{Parser, Xrefs, MAX_CLASSIC_ENTRIES, MAX_ENTRIES, MAX_OBJECTS, MAX_REVISIONS};
+
+use super::{
+    lexer::{
+        delimiter, invalid, required, Dictionary, Reference, Value, MAX_DEPTH, MAX_NODES,
+        MAX_SYNTAX_BYTES,
+    },
+    Parser, Xrefs, MAX_CLASSIC_ENTRIES, MAX_ENTRIES, MAX_OBJECTS, MAX_REVISIONS,
+};
 use crate::{BoxFuture, Error, ItemKind, MetadataUpdate, Result, Updates, MAX_SEGMENT_SIZE};
-use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
-use std::sync::Arc;
 
 /// Whether the document can be edited, and if so what an edit needs.
 #[derive(Clone, Debug)]

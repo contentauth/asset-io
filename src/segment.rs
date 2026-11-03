@@ -13,8 +13,10 @@
 
 //! Segments, the units that tile an asset, and shared size limits.
 
-use crate::error::{Error, Result};
-use crate::range::ByteRange;
+use crate::{
+    error::{Error, Result},
+    range::ByteRange,
+};
 
 /// Item labels that mean the same in every container.
 ///
@@ -261,7 +263,7 @@ mod tests {
     #[test]
     fn none_name() {
         assert!(Name::None.is_none());
-        assert!(!Name::Marker(0xD8).is_none());
+        assert!(!Name::Marker(0xd8).is_none());
     }
 
     #[test]

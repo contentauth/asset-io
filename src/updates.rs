@@ -13,8 +13,10 @@
 
 //! Metadata updates to apply when writing an asset.
 
-use std::any::{Any, TypeId};
-use std::collections::HashMap;
+use std::{
+    any::{Any, TypeId},
+    collections::HashMap,
+};
 
 /// What to do with one kind of metadata when writing an asset.
 ///
@@ -180,8 +182,7 @@ impl Updates {
     /// ```no_run
     /// use asset_io::Updates;
     ///
-    /// let updates = Updates::new()
-    ///     .set_xmp(b"<xmp>...</xmp>".to_vec());
+    /// let updates = Updates::new().set_xmp(b"<xmp>...</xmp>".to_vec());
     /// ```
     pub fn set_xmp(mut self, xmp: Vec<u8>) -> Self {
         self.xmp = MetadataUpdate::Set(xmp);
@@ -232,8 +233,7 @@ impl Updates {
     /// ```no_run
     /// use asset_io::Updates;
     ///
-    /// let updates = Updates::new()
-    ///     .set_jumbf(b"jumbf data".to_vec());
+    /// let updates = Updates::new().set_jumbf(b"jumbf data".to_vec());
     /// ```
     pub fn set_jumbf(mut self, jumbf: Vec<u8>) -> Self {
         self.jumbf_scope = crate::jumbf::superbox_type(&jumbf);

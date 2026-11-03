@@ -13,16 +13,17 @@
 
 //! Assembling a [`WritePlan`] segment by segment.
 
-use crate::error::{Error, Result};
-use crate::item::{Item, ItemInfo};
-use crate::plan::{Relocate, Step, WritePlan};
-use crate::range::ByteRange;
-use crate::segment::{Name, Role, SegmentKind};
-use crate::structure::{Attached, SegmentId, Structure, StructureBuilder, MAX_SEGMENTS};
-use crate::transfer::TransferEncoding;
-use std::borrow::Cow;
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
+
+use crate::{
+    error::{Error, Result},
+    item::{Item, ItemInfo},
+    plan::{Relocate, Step, WritePlan},
+    range::ByteRange,
+    segment::{Name, Role, SegmentKind},
+    structure::{Attached, SegmentId, Structure, StructureBuilder, MAX_SEGMENTS},
+    transfer::TransferEncoding,
+};
 
 /// A segment of the output: its shape, and the source segment it is made from.
 struct Shape {

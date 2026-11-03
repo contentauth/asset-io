@@ -17,14 +17,19 @@
 
 #![cfg(all(feature = "jpeg", feature = "png", feature = "bmff", feature = "riff"))]
 
+use std::{
+    io::{Cursor, SeekFrom},
+    path::{Path, PathBuf},
+};
+
 use asset_io::{
     Action, Asset, Chunk, HandlerRegistry, NullSink, Progress, ReadRequest, Result, Structure,
     Task, Updates,
 };
-use std::io::{Cursor, SeekFrom};
-use std::path::{Path, PathBuf};
-use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::{
+    fs::File,
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+};
 
 fn fixture(name: &str) -> Option<PathBuf> {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

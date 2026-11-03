@@ -13,11 +13,14 @@
 
 //! Windowed, asynchronous stream reads for container handlers.
 
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex, MutexGuard},
+    task::{Context, Poll},
+};
+
 use crate::error::{Error, Result};
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::task::{Context, Poll};
 
 /// How much of the stream is requested at a time unless the code asks for more. The
 /// markers of a typical JPEG, and the headers of a typical PNG, fit in a few KiB.
