@@ -138,7 +138,7 @@ fn cases() -> Vec<Case> {
 }
 
 fn parse(c: &Case) -> Structure {
-    asset_io::parse(
+    asset_io::Structure::parse(
         &HandlerRegistry::builtin(),
         &mut Cursor::new(&c.bytes),
         Some(c.format),
@@ -322,7 +322,7 @@ fn bench_items(c: &mut Criterion) {
     let Some(bytes) = fixture("FireflyTrain.jpg") else {
         return;
     };
-    let s = asset_io::parse(
+    let s = asset_io::Structure::parse(
         &HandlerRegistry::builtin(),
         &mut Cursor::new(&bytes),
         Some("jpg"),
@@ -354,8 +354,12 @@ fn bench_mmap(c: &mut Criterion) {
         g.bench_function(BenchmarkId::new("file_stream", &case.name), |b| {
             b.iter(|| {
                 let mut file = std::fs::File::open(f.path()).unwrap();
-                let s = asset_io::parse(&HandlerRegistry::builtin(), &mut file, Some(case.format))
-                    .unwrap();
+                let s = asset_io::Structure::parse(
+                    &HandlerRegistry::builtin(),
+                    &mut file,
+                    Some(case.format),
+                )
+                .unwrap();
                 let mut h = Sha256::new();
                 {
                     let mut sink = |c: Chunk<'_>| -> Result<()> {

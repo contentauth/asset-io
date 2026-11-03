@@ -30,7 +30,7 @@ pub struct Asset<R> {
 
 impl<R: Read + Seek> Asset<R> {
     pub fn from_source(mut source: R) -> asset_io_core::Result<Self> {
-        let structure = asset_io_core::parse(
+        let structure = asset_io_core::Structure::parse(
             &HandlerRegistry::new().with_handler(asset_io_pdf::PdfHandler),
             &mut source,
             Some("pdf"),

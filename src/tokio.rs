@@ -75,7 +75,7 @@ where
     R: AsyncRead + AsyncSeek + Unpin + ?Sized,
 {
     let total = src.seek(SeekFrom::End(0)).await?;
-    run(crate::parse_task(registry, total, format), src).await
+    run(crate::Structure::parse_task(registry, total, format), src).await
 }
 
 /// Read an item's stored bytes, concatenating its extents without decoding.

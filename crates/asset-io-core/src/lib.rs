@@ -97,7 +97,7 @@
 //! // Register an application-provided handler before parsing.
 //! let registry = HandlerRegistry::new();
 //! let mut src = std::fs::File::open("image.jpg")?;
-//! let structure = asset_io_core::parse(&registry, &mut src, Some("jpg"))?;
+//! let structure = asset_io_core::Structure::parse(&registry, &mut src, Some("jpg"))?;
 //!
 //! // Read a metadata item, which may have extents in several segments.
 //! if let Some(jumbf) = structure.item(ItemKind::Jumbf)? {
@@ -157,7 +157,6 @@ pub use io::{BoxFuture, Io, Reader, DEFAULT_WINDOW};
 pub use item::{Encoding, Extent, Item, ItemCategory, ItemInfo, ItemKind, Relation, RelationKind};
 #[cfg(feature = "memory-mapped")]
 pub use mapped::MappedFile;
-pub use parse::{parse, parse_async, parse_task};
 pub use plan::{Step, WritePlan};
 pub use plan_builder::PlanBuilder;
 pub use range::ByteRange;

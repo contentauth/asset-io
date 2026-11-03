@@ -4,69 +4,74 @@
 // or the MIT license (http://opensource.org/licenses/MIT),
 // at your option.
 
-//! Parsing orchestration: select a handler, then run its parser.
+//! Parsing: select a handler from a registry, then run its parser to build a
+//! [`Structure`].
 
 use crate::{block_on, Error, HandlerRegistry, Io, ReadSeek, Result, Structure, Task, DETECT_LEN};
 use std::io::SeekFrom;
 use std::sync::Arc;
 
-/// Parse a complete stream with blocking I/O.
-///
-/// `Some(format)` selects a handler by extension or MIME type; `None` detects
-/// the container from its leading bytes. An unsupported explicit format fails
-/// without falling back to detection. Format selection does not validate the
-/// content; the selected handler's parser does that.
-///
-/// The stream's length is determined by seeking to its end. Offsets are relative
-/// to the beginning of the stream, regardless of its initial position. The
-/// stream may be repositioned on success or error.
-pub fn parse(
-    registry: &HandlerRegistry,
-    src: &mut dyn ReadSeek,
-    format: Option<&str>,
-) -> Result<Structure> {
-    let total = src.seek(SeekFrom::End(0))?;
-    block_on(total, src, |mut io| async move {
-        parse_async(registry, &mut io, format).await
-    })
-}
+impl Structure {
+    /// Parse a complete stream with blocking I/O.
+    ///
+    /// `Some(format)` selects a handler by extension or MIME type; `None` detects
+    /// the container from its leading bytes. An unsupported explicit format fails
+    /// without falling back to detection. Format selection does not validate the
+    /// content; the selected handler's parser does that.
+    ///
+    /// The stream's length is determined by seeking to its end. Offsets are relative
+    /// to the beginning of the stream, regardless of its initial position. The
+    /// stream may be repositioned on success or error.
+    pub fn parse(
+        registry: &HandlerRegistry,
+        src: &mut dyn ReadSeek,
+        format: Option<&str>,
+    ) -> Result<Structure> {
+        let total = src.seek(SeekFrom::End(0))?;
+        block_on(total, src, |mut io| async move {
+            Structure::parse_async(registry, &mut io, format).await
+        })
+    }
 
-/// Parse a stream of `total` bytes as a caller-driven task.
-///
-/// Format selection follows [`parse`]. Selection and parsing errors are returned
-/// when the task is driven, not when it is created. The task borrows `registry`
-/// and `format`; to build a registry-independent task for a known handler, use
-/// [`Task::new`] with [`ContainerHandler::parse_async`](crate::ContainerHandler::parse_async).
-pub fn parse_task<'a>(
-    registry: &'a HandlerRegistry,
-    total: u64,
-    format: Option<&'a str>,
-) -> Task<'a, Structure> {
-    Task::new(total, move |mut io| async move {
-        parse_async(registry, &mut io, format).await
-    })
-}
+    /// Parse a stream of `total` bytes as a caller-driven task.
+    ///
+    /// Format selection follows [`parse`](Self::parse). Selection and parsing
+    /// errors are returned when the task is driven, not when it is created. The
+    /// task borrows `registry` and `format`; to build a registry-independent task
+    /// for a known handler, use [`Task::new`] with
+    /// [`ContainerHandler::parse_async`](crate::ContainerHandler::parse_async).
+    pub fn parse_task<'a>(
+        registry: &'a HandlerRegistry,
+        total: u64,
+        format: Option<&'a str>,
+    ) -> Task<'a, Structure> {
+        Task::new(total, move |mut io| async move {
+            Structure::parse_async(registry, &mut io, format).await
+        })
+    }
 
-/// Parse through `io` inside a larger sans-I/O computation.
-///
-/// Format selection follows [`parse`]. This does no I/O itself: a [`Task`] driver
-/// supplies requested bytes. The selected handler takes an owned [`Io::fork`],
-/// leaving `io` available after parsing. The fork has a separate byte window, so
-/// detection bytes may be requested again by the parser.
-pub async fn parse_async(
-    registry: &HandlerRegistry,
-    io: &mut Io,
-    format: Option<&str>,
-) -> Result<Structure> {
-    let handler = match format {
-        Some(format) => Arc::clone(registry.handler(format).ok_or(Error::UnsupportedFormat)?),
-        None => {
-            let len = (DETECT_LEN as u64).min(io.len()) as usize;
-            let head = io.fetch(0, len).await?;
-            Arc::clone(registry.detect(head).ok_or(Error::UnsupportedFormat)?)
-        }
-    };
-    handler.parse_async(io.fork()).await
+    /// Parse through `io` inside a larger sans-I/O computation.
+    ///
+    /// Format selection follows [`parse`](Self::parse). This does no I/O itself:
+    /// a [`Task`] driver supplies requested bytes. The selected handler takes an
+    /// owned [`Io::fork`], leaving `io` available after parsing. The fork has a
+    /// separate byte window, so detection bytes may be requested again by the
+    /// parser.
+    pub async fn parse_async(
+        registry: &HandlerRegistry,
+        io: &mut Io,
+        format: Option<&str>,
+    ) -> Result<Structure> {
+        let handler = match format {
+            Some(format) => Arc::clone(registry.handler(format).ok_or(Error::UnsupportedFormat)?),
+            None => {
+                let len = (DETECT_LEN as u64).min(io.len()) as usize;
+                let head = io.fetch(0, len).await?;
+                Arc::clone(registry.detect(head).ok_or(Error::UnsupportedFormat)?)
+            }
+        };
+        handler.parse_async(io.fork()).await
+    }
 }
 
 #[cfg(test)]
@@ -152,15 +157,18 @@ mod tests {
         for format in [" .TeSt ", "APPLICATION/X-TEST"] {
             let mut src = Cursor::new(b"TESTpayload");
             src.set_position(5);
-            let structure = parse(&registry, &mut src, Some(format)).unwrap();
+            let structure = Structure::parse(&registry, &mut src, Some(format)).unwrap();
             assert_eq!(structure.container_id(), "explicit");
             assert_eq!(structure.total_size(), 11);
-            let (structure, _) = drive(parse_task(&registry, 11, Some(format)), b"TESTpayload");
+            let (structure, _) = drive(
+                Structure::parse_task(&registry, 11, Some(format)),
+                b"TESTpayload",
+            );
             assert_eq!(structure.unwrap().container_id(), "explicit");
         }
         assert_eq!(detections.load(Ordering::Relaxed), 0);
         assert!(matches!(
-            parse(&registry, &mut Cursor::new(b"TEST"), None),
+            Structure::parse(&registry, &mut Cursor::new(b"TEST"), None),
             Err(Error::UnsupportedFormat)
         ));
     }
@@ -172,15 +180,15 @@ mod tests {
         registry.add_handler(handler("first", true));
         registry.add_handler(handler("latest", true));
         for format in [None, Some("test")] {
-            let structure = parse(&registry, &mut Cursor::new(b"TEST"), format).unwrap();
+            let structure = Structure::parse(&registry, &mut Cursor::new(b"TEST"), format).unwrap();
             assert_eq!(structure.container_id(), "latest");
-            let (structure, _) = drive(parse_task(&registry, 4, format), b"TEST");
+            let (structure, _) = drive(Structure::parse_task(&registry, 4, format), b"TEST");
             assert_eq!(structure.unwrap().container_id(), "latest");
         }
         let registry = HandlerRegistry::with_fallback(base);
         for format in [None, Some("test")] {
             assert_eq!(
-                parse(&registry, &mut Cursor::new(b"TEST"), format)
+                Structure::parse(&registry, &mut Cursor::new(b"TEST"), format)
                     .unwrap()
                     .container_id(),
                 "fallback"
@@ -195,25 +203,25 @@ mod tests {
         let registry = HandlerRegistry::new().with_handler(h);
         for format in [Some("unknown"), Some("")] {
             assert!(matches!(
-                parse(&registry, &mut Cursor::new(b"TEST"), format),
+                Structure::parse(&registry, &mut Cursor::new(b"TEST"), format),
                 Err(Error::UnsupportedFormat)
             ));
-            let (result, requests) = drive(parse_task(&registry, 4, format), b"TEST");
+            let (result, requests) = drive(Structure::parse_task(&registry, 4, format), b"TEST");
             assert!(matches!(result, Err(Error::UnsupportedFormat)));
             assert_eq!(requests, 0);
         }
         assert!(matches!(
-            parse(&registry, &mut Cursor::new(b"nope"), Some("test")),
+            Structure::parse(&registry, &mut Cursor::new(b"nope"), Some("test")),
             Err(Error::InvalidFormat(_))
         ));
         assert_eq!(detections.load(Ordering::Relaxed), 0);
         for bytes in [b"".as_slice(), b"T", b"nope"] {
             assert!(matches!(
-                parse(&registry, &mut Cursor::new(bytes), None),
+                Structure::parse(&registry, &mut Cursor::new(bytes), None),
                 Err(Error::UnsupportedFormat)
             ));
         }
-        let (result, _) = drive(parse_task(&registry, 4, Some("test")), b"T");
+        let (result, _) = drive(Structure::parse_task(&registry, 4, Some("test")), b"T");
         assert!(matches!(
             result,
             Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::UnexpectedEof
@@ -226,7 +234,7 @@ mod tests {
         for format in [None, Some("test")] {
             let registry = &registry;
             let task = Task::new(11, |mut io| async move {
-                let structure = parse_async(registry, &mut io, format).await?;
+                let structure = Structure::parse_async(registry, &mut io, format).await?;
                 let payload = io.read_vec(4, 7).await?;
                 Ok((structure, payload))
             });
@@ -253,7 +261,7 @@ mod tests {
         let registry = HandlerRegistry::new().with_handler(handler("test", true));
         for format in [None, Some("test")] {
             assert!(matches!(
-                parse(&registry, &mut Broken, format),
+                Structure::parse(&registry, &mut Broken, format),
                 Err(Error::Io(error)) if error.to_string() == "read failed"
             ));
         }

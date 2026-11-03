@@ -55,7 +55,8 @@ fuzz_target!(|data: &[u8]| {
     file.extend_from_slice(tail);
 
     let registry = HandlerRegistry::builtin();
-    let Ok(structure) = asset_io::parse(&registry, &mut Cursor::new(&file), Some("jpg")) else {
+    let Ok(structure) = asset_io::Structure::parse(&registry, &mut Cursor::new(&file), Some("jpg"))
+    else {
         return;
     };
 
@@ -75,7 +76,7 @@ fuzz_target!(|data: &[u8]| {
         };
         let out = out.into_inner();
         assert_eq!(dest.total_size(), out.len() as u64);
-        let again = asset_io::parse(&registry, &mut Cursor::new(&out), Some("jpg"))
+        let again = asset_io::Structure::parse(&registry, &mut Cursor::new(&out), Some("jpg"))
             .expect("the output of an accepted edit parses");
         assert_eq!(again.subassets(), dest.subassets());
     }

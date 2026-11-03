@@ -22,9 +22,9 @@ fuzz_target!(|data: &[u8]| {
     let registry = HandlerRegistry::builtin();
     let mut src = Cursor::new(data);
     // SVG is not detected by content, so ask for it by name when nothing else fits.
-    let structure = match asset_io::parse(&registry, &mut src, None) {
+    let structure = match asset_io::Structure::parse(&registry, &mut src, None) {
         Ok(s) => s,
-        Err(_) => match asset_io::parse(&registry, &mut src, Some("svg")) {
+        Err(_) => match asset_io::Structure::parse(&registry, &mut src, Some("svg")) {
             Ok(s) => s,
             Err(_) => return,
         },

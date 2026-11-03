@@ -10,7 +10,7 @@ use std::sync::{Arc, OnceLock};
 /// [`builtin`](Self::builtin) includes only the explicitly enabled container
 /// features. All lookup and registration operations are supplied by the
 /// underlying [`asset_io_core::HandlerRegistry`].
-/// Parsing is provided by [`crate::parse`] and the optional `asset_io::tokio`
+/// Parsing is provided by [`Structure::parse`](crate::Structure::parse) and the optional `asset_io::tokio`
 /// adapters, not by the registry.
 #[derive(Debug, Default)]
 pub struct HandlerRegistry {

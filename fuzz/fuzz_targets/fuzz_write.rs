@@ -24,9 +24,9 @@ const XPACKET: &[u8] = b"<?xpacket begin=\"\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\
 fuzz_target!(|data: &[u8]| {
     let registry = HandlerRegistry::builtin();
     let mut src = Cursor::new(data);
-    let structure = match asset_io::parse(&registry, &mut src, None) {
+    let structure = match asset_io::Structure::parse(&registry, &mut src, None) {
         Ok(s) => s,
-        Err(_) => match asset_io::parse(&registry, &mut src, Some("svg")) {
+        Err(_) => match asset_io::Structure::parse(&registry, &mut src, Some("svg")) {
             Ok(s) => s,
             Err(_) => return,
         },

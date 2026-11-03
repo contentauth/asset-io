@@ -62,7 +62,11 @@ async fn write_file(
     let registry = HandlerRegistry::builtin();
     let mut src = File::open(&src_path).await?;
     let total = src.metadata().await?.len();
-    let structure = drive(asset_io::parse_task(&registry, total, None), &mut src).await?;
+    let structure = drive(
+        asset_io::Structure::parse_task(&registry, total, None),
+        &mut src,
+    )
+    .await?;
     let plan = drive(structure.write_plan_task(&updates), &mut src).await?;
 
     let mut out = File::create(&dest).await?;
@@ -120,7 +124,7 @@ async fn spawned_tasks_write_what_the_blocking_api_writes() {
             let dest: PathBuf = dir.path().join(format!("{j}-{name}"));
             // What the blocking API writes, for comparison.
             let bytes = std::fs::read(&path).unwrap();
-            let s = asset_io::parse(&reg, &mut Cursor::new(&bytes), None).unwrap();
+            let s = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), None).unwrap();
             let mut want = Cursor::new(Vec::new());
             let want_layout = s
                 .write(&mut Cursor::new(&bytes), &mut want, &u, &mut NullSink)

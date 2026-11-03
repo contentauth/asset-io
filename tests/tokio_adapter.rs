@@ -35,7 +35,8 @@ async fn spawned_adapters_match_blocking_reads_writes_and_sink_bytes() {
             let registry = HandlerRegistry::builtin();
             let updates = Updates::new().set_jumbf(store());
             let blocking =
-                asset_io::parse(&registry, &mut Cursor::new(&input), Some(format)).unwrap();
+                asset_io::Structure::parse(&registry, &mut Cursor::new(&input), Some(format))
+                    .unwrap();
             let mut expected = Cursor::new(Vec::new());
             let expected_layout = blocking
                 .write(

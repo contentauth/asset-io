@@ -152,7 +152,7 @@ fn fixture(f: Format, pages: usize, extra: &[Tag]) -> Vec<u8> {
 }
 
 fn parse(data: &[u8]) -> Structure {
-    asset_io_core::parse(&registry(), &mut Cursor::new(data), None).unwrap()
+    asset_io_core::Structure::parse(&registry(), &mut Cursor::new(data), None).unwrap()
 }
 fn registry() -> HandlerRegistry {
     HandlerRegistry::new().with_handler(tiff::TiffHandler)
@@ -222,7 +222,7 @@ fn both_byte_orders_and_widths_read_write_and_conform() {
             let bytes = fixture(f, pages, &[]);
             let source = parse(&bytes);
             let parsed = drive(
-                asset_io_core::parse_task(&registry(), bytes.len() as u64, None),
+                asset_io_core::Structure::parse_task(&registry(), bytes.len() as u64, None),
                 &bytes,
             );
             assert_eq!(shape(&source), shape(&parsed));

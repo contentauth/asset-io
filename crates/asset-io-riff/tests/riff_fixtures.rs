@@ -28,7 +28,7 @@ const FILES: &[&str] = &[
 ];
 
 fn write(bytes: &[u8], u: &Updates) -> asset_io_core::Result<Vec<u8>> {
-    let s = asset_io_core::parse(
+    let s = asset_io_core::Structure::parse(
         &HandlerRegistry::new().with_handler(asset_io_riff::RiffHandler),
         &mut Cursor::new(bytes),
         None,
@@ -36,7 +36,7 @@ fn write(bytes: &[u8], u: &Updates) -> asset_io_core::Result<Vec<u8>> {
     let mut out = Cursor::new(Vec::new());
     let dest = s.write(&mut Cursor::new(bytes), &mut out, u, &mut NullSink)?;
     let out = out.into_inner();
-    let again = asset_io_core::parse(
+    let again = asset_io_core::Structure::parse(
         &HandlerRegistry::new().with_handler(asset_io_riff::RiffHandler),
         &mut Cursor::new(&out),
         None,
@@ -54,7 +54,7 @@ fn real_files_round_trip_and_take_metadata() {
             continue;
         };
         ran += 1;
-        let s = asset_io_core::parse(
+        let s = asset_io_core::Structure::parse(
             &HandlerRegistry::new().with_handler(asset_io_riff::RiffHandler),
             &mut Cursor::new(&bytes),
             None,
@@ -73,7 +73,7 @@ fn real_files_round_trip_and_take_metadata() {
             .set_jumbf(vec![0xAB; 1001])
             .set_xmp(b"<x:xmpmeta/>".to_vec());
         let out = write(&bytes, &u).unwrap_or_else(|e| panic!("{path}: {e}"));
-        let t = asset_io_core::parse(
+        let t = asset_io_core::Structure::parse(
             &HandlerRegistry::new().with_handler(asset_io_riff::RiffHandler),
             &mut Cursor::new(&out),
             None,
@@ -94,7 +94,7 @@ fn real_files_round_trip_and_take_metadata() {
         // Removing what was added gives back the media, whatever else changed
         // (a WebP gains a VP8X chunk when it takes XMP).
         let back = write(&out, &Updates::new().remove_jumbf().remove_xmp()).unwrap();
-        let b = asset_io_core::parse(
+        let b = asset_io_core::Structure::parse(
             &HandlerRegistry::new().with_handler(asset_io_riff::RiffHandler),
             &mut Cursor::new(&back),
             None,

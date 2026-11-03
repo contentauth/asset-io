@@ -97,7 +97,7 @@ fn plan_is_what_write_returns() {
     ];
     let mut ran = 0;
     for (name, bytes) in fixtures() {
-        let Ok(s) = asset_io::parse(&reg, &mut Cursor::new(&bytes), None) else {
+        let Ok(s) = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), None) else {
             continue;
         };
         for (i, u) in updates.iter().enumerate() {
@@ -132,7 +132,7 @@ fn plan_places_a_manifest_that_is_not_there_yet() {
     let u = Updates::new().set_jumbf(store(1, &[b"one"]));
     let mut ran = 0;
     for (name, bytes) in fixtures() {
-        let Ok(s) = asset_io::parse(&reg, &mut Cursor::new(&bytes), None) else {
+        let Ok(s) = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), None) else {
             continue;
         };
         if s.item(ItemKind::Jumbf).ok().flatten().is_some() {
@@ -161,7 +161,7 @@ fn a_reader_sees_original_and_update_as_one_store() {
 
     // Start from a file with no store, whatever the fixture holds.
     let bytes = {
-        let s = asset_io::parse(&reg, &mut Cursor::new(&bytes), None).unwrap();
+        let s = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), None).unwrap();
         let mut out = Cursor::new(Vec::new());
         s.write(
             &mut Cursor::new(&bytes),
@@ -172,7 +172,7 @@ fn a_reader_sees_original_and_update_as_one_store() {
         .unwrap();
         out.into_inner()
     };
-    let s0 = asset_io::parse(&reg, &mut Cursor::new(&bytes), None).unwrap();
+    let s0 = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), None).unwrap();
     assert_eq!(s0.store(&mut Cursor::new(&bytes)).unwrap(), None);
 
     let mut a = Cursor::new(Vec::new());
@@ -184,7 +184,7 @@ fn a_reader_sees_original_and_update_as_one_store() {
     )
     .unwrap();
     let a = a.into_inner();
-    let s1 = asset_io::parse(&reg, &mut Cursor::new(&a), None).unwrap();
+    let s1 = asset_io::Structure::parse(&reg, &mut Cursor::new(&a), None).unwrap();
     assert_eq!(s1.store(&mut Cursor::new(&a)).unwrap(), Some(first));
 
     let mut b = Cursor::new(Vec::new());
@@ -196,7 +196,7 @@ fn a_reader_sees_original_and_update_as_one_store() {
     )
     .unwrap();
     let b = b.into_inner();
-    let s2 = asset_io::parse(&reg, &mut Cursor::new(&b), None).unwrap();
+    let s2 = asset_io::Structure::parse(&reg, &mut Cursor::new(&b), None).unwrap();
     // Two stores are in the file, and a reader sees them as the one that was set.
     assert_eq!(s2.items_of(ItemKind::Jumbf).count(), 2);
     assert_eq!(s2.store(&mut Cursor::new(&b)).unwrap(), Some(second));
@@ -228,7 +228,7 @@ fn compose_is_what_write_inserts() {
     let xmp = b"<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"/>".to_vec();
     let mut checked = std::collections::HashSet::new();
     for (name, bytes) in fixtures() {
-        let Ok(s) = asset_io::parse(&reg, &mut Cursor::new(&bytes), None) else {
+        let Ok(s) = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), None) else {
             continue;
         };
         for (kind, data) in [(ItemKind::Jumbf, &jumbf), (ItemKind::Xmp, &xmp)] {
@@ -278,7 +278,7 @@ fn compose_splits_a_large_jpeg_store_like_write() {
     let Some((_, bytes)) = fixtures().into_iter().find(|(n, _)| n.ends_with(".jpg")) else {
         return;
     };
-    let s = asset_io::parse(&reg, &mut Cursor::new(&bytes), Some("jpg")).unwrap();
+    let s = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), Some("jpg")).unwrap();
     let mut out = Cursor::new(Vec::new());
     let dest = s
         .write(
@@ -396,7 +396,7 @@ fn item_kinds_encodings_and_categories_per_container() {
     let jumbf = store(1, &[b"one"]);
     let mut written = std::collections::BTreeSet::new();
     for (name, bytes) in fixtures() {
-        let Ok(s) = asset_io::parse(&reg, &mut Cursor::new(&bytes), None) else {
+        let Ok(s) = asset_io::Structure::parse(&reg, &mut Cursor::new(&bytes), None) else {
             continue;
         };
         check(&s, &name);

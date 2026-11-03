@@ -63,7 +63,7 @@ fn items_survive_a_write_and_stay_readable() {
             continue;
         };
         ran += 1;
-        let s = asset_io_core::parse(
+        let s = asset_io_core::Structure::parse(
             &HandlerRegistry::new().with_handler(asset_io_bmff::BmffHandler),
             &mut Cursor::new(&bytes),
             None,
@@ -88,7 +88,7 @@ fn items_survive_a_write_and_stay_readable() {
             )
             .unwrap();
         let out = out.into_inner();
-        let again = asset_io_core::parse(
+        let again = asset_io_core::Structure::parse(
             &HandlerRegistry::new().with_handler(asset_io_bmff::BmffHandler),
             &mut Cursor::new(&out),
             None,

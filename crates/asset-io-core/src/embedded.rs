@@ -266,7 +266,11 @@ impl Scanner<'_> {
                     limit: self.limits.max_total_bytes,
                 })?;
             let structure = if *item.transfer() == TransferEncoding::Identity {
-                crate::parse(self.registry, &mut EmbeddedReader::new(src, &ranges)?, None)
+                crate::Structure::parse(
+                    self.registry,
+                    &mut EmbeddedReader::new(src, &ranges)?,
+                    None,
+                )
             } else {
                 Err(Error::UnsupportedFeature("transfer-encoded embedded asset"))
             };

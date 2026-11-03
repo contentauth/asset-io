@@ -196,7 +196,7 @@ pub trait ContainerHandler: std::fmt::Debug + Send + Sync {
     /// It is `async` so that the same code can be run by any I/O: see
     /// [`Task`](crate::Task). Read with [`Io`], whose reads are `.await`ed;
     /// everything else is ordinary code. [`parse`](Self::parse) and
-    /// [`crate::parse_task`] run it.
+    /// [`Structure::parse_task`](crate::Structure::parse_task) run it.
     ///
     /// The result must tile the stream (see [`StructureBuilder`](crate::StructureBuilder))
     /// and must be built with `self` as its handler, which is why this takes the

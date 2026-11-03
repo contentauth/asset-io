@@ -38,14 +38,15 @@ fn handler_exclusions_match_planned_written_and_parsed_geometry() {
     ] {
         for len in [33, 34, 160_001] {
             let mut source = Cursor::new(&input);
-            let structure = asset_io::parse(&registry, &mut source, Some(format)).unwrap();
+            let structure =
+                asset_io::Structure::parse(&registry, &mut source, Some(format)).unwrap();
             let updates = Updates::new().set_jumbf(store(len));
             let planned = structure.plan(&mut source, &updates).unwrap();
             let mut output = Cursor::new(Vec::new());
             let written = structure
                 .write(&mut source, &mut output, &updates, &mut NullSink)
                 .unwrap();
-            let parsed = asset_io::parse(&registry, &mut output, Some(format)).unwrap();
+            let parsed = asset_io::Structure::parse(&registry, &mut output, Some(format)).unwrap();
             let item = planned.require_item(ItemKind::Jumbf).unwrap();
             let expected = planned.c2pa_data_hash_exclusions(item).unwrap();
             assert!(!expected.is_empty());
@@ -101,7 +102,7 @@ fn handler_exclusions_match_planned_written_and_parsed_geometry() {
 fn containers_with_other_bindings_refuse_rather_than_guess() {
     let registry = HandlerRegistry::builtin();
     let mut sidecar = Cursor::new(store(33));
-    let structure = asset_io::parse(&registry, &mut sidecar, Some("c2pa")).unwrap();
+    let structure = asset_io::Structure::parse(&registry, &mut sidecar, Some("c2pa")).unwrap();
     let item = structure.require_item(ItemKind::Jumbf).unwrap();
     assert!(matches!(
         structure.c2pa_data_hash_exclusions(item),
@@ -109,7 +110,7 @@ fn containers_with_other_bindings_refuse_rather_than_guess() {
     ));
 
     let mut mp4 = Cursor::new(b"\0\0\0\x18ftypisom\0\0\0\0isommp42".to_vec());
-    let structure = asset_io::parse(&registry, &mut mp4, Some("mp4")).unwrap();
+    let structure = asset_io::Structure::parse(&registry, &mut mp4, Some("mp4")).unwrap();
     let planned = structure
         .plan(&mut mp4, &Updates::new().set_jumbf(store(33)))
         .unwrap();
@@ -144,7 +145,8 @@ fn each_container_names_its_c2pa_hard_binding() {
         ),
         ("c2pa", store(33), None),
     ] {
-        let structure = asset_io::parse(&registry, &mut Cursor::new(input), Some(format)).unwrap();
+        let structure =
+            asset_io::Structure::parse(&registry, &mut Cursor::new(input), Some(format)).unwrap();
         assert_eq!(structure.c2pa_hash(), expected, "{format}");
     }
 }
@@ -163,7 +165,8 @@ fn c2pa_boxes_tile_the_asset_with_one_store_box() {
     ] {
         for len in [33, 160_001] {
             let mut source = Cursor::new(&input);
-            let structure = asset_io::parse(&registry, &mut source, Some(format)).unwrap();
+            let structure =
+                asset_io::Structure::parse(&registry, &mut source, Some(format)).unwrap();
             let mut c2pa = store(len);
             c2pa[16..32].copy_from_slice(&asset_io::jumbf::C2PA_STORE_TYPE);
             let updates = Updates::new().set_jumbf(c2pa);
@@ -174,7 +177,8 @@ fn c2pa_boxes_tile_the_asset_with_one_store_box() {
                 .unwrap();
             let mut bytes = output.into_inner();
             let parsed =
-                asset_io::parse(&registry, &mut Cursor::new(&bytes), Some(format)).unwrap();
+                asset_io::Structure::parse(&registry, &mut Cursor::new(&bytes), Some(format))
+                    .unwrap();
 
             let boxes = parsed.c2pa_boxes(&mut Cursor::new(&bytes)).unwrap();
             assert_eq!(
@@ -203,7 +207,8 @@ fn c2pa_boxes_tile_the_asset_with_one_store_box() {
             }
             bytes.extend_from_slice(b"trailing");
             let parsed =
-                asset_io::parse(&registry, &mut Cursor::new(&bytes), Some(format)).unwrap();
+                asset_io::Structure::parse(&registry, &mut Cursor::new(&bytes), Some(format))
+                    .unwrap();
             let boxes = parsed.c2pa_boxes(&mut Cursor::new(&bytes)).unwrap();
             let last = boxes.last().unwrap();
             assert_eq!(
@@ -214,7 +219,8 @@ fn c2pa_boxes_tile_the_asset_with_one_store_box() {
         }
     }
     let svg = br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#;
-    let structure = asset_io::parse(&registry, &mut Cursor::new(svg), Some("svg")).unwrap();
+    let structure =
+        asset_io::Structure::parse(&registry, &mut Cursor::new(svg), Some("svg")).unwrap();
     assert!(matches!(
         structure.c2pa_boxes(&mut Cursor::new(svg)),
         Err(Error::UnsupportedFeature(_))
@@ -239,7 +245,7 @@ fn planned_and_written(format: &str, input: &[u8]) -> (Named, Named, Vec<u8>) {
     c2pa[16..32].copy_from_slice(&asset_io::jumbf::C2PA_STORE_TYPE);
     let updates = Updates::new().set_jumbf(c2pa);
     let mut source = Cursor::new(input);
-    let structure = asset_io::parse(&registry, &mut source, Some(format)).unwrap();
+    let structure = asset_io::Structure::parse(&registry, &mut source, Some(format)).unwrap();
     let planned = structure.plan(&mut source, &updates).unwrap();
     let planned_boxes = named(&planned.c2pa_boxes(&mut source).unwrap());
     let mut output = Cursor::new(Vec::new());
@@ -247,7 +253,8 @@ fn planned_and_written(format: &str, input: &[u8]) -> (Named, Named, Vec<u8>) {
         .write(&mut source, &mut output, &updates, &mut NullSink)
         .unwrap();
     let bytes = output.into_inner();
-    let written = asset_io::parse(&registry, &mut Cursor::new(&bytes), Some(format)).unwrap();
+    let written =
+        asset_io::Structure::parse(&registry, &mut Cursor::new(&bytes), Some(format)).unwrap();
     let written_boxes = named(&written.c2pa_boxes(&mut Cursor::new(&bytes)).unwrap());
     (planned_boxes, written_boxes, bytes)
 }
@@ -357,7 +364,7 @@ fn boxes_report_their_asset_metadata() {
     let registry = HandlerRegistry::builtin();
     let png = b"\x89PNG\r\n\x1a\n\0\0\0\0IEND\xae\x42\x60\x82".to_vec();
     let mut source = Cursor::new(&png);
-    let structure = asset_io::parse(&registry, &mut source, Some("png")).unwrap();
+    let structure = asset_io::Structure::parse(&registry, &mut source, Some("png")).unwrap();
     let xmp = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/"/>"#.to_vec();
     let mut output = Cursor::new(Vec::new());
     structure
@@ -369,7 +376,8 @@ fn boxes_report_their_asset_metadata() {
         )
         .unwrap();
     let bytes = output.into_inner();
-    let parsed = asset_io::parse(&registry, &mut Cursor::new(&bytes), Some("png")).unwrap();
+    let parsed =
+        asset_io::Structure::parse(&registry, &mut Cursor::new(&bytes), Some("png")).unwrap();
     let boxes = parsed.c2pa_boxes(&mut Cursor::new(&bytes)).unwrap();
     let itxt = boxes.iter().find(|b| b.name == "iTXt").unwrap();
     assert_eq!(itxt.metadata.len(), 1);

@@ -46,7 +46,7 @@ fn parse(c: &mut Criterion) {
             &data,
             |b, data| {
                 b.iter(|| {
-                    let structure = asset_io_core::parse(
+                    let structure = asset_io_core::Structure::parse(
                         &registry,
                         &mut Cursor::new(black_box(data.as_slice())),
                         Some("pdf"),
@@ -67,7 +67,8 @@ fn plan(c: &mut Criterion) {
     for payload_size in [1024, 1024 * 1024, 8 * 1024 * 1024] {
         let data = document(payload_size);
         let structure =
-            asset_io_core::parse(&registry, &mut Cursor::new(&data), Some("pdf")).unwrap();
+            asset_io_core::Structure::parse(&registry, &mut Cursor::new(&data), Some("pdf"))
+                .unwrap();
         let updates = Updates::new().set_xmp(b"<x:xmpmeta/>".to_vec());
         group.bench_with_input(
             BenchmarkId::from_parameter(payload_size),
@@ -92,7 +93,8 @@ fn write(c: &mut Criterion) {
     for payload_size in [1024 * 1024, 8 * 1024 * 1024] {
         let data = document(payload_size);
         let structure =
-            asset_io_core::parse(&registry, &mut Cursor::new(&data), Some("pdf")).unwrap();
+            asset_io_core::Structure::parse(&registry, &mut Cursor::new(&data), Some("pdf"))
+                .unwrap();
         let updates = Updates::new().set_xmp(b"<x:xmpmeta/>".to_vec());
         group.throughput(criterion::Throughput::Bytes(data.len() as u64));
         group.bench_with_input(
