@@ -13,69 +13,28 @@
 
 //! Use asset-io from tokio, with async file I/O.
 //!
-//! asset-io does no I/O of its own when it parses a file or plans and runs a
-//! write: it hands the caller a request ("these bytes, please") or an action
-//! ("write these bytes"). This example answers them with `tokio::fs`, so a parse
-//! or a write never blocks a runtime thread, and many files can be handled at
-//! once. Everything that crosses an `.await` is `Send`, so the work can be spawned.
+//! The `asset_io::tokio` adapters handle parsing, item reads, planning and writing
+//! with async stream I/O. The sans-I/O requests and write steps stay inside the
+//! adapters. Each file's work can be spawned on the multi-threaded runtime.
 //!
 //! Run:
 //!
 //! ```text
-//! cargo run --example tokio_client --features all-formats -- inspect a.jpg b.png c.mp4
-//! cargo run --example tokio_client --features all-formats -- edit in.jpg out.jpg new.xmp
+//! cargo run --example tokio_client --features all-formats,tokio -- inspect a.jpg b.png c.mp4
+//! cargo run --example tokio_client --features all-formats,tokio -- edit in.jpg out.jpg new.xmp
 //! ```
 
-use asset_io::{
-    Action, Chunk, HandlerRegistry, ItemKind, Progress, ReadRequest, Result, Structure, Task,
-    Updates,
-};
-use sha2::{Digest, Sha256};
-use std::io::SeekFrom;
 use std::time::Instant;
+
+use asset_io::{tokio as asset, Chunk, HandlerRegistry, ItemKind, Result, Structure, Updates};
+use sha2::{Digest, Sha256};
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-
-/// Answer one request of a task from an async file: seek to the offset and read
-/// the window into the request's buffer.
-async fn serve(file: &mut File, mut req: ReadRequest<'_>) -> std::io::Result<()> {
-    file.seek(SeekFrom::Start(req.offset())).await?;
-    let window = req.window_len() as u64;
-    let buf = req.buffer();
-    buf.clear();
-    // The request owns its buffer, so it can be held across the `.await`.
-    (&mut *file).take(window).read_to_end(buf).await?;
-    Ok(())
-}
-
-/// Run a task to its end, reading what it asks for from `file`.
-async fn drive<T>(mut task: Task<'_, T>, file: &mut File) -> Result<T> {
-    loop {
-        match task.resume()? {
-            Progress::Read(req) => serve(file, req).await?,
-            Progress::Done(value) => return Ok(value),
-            _ => unreachable!("a progress this driver does not know"),
-        }
-    }
-}
-
-/// Read a range of a file.
-async fn read_range(file: &mut File, offset: u64, len: u64) -> std::io::Result<Vec<u8>> {
-    file.seek(SeekFrom::Start(offset)).await?;
-    let mut buf = vec![0u8; len as usize];
-    file.read_exact(&mut buf).await?;
-    Ok(buf)
-}
 
 /// Parse a file and describe it.
 async fn inspect(path: String) -> Result<String> {
     let registry = HandlerRegistry::builtin();
     let mut file = File::open(&path).await?;
-    let total = file.metadata().await?.len();
-
-    // The container is found from the first bytes, which the task asks for.
-    let structure = drive(registry.parse_detect_task(total), &mut file).await?;
-
+    let structure = asset::parse(&registry, &mut file, None).await?;
     let mut out = format!(
         "{path}\n  {} ({}), {} bytes, {} segments\n",
         structure.media_type(),
@@ -84,12 +43,7 @@ async fn inspect(path: String) -> Result<String> {
         structure.segments().len()
     );
     for e in structure.items() {
-        // The extents of an item are plain byte ranges; read them however you like.
-        let mut bytes = Vec::with_capacity(e.len() as usize);
-        for extent in e.extents() {
-            let r = extent.range();
-            bytes.extend(read_range(&mut file, r.offset(), r.len()).await?);
-        }
+        let bytes = asset::read_item(&structure, &mut file, e).await?;
         let label = e.label().map(|l| format!(" [{l}]")).unwrap_or_default();
         out += &format!("  {}{label}: {} bytes\n", e.kind(), bytes.len());
     }
@@ -102,16 +56,14 @@ async fn edit(input: String, output: String, xmp: Vec<u8>) -> Result<(Structure,
     let started = Instant::now();
     let registry = HandlerRegistry::builtin();
     let mut src = File::open(&input).await?;
-    let total = src.metadata().await?.len();
     let parse_started = Instant::now();
-    let structure = drive(registry.parse_detect_task(total), &mut src).await?;
+    let structure = asset::parse(&registry, &mut src, None).await?;
     let parse_elapsed = parse_started.elapsed();
 
     // Plan the write: the structure of the output and the steps that produce it.
-    // Planning reads a little of the source (for some formats), asked for the same way.
     let plan_started = Instant::now();
     let updates = Updates::new().set_xmp(xmp);
-    let plan = drive(structure.write_plan_task(&updates), &mut src).await?;
+    let plan = asset::write_plan(&structure, &mut src, &updates).await?;
     let plan_elapsed = plan_started.elapsed();
 
     // Run the plan. Every output byte also goes to a sink, tagged with its segment
@@ -123,23 +75,7 @@ async fn edit(input: String, output: String, xmp: Vec<u8>) -> Result<(Structure,
         hash.update(chunk.data);
         Ok(())
     };
-    let mut run = plan.start();
-    let mut at: Option<u64> = None;
-    loop {
-        match run.step(&mut sink)? {
-            Action::Read { offset, buf } => {
-                if at != Some(offset) {
-                    src.seek(SeekFrom::Start(offset)).await?;
-                }
-                src.read_exact(buf).await?;
-                at = Some(offset + buf.len() as u64);
-            }
-            Action::Write(bytes) => out.write_all(bytes).await?,
-            Action::Done => break,
-            _ => unreachable!("an action this driver does not know"),
-        }
-    }
-    out.flush().await?;
+    asset::execute(&plan, &mut src, &mut out, &mut sink).await?;
     let digest: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
     let write_elapsed = write_started.elapsed();
 

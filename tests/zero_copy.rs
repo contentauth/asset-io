@@ -15,9 +15,9 @@
 
 #![cfg(all(feature = "jpeg", feature = "png", feature = "bmff"))]
 
+use std::{borrow::Cow, io::Cursor};
+
 use asset_io::{ByteRange, Chunk, Error, HandlerRegistry, NullSink, Result, Role, Structure};
-use std::borrow::Cow;
-use std::io::Cursor;
 
 const FILES: &[&str] = &[
     "tests/fixtures/FireflyTrain.jpg",
@@ -34,8 +34,7 @@ fn load() -> Vec<(&'static str, Vec<u8>, Structure)> {
         .iter()
         .filter_map(|p| {
             let bytes = std::fs::read(p).ok()?;
-            let s = HandlerRegistry::builtin()
-                .parse_detect(&mut Cursor::new(&bytes))
+            let s = Structure::parse(&HandlerRegistry::builtin(), &mut Cursor::new(&bytes), None)
                 .ok()?;
             Some((*p, bytes, s))
         })
@@ -80,6 +79,7 @@ fn unwanted_runs_are_skipped_and_cancel_stops() {
         fn wants(&self, _: &asset_io::Segment, role: Role) -> bool {
             role == Role::Payload
         }
+
         fn chunk(&mut self, c: Chunk<'_>) -> Result<()> {
             assert_eq!(c.role, Role::Payload);
             self.0 += c.data.len() as u64;
@@ -148,7 +148,7 @@ fn mapped_file_parses_and_slices() {
     // SAFETY: the fixture is not modified during the test.
     let map = unsafe { asset_io::MappedFile::map(&file).unwrap() };
     assert_eq!(&*map, &std::fs::read(path).unwrap()[..]);
-    let s = map.parse_detect(&HandlerRegistry::builtin()).unwrap();
+    let s = map.parse(&HandlerRegistry::builtin(), None).unwrap();
     let streamed = rebuild(&s, |k| s.read_slice(&map, k));
     assert_eq!(&streamed, &*map);
 }

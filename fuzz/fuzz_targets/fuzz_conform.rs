@@ -11,17 +11,16 @@
 // specific language governing permissions and limitations under
 // each license.
 
-
 #![no_main]
 
-use asset_io::testing::Conformance;
-use asset_io::HandlerRegistry;
-use libfuzzer_sys::fuzz_target;
 use std::io::Cursor;
+
+use asset_io::{testing::Conformance, HandlerRegistry, Structure};
+use libfuzzer_sys::fuzz_target;
 
 /// A JUMBF with a description box, so a format that wants a type has one.
 fn jumbf() -> Vec<u8> {
-    let mut v = vec![0x5Au8; 200];
+    let mut v = vec![0x5au8; 200];
     v[0..4].copy_from_slice(&200u32.to_be_bytes());
     v[4..8].copy_from_slice(b"jumb");
     v[8..12].copy_from_slice(&192u32.to_be_bytes());
@@ -35,9 +34,9 @@ fn jumbf() -> Vec<u8> {
 fuzz_target!(|data: &[u8]| {
     let registry = HandlerRegistry::builtin();
     let mut src = Cursor::new(data);
-    let structure = match registry.parse_detect(&mut src) {
+    let structure = match Structure::parse(&registry, &mut src, None) {
         Ok(s) => s,
-        Err(_) => match registry.parse("svg", &mut src) {
+        Err(_) => match Structure::parse(&registry, &mut src, Some("svg")) {
             Ok(s) => s,
             Err(_) => return,
         },

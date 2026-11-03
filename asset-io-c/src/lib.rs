@@ -1,12 +1,6 @@
 //! Application C ABI. Handles are cimpl-tracked opaque identifiers, never Rust addresses.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use asset_io::{HandlerRegistry, Name, Relation, Role, Structure, TransferEncoding, Updates};
-use cimpl::{
-    box_tracked, bytes_or_return, cstr_or_return, deref_mut_or_return, deref_or_return,
-    ptr_or_return,
-};
-use serde_json::{json, Value};
 use std::{
     ffi::{c_char, c_void},
     io::{self, Cursor, Read, Seek, SeekFrom},
@@ -14,6 +8,13 @@ use std::{
     ptr,
     sync::Arc,
 };
+
+use asset_io::{HandlerRegistry, Name, Relation, Role, Structure, TransferEncoding, Updates};
+use cimpl::{
+    box_tracked, bytes_or_return, cstr_or_return, deref_mut_or_return, deref_or_return,
+    ptr_or_return,
+};
+use serde_json::{json, Value};
 
 macro_rules! ok_or_return {
     ($result:expr, $failure:expr) => {
@@ -208,18 +209,15 @@ fn describe(s: &Structure) -> Value {
 }
 
 fn parse(reg: &HandlerRegistry, format: *const c_char, mut source: Source) -> *mut AssetIoAsset {
-    let structure = if format.is_null() {
-        ok_or_return!(
-            reg.parse_detect(&mut source).map_err(CoreError),
-            ptr::null_mut()
-        )
+    let format = if format.is_null() {
+        None
     } else {
-        let format = cstr_or_return!(format, ptr::null_mut());
-        ok_or_return!(
-            reg.parse(&format, &mut source).map_err(CoreError),
-            ptr::null_mut()
-        )
+        Some(cstr_or_return!(format, ptr::null_mut()))
     };
+    let structure = ok_or_return!(
+        Structure::parse(reg, &mut source, format.as_deref()).map_err(CoreError),
+        ptr::null_mut()
+    );
     box_tracked!(AssetIoAsset {
         structure: Arc::new(structure),
         source

@@ -17,12 +17,16 @@
 
 #![cfg(all(feature = "jpeg", feature = "png", feature = "bmff", feature = "riff"))]
 
+use std::{io::Cursor, path::PathBuf};
+
 use asset_io::{
-    Action, ByteRange, Chunk, Error, HandlerRegistry, NullSink, Result, Role, Sink, Updates,
-    WritePlan,
+    Action, Asset, ByteRange, Chunk, Error, NullSink, Result, Role, Sink, Updates, WritePlan,
 };
-use std::io::Cursor;
-use std::path::PathBuf;
+
+/// `bytes` as an asset of `format`.
+fn open<'a>(bytes: &'a [u8], format: &str) -> Asset<Cursor<&'a [u8]>> {
+    Asset::open(Cursor::new(bytes), Some(format)).unwrap()
+}
 
 const FILES: &[(&str, &str)] = &[
     ("GreenCat.png", "png"),
@@ -117,21 +121,17 @@ fn updates() -> Vec<Updates> {
 
 #[test]
 fn stepping_gives_the_bytes_and_sink_calls_of_write() {
-    let reg = HandlerRegistry::builtin();
     let mut checked = 0;
     for (name, ext) in FILES {
         let Some(bytes) = fixture(name) else { continue };
-        let s = reg.parse(ext, &mut Cursor::new(&bytes)).unwrap();
+        let s = open(&bytes, ext);
         for (n, u) in updates().iter().enumerate() {
             // What write does.
             let mut want_sink = Seen::default();
-            let mut want = Cursor::new(Vec::new());
-            let layout = s
-                .write(&mut Cursor::new(&bytes), &mut want, u, &mut want_sink)
-                .unwrap();
-            let want = want.into_inner();
+            let mut want = Vec::new();
+            let layout = s.write(&mut want, u, &mut want_sink).unwrap();
 
-            let plan = s.write_plan(&mut Cursor::new(&bytes), u).unwrap();
+            let plan = s.write_plan(u).unwrap();
             // Small, awkward and default buffers.
             for buf_len in [Some(4096), Some(5000), Some(70_001), None] {
                 let mut sink = Seen::default();
@@ -166,11 +166,9 @@ fn copies_are_read_in_large_windows_not_per_segment() {
     let Some(bytes) = fixture("GreenCat.png") else {
         return;
     };
-    let s = HandlerRegistry::builtin()
-        .parse("png", &mut Cursor::new(&bytes))
-        .unwrap();
+    let s = open(&bytes, "png");
     let keep = Updates::new();
-    let plan = s.write_plan(&mut Cursor::new(&bytes), &keep).unwrap();
+    let plan = s.write_plan(&keep).unwrap();
     let (out, t) = drive(&plan, &bytes, None, &mut NullSink).unwrap();
     assert_eq!(out, bytes);
     // About one read and one write per 256 KiB of a 2.4 MB file, not one per chunk.
@@ -187,11 +185,9 @@ fn a_short_source_is_the_callers_error_to_report() {
     let Some(bytes) = fixture("sample1.png") else {
         return;
     };
-    let s = HandlerRegistry::builtin()
-        .parse("png", &mut Cursor::new(&bytes))
-        .unwrap();
+    let s = open(&bytes, "png");
     let keep = Updates::new();
-    let plan = s.write_plan(&mut Cursor::new(&bytes), &keep).unwrap();
+    let plan = s.write_plan(&keep).unwrap();
     let short = &bytes[..bytes.len() - 100];
     assert!(drive(&plan, short, None, &mut NullSink).is_err());
 }
@@ -201,11 +197,9 @@ fn a_sink_can_cancel_and_the_run_ends() {
     let Some(bytes) = fixture("sample1.png") else {
         return;
     };
-    let s = HandlerRegistry::builtin()
-        .parse("png", &mut Cursor::new(&bytes))
-        .unwrap();
+    let s = open(&bytes, "png");
     let keep = Updates::new();
-    let plan = s.write_plan(&mut Cursor::new(&bytes), &keep).unwrap();
+    let plan = s.write_plan(&keep).unwrap();
     let mut n = 0;
     let mut cancel = |_: Chunk<'_>| -> Result<()> {
         n += 1;
@@ -224,17 +218,16 @@ fn steps_that_do_not_match_the_structure_fail_while_stepping() {
     let Some(bytes) = fixture("sample1.png") else {
         return;
     };
-    let reg = HandlerRegistry::builtin();
-    let s = reg.parse("png", &mut Cursor::new(&bytes)).unwrap();
+    let s = open(&bytes, "png");
     let id = asset_io::SegmentId::from_index;
 
     // A header copied as if it were a payload.
-    let mut wrong = WritePlan::new(s.plan(&mut Cursor::new(&bytes), &Updates::new()).unwrap());
+    let mut wrong = WritePlan::new(s.plan(&Updates::new()).unwrap());
     wrong.copy(id(0).unwrap(), Role::Payload, ByteRange::new(0, 8).unwrap());
     assert!(drive(&wrong, &bytes, None, &mut NullSink).is_err());
 
     // Too few bytes: the structure is not covered.
-    let mut short = WritePlan::new(s.plan(&mut Cursor::new(&bytes), &Updates::new()).unwrap());
+    let mut short = WritePlan::new(s.plan(&Updates::new()).unwrap());
     short.copy_segment(id(0).unwrap(), s.segment(id(0).unwrap()).unwrap());
     assert!(drive(&short, &bytes, None, &mut NullSink).is_err());
 }
@@ -244,11 +237,9 @@ fn stepping_past_the_end_keeps_saying_done() {
     let Some(bytes) = fixture("sample1.png") else {
         return;
     };
-    let s = HandlerRegistry::builtin()
-        .parse("png", &mut Cursor::new(&bytes))
-        .unwrap();
+    let s = open(&bytes, "png");
     let keep = Updates::new();
-    let plan = s.write_plan(&mut Cursor::new(&bytes), &keep).unwrap();
+    let plan = s.write_plan(&keep).unwrap();
     let mut run = plan.start();
     let mut sink = NullSink;
     let mut src = Cursor::new(&bytes);

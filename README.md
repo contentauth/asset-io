@@ -6,6 +6,7 @@ A parsed file is a `Structure`: a gapless tiling of `Segment`s (header, payload,
 
 ## Concepts
 
+- A **structure** (`Structure`) is the parsed description of an asset: its segments, items and sub-assets, and the handler that parsed it. It holds no bytes, so its reads take the stream as an argument. An **`Asset`** pairs a structure with the stream it was parsed from, so its reads need no stream argument. A planned structure (`Structure::plan`) describes an output before it is written.
 - A **segment** is a unit of the tiling: what a writer copies, replaces or moves. Its `SegmentKind` is its dominant purpose: `Preamble`, `Metadata`, `MediaData` or `Other`. Its **role**s split it into framing (header, trailer) and payload.
 - An **item** has an `ItemKind` (the specification that defines it: `Xmp`, `Jumbf`, `Exif`, `EmbeddedAsset`, `Other`), an `Encoding` (`Xml`, `Tiff`, `Jumbf`, `IsoBmff`, `Asset`, `Unknown`) and a category derived from its kind (metadata or asset). Its native identifiers are kept as they are: `native_type()` (a HEIF item type such as `jpeg` or `hvc1`), `native_id()` (a HEIF `item_ID`), `uri()`, `media_type()`, `jumbf_type()`, and a container-defined `label()` (`manifest`, `update`, `merkle`, ...).
 - A **relation** is a reference from one item to another that keeps its native type (`thmb`, `auxl`, `cdsc`, `dimg`), with a common `RelationKind`.
@@ -38,8 +39,17 @@ A parsed file is a `Structure`: a gapless tiling of `Segment`s (header, payload,
   are one `C2PA` box and unnamed bytes at the end one `c2pa.after` box. Each
   box carries the ranges of asset metadata (XMP, EXIF) inside it, the only
   ranges a box hash may exclude besides the store. It works on planned
-  structures, reading copied segments in the source, so an output's boxes are
-  known before it is written.
+  structures, so an output's boxes are known before it is written. The finer elements (restart intervals) are
+  recorded when the asset is parsed, so listing boxes reads nothing beyond
+  finding the store; `c2pa_boxes_with(item)` takes the store's item and reads
+  nothing at all.
+- The reads have `async` forms over an `Io` — `c2pa_item_async`,
+  `c2pa_store_async`, `jumbf_type_async`, `read_item_async`,
+  `read_content_async`, and `Structure::parse_async(registry, io, format)` —
+  so a caller composes parsing, finding the store and
+  its own work into one sans-I/O `Task` and answers its read requests in one
+  place. Finding the item reads nothing when the parser recorded each JUMBF
+  item's type, as the built-in handlers do.
 - `Structure::c2pa_data_hash_exclusions(item)` is where C2PA embedding rules
   reach the container: the ranges a `c2pa.hash.data` excludes for a
   JUMBF item such as `c2pa_item`, on parsed or planned structures. By default it
@@ -51,75 +61,61 @@ A parsed file is a `Structure`: a gapless tiling of `Segment`s (header, payload,
 
 asset-io exposes what each format's own specifications define, including companion specifications (EXIF/TIFF, MPF, JPEG XT, the HEIF item model), and never interprets content that is portable across formats (C2PA manifests, XMP schemas); that belongs to higher-level helpers built on this API. Where such content is placed, including which item is the C2PA manifest store, is container knowledge and is here. See the crate documentation for the full glossary.
 
-## Upgrading from 0.1
+## Crate layout and features
 
-0.2 is a redesign, not a drop-in update. The 0.1 `Asset` type and its per-format `*_io` modules are gone. Parsing, reading and writing now go through `HandlerRegistry` and `Structure`, and hashing or other byte-level work goes through a `Sink`. The `parallel`, `c2pa`, `embed-fixtures` and `test-utils` features and the `rayon`, `c2pa`, `atree`, `fs2`, `byteorder` and `log` dependencies were removed. No handlers are enabled by default; enable individual container features or `all-formats`. Existing JPEG/PNG-default consumers must now select `features = ["jpeg", "png"]`. The 0.1 examples (`parallel_hash`, `progress_cancel`, `c2pa_embeddable`) do not exist in 0.2.
-
-The `c2pa` feature now selects raw sidecar handling only; it does not restore the
-0.1 signing or verification integration.
-
-## Workspace and build composition
-
-- [`asset-io-core`](crates/asset-io-core): handler-free structures, registry, I/O,
-  write plans, execution, and shared conformance checks. It has no container
-  dependencies, even with all its features enabled.
-- Container-family crates under [`crates/`](crates): JPEG, PNG, BMFF, RIFF, SVG,
-  PDF, TIFF/DNG, and raw C2PA sidecars. BMFF keeps HEIF/HEIC/AVIF/MP4/M4A together; RIFF keeps WebP/WAV/AVI
-  together. Crate boundaries follow shared implementation, not file extensions.
-- `asset-io`: this consumer-facing facade re-exports core types and selected
-  container crates through `containers`. Its `HandlerRegistry::builtin()` assembles
-  only enabled handlers; with no features it is empty. `new()` and `default()`
-  always create an empty registry.
-
-Choose a build using Cargo features:
+`asset-io` is one crate. Each built-in container is a module under
+`asset_io::containers` behind a Cargo feature, so a build compiles only the
+containers it enables:
 
 ```toml
 [dependencies]
 asset-io = { version = "0.2", features = ["jpeg", "pdf"] }
 ```
 
-Or depend on core and register container crates explicitly, without the facade:
+No container is enabled by default. `HandlerRegistry::builtin()` holds the
+handlers of the enabled features; `new()` and `default()` are always empty.
+Without any container feature the crate is the handler-free API: structures,
+registry, I/O, write plans, execution and the conformance checks.
 
-```toml
-[dependencies]
-asset-io-core = "0.2"
-asset-io-pdf = "0.2"
-```
+Handlers in other crates depend on `asset-io` with `default-features = false`,
+so they do not force any container on the applications that use them, and are
+registered at runtime. A registry is composed by adding handlers; the last
+registered wins a format string and is tried first when detecting:
 
 ```rust
-use asset_io_core::HandlerRegistry;
+use asset_io::{Asset, HandlerRegistry};
 
-let mut registry = HandlerRegistry::new();
-registry.add_arc(asset_io_pdf::handler());
+// The built-in handlers, then a crate's handlers and the application's own.
+let registry = HandlerRegistry::with_builtin()
+    .with_handlers(other_crate::handlers())
+    .with_handler(MyHandler);
+let asset = Asset::open_with(&registry, std::fs::File::open("image.raw")?, None)?;
 ```
 
-The facade registry wraps and dereferences to the core registry, so it can also
-be passed to core APIs such as memory mapping and embedded-asset scanning.
+`extend_from(&other)` adds another registry's handlers the same way.
 
-### Test ownership
+Container modules keep the boundaries separate crates would:
+[`tests/container_isolation.rs`](tests/container_isolation.rs) checks that the rest
+of the crate depends on no container, that no container uses another, and that
+containers reach the crate only through its public API.
 
-Private unit tests stay with each implementation. PDF read/write integration
-tests and its benchmark live in its crate; BMFF HEIF, RIFF fixture, and TIFF tests live
-in theirs. Shared real-file fixtures remain in [`tests/fixtures`](tests/fixtures)
-because the facade's cross-container tests and the C bindings also use them.
-Container tests explicitly register their own handler and never depend on the
-facade.
+### Tests
 
-Core tests exercise synthetic handlers, including parsing, detection, metadata
-updates, conformance, and step-by-step execution, without any real-file handler.
-Facade tests check feature-selected registration and cross-container behavior.
+Each container's unit tests live in its module; its integration tests are in
+[`tests/`](tests) and require its feature. The real-file fixtures in
+[`tests/fixtures`](tests/fixtures) are shared by those tests and the C bindings.
+Core tests use synthetic handlers and run with no features.
 
 ```sh
-cargo test -p asset-io-core --no-default-features
-cargo test -p asset-io --no-default-features
-cargo test -p asset-io --features jpeg
-cargo test -p asset-io-pdf
-cargo test --workspace --all-features
+cargo test --no-default-features
+cargo test --no-default-features --features jpeg
+cargo test --all-features
 ```
 
-`cargo test` at the repository root tests the facade; use `--workspace` to include
-all container and core tests. `make ci` checks the handler-free configurations,
-individual facade handlers, and the complete workspace.
+`make ci` runs the format check, the docs build, Clippy, the handler-free build,
+each container on its own, and everything together. Formatting follows c2pa-rs:
+`rustfmt.toml` uses options only nightly rustfmt has, so format with `make fmt`
+(`cargo +nightly fmt`).
 
 ## Containers
 
@@ -130,9 +126,9 @@ individual facade handlers, and the complete workspace.
 | `bmff`  | ISO BMFF (MP4, HEIC, AVIF, ...) | yes | yes, with streaming chunk-offset rewrite and merkle boxes |
 | `riff`  | RIFF (WebP, WAV, AVI) | yes | yes; WebP XMP maintains the `VP8X` flag |
 | `svg`   | SVG       | yes  | yes; a splice, nothing re-serialized; the manifest is base64 text |
-| `pdf`   | PDF 1.0–2.0 | XMP and the document's C2PA store, found through the catalog | appends an incremental revision; see the [PDF crate README](crates/asset-io-pdf/README.md) |
-| `tiff`  | TIFF, BigTIFF, DNG | yes | yes, append-only IFD updates; see the [TIFF crate README](crates/asset-io-tiff/README.md) |
-| `c2pa`  | Raw C2PA sidecar | entire file as one JUMBF item | replaces the file; removal emits an empty sidecar; see the [sidecar crate README](crates/asset-io-c2pa/README.md) |
+| `pdf`   | PDF 1.0–2.0 | XMP and the document's C2PA store, found through the catalog | appends an incremental revision; see [its module documentation](src/containers/pdf/README.md) |
+| `tiff`  | TIFF, BigTIFF, DNG | yes | yes, append-only IFD updates; see [its module documentation](src/containers/tiff/README.md) |
+| `c2pa`  | Raw C2PA sidecar | entire file as one JUMBF item | replaces the file; removal emits an empty sidecar; see [its module documentation](src/containers/c2pa/README.md) |
 
 Decoders for transfer encodings are optional features, in neither the defaults nor `all-formats`:
 
@@ -147,23 +143,100 @@ Containers implement `ContainerHandler` and are found through `HandlerRegistry`,
 
 Enable the `jpeg` feature for this example.
 
+The API separates resolution, format behavior, and I/O execution:
+
+| Component | Role |
+|-----------|------|
+| `HandlerRegistry` | Register handlers, resolve format strings, match supplied header bytes, and query format metadata; no stream I/O |
+| `ContainerHandler` | Implement container-specific parsing, planning, and format rules |
+| `Structure::parse`, `parse_async`, `parse_task` | Select a handler and run its parser with blocking I/O, inside a sans-I/O computation, or as a caller-driven task |
+| `Structure` | Describe a parsed asset and operate through its retained handler; I/O-free, so reads take the source as an argument |
+| `Asset` | A `Structure` together with the blocking stream it was parsed from, so reads, writes and patches need no source argument |
+| `asset_io::tokio` | Drive parsing, reads, and writes with Tokio streams |
+
+`Asset::open(source, format)` uses the built-in handlers;
+`Asset::open_with(&registry, source, format)` takes a registry, and is what a
+library should use so its caller's handlers apply.
+
+The parsing functions and `Asset::open` take an optional format: `Some("jpg")` or
+`Some("image/jpeg")` selects the named handler, while `None` detects the format.
+An unsupported explicit format is an error, never a request to try detection.
+Handlers without a detector (such as SVG) require an explicit format.
+
 ```rust
-use asset_io::{HandlerRegistry, ItemKind, NullSink, Updates};
+use asset_io::{Asset, ItemKind, NullSink, Updates};
 
-let registry = HandlerRegistry::builtin();
-let mut src = std::fs::File::open("image.jpg")?;
-let structure = registry.parse_detect(&mut src)?;
+let asset = Asset::open(std::fs::File::open("image.jpg")?, None)?;
 
-if let Some(jumbf) = structure.item(ItemKind::Jumbf)? {
-    let bytes = structure.read_item(&mut src, jumbf)?;
+if let Some(jumbf) = asset.item(ItemKind::Jumbf)? {
+    let bytes = asset.read_item(jumbf)?;
 }
-for item in structure.items() {
+for item in asset.items() {
     println!("{} ({}): {} bytes", item.kind(), item.encoding(), item.len());
 }
 
 let mut out = std::fs::File::create("out.jpg")?; // BMFF also needs Read
 let updates = Updates::new().set_xmp(xmp_bytes).remove_jumbf();
-structure.write(&mut src, &mut out, &updates, &mut NullSink)?;
+asset.write(&mut out, &updates, &mut NullSink)?;
+```
+
+`Asset` dereferences to its `Structure`, so geometry such as `items()`,
+`segments()` and `c2pa_data_hash_exclusions(item)` is available directly. Its
+source may be owned (`File`) or borrowed (`&mut File`). Methods take `&self`, so
+an item found with `asset.c2pa_item()?` can be passed straight back to
+`read_content`, `c2pa_boxes_with` or `patch_exact`.
+
+To fill a placeholder in an output without parsing it again, pair the structure
+`write` returns with the output stream:
+
+```rust
+let written = asset.write(&mut out, &Updates::new().set_jumbf(placeholder), &mut NullSink)?;
+let output = Asset::from_parts(written, out); // `out` must be Read + Write + Seek
+let item = output.c2pa_item()?.expect("the placeholder");
+let exclusions = output.c2pa_data_hash_exclusions(item)?;
+// ... hash everything outside `exclusions` and sign ...
+output.patch_exact(item, &signed_store)?;
+```
+
+`Structure` remains the I/O-free core: async and caller-driven code composes
+its `*_async` and `*_task` methods directly.
+
+### Tokio
+
+Enable `tokio` alongside the container features to use `asset_io::tokio` with
+Tokio's `AsyncRead + AsyncSeek` sources and `AsyncWrite` destinations:
+
+```rust,no_run
+# async fn example() -> asset_io::Result<()> {
+use asset_io::{tokio as asset, HandlerRegistry, ItemKind, NullSink, Updates};
+
+let registry = HandlerRegistry::builtin();
+let mut src = tokio::fs::File::open("image.jpg").await?;
+let structure = asset::parse(&registry, &mut src, None).await?;
+if let Some(item) = structure.item(ItemKind::Xmp)? {
+    let xmp = asset::read_content(&structure, &mut src, item).await?;
+    println!("{} bytes of XMP", xmp.len());
+}
+let updates = Updates::new().remove_jumbf();
+let mut out = tokio::fs::File::create("out.jpg").await?;
+asset::write(&structure, &mut src, &mut out, &updates, &mut NullSink).await?;
+# Ok(())
+# }
+```
+
+The adapters hide task requests and write steps; the core remains sans-I/O.
+`write_plan` and `execute` expose planning and execution separately when callers
+need the output layout before writing. `c2pa_item` and `c2pa_store` provide async
+store access, and `run` drives custom tasks composed from the core async methods.
+Sources must remain unchanged after parsing. Writes start at the destination's
+current position, flush on success, and may leave partial output on errors or
+cancellation. Sink callbacks are synchronous and should not block.
+
+The [Tokio example](examples/tokio_client.rs) uses these adapters; the
+[synchronous inspect example](examples/inspect.rs) uses the blocking APIs.
+
+```sh
+cargo run --example tokio_client --features all-formats,tokio -- inspect image.jpg
 ```
 
 ## Sinks
@@ -184,7 +257,7 @@ The `Updates` API is deliberately specific to XMP and JUMBF, whose placement eac
 
 `Structure::store(src)` reads the JUMBF store as a reader sees it. For ISO BMFF that combines an original store and its update; `jumbf::{addition_to, extend}` convert between the two forms.
 
-`HandlerRegistry::compose(format, kind, data)` returns the container's own encoding of an item (JPEG APP11 segments, a PNG `caBX` chunk, a BMFF C2PA box), for callers that insert it into an asset themselves. Callers that use `write` don't need it.
+`ContainerHandler::compose(kind, data)` returns the container's own encoding of an item (JPEG APP11 segments, a PNG `caBX` chunk, a BMFF C2PA box), for callers that insert it into an asset themselves. Resolve the handler with `registry.handler(format)`, or use `structure.handler()` for a parsed asset. Callers that use `write` don't need it.
 
 Each handler has an `id()` (`"jpeg"`, `"png"`, `"bmff"`, `"riff"`, `"svg"`, `"pdf"`, `"tiff"`, `"c2pa"`) and declares the formats it serves as `FormatSpec`s: a media type, a preferred extension, and any other accepted media types and extensions. `HandlerRegistry::media_type_for("heic")` gives `image/heic` and `extension_for("image/jpeg")` gives `jpg`; aliases resolve to the preferred values (`image/x-webp` gives `image/webp`).
 
@@ -202,24 +275,27 @@ A handler implements `ContainerHandler`:
 
 Handlers use `Io` and `BoxFuture` for asynchronous reads, without constructing or
 driving a `Task`. The shared reader types live in
-[`crates/asset-io-core/src/io.rs`](crates/asset-io-core/src/io.rs); task execution lives
-in [`crates/asset-io-core/src/task.rs`](crates/asset-io-core/src/task.rs).
+[`src/io.rs`](src/io.rs); task execution lives in [`src/task.rs`](src/task.rs).
 Both remain available through the crate-root exports.
 
 - `parse_async(self: Arc<Self>, io: Io)` builds a `Structure` with `StructureBuilder`, reading the stream through `io` (`io.read_at(offset, &mut buf).await?`, `io.reader(at)` for a run of fields, `io.fetch(..)` for a borrowed slice). Everything but the reads is ordinary code. Return `Box::pin(async move { ... })`.
 - `write_plan_async(&self, structure, io, updates)` describes a write as a `WritePlan`: the structure of the output plus ordered `Step`s that copy source bytes or supply new ones. It reads the source only for what it must know (`io`), and does no writing. A handler that cannot write leaves the default. Decide what the output holds from `Updates` (`xmp()`, `jumbf()`, ...; a `MetadataSlot` says whether each existing XMP or JUMBF item is kept, replaced or dropped, and what is left to insert), then describe it in order with a `PlanBuilder`: `copy_segment(id)` for a source segment kept, `put_segment(kind, name, header, payload, trailer)` for a new one, `item(ItemInfo, &[id])` for the item it holds, `carry_items(|item| ..)` for the items of the kept segments, and `finish()`. Decide what a source segment holds from `Structure::items_in(id)`, not from its kind. The builder works out sizes, offsets and the output structure. When a segment is part copied and part changed, `shape_like`/`shape` add it and `copy`, `put` and `relocate` supply its bytes.
 
-The blocking `parse`, `write_plan` and `write` are provided: they run those methods against a `Read + Seek`. The default `write` runs the plan with `WritePlan::execute`, which coalesces reads, feeds the sink and checks the bytes against the structure and role. `plan::validate` checks a plan without any I/O, for a handler's tests. A container with absolute file offsets (ISO BMFF chunk tables) uses `Step::Relocate`, which copies a table of offsets and rewrites them from an `OffsetMap`. Read what to change from `Updates` (`xmp()`, `jumbf()`, ...). Options only one container has live outside `Updates`: attach them with `Updates::set_extension` and read them with `Updates::extension` (ISO BMFF's merkle boxes are `containers::bmff::BmffUpdates`). [`crates/asset-io-core/tests/external_handler.rs`](crates/asset-io-core/tests/external_handler.rs) is a complete handler written with only the public API. Test it with `testing::Conformance::new(handler).check(name, &sample_bytes)`: it checks the promises every handler makes (the structure tiles the stream, a no-op write is byte-identical, plan, write and stepper agree, the sink sees every byte once and in order, set and remove read back, damaged input never panics), so a handler's own tests cover only what is particular to its format.
+The blocking `parse`, `write_plan` and `write` are provided: they run those methods against a `Read + Seek`. The default `write` runs the plan with `WritePlan::execute`, which coalesces reads, feeds the sink and checks the bytes against the structure and role. `plan::validate` checks a plan without any I/O, for a handler's tests. A container with absolute file offsets (ISO BMFF chunk tables) uses `Step::Relocate`, which copies a table of offsets and rewrites them from an `OffsetMap`. Read what to change from `Updates` (`xmp()`, `jumbf()`, ...). Options only one container has live outside `Updates`: attach them with `Updates::set_extension` and read them with `Updates::extension` (ISO BMFF's merkle boxes are `containers::bmff::BmffUpdates`). [`tests/external_handler.rs`](tests/external_handler.rs) is a complete handler written with only the public API. Test it with `testing::Conformance::new(handler).check(name, &sample_bytes)`: it checks the promises every handler makes (the structure tiles the stream, a no-op write is byte-identical, plan, write and stepper agree, the sink sees every byte once and in order, set and remove read back, damaged input never panics), so a handler's own tests cover only what is particular to its format.
 
 Register a handler with `HandlerRegistry::with_handler`; the last handler registered for a format wins. Enums and structs a handler touches are `#[non_exhaustive]`, so new variants and fields are not breaking changes.
 
 ## Running with your own I/O
 
-Parsing and planning are `async` code that does no I/O: a `Task` runs it, and when it needs bytes it does not hold (`Io` keeps a 4 KiB window, so a run of tiny reads is one request) `Task::resume` returns a `ReadRequest` with the offset, how much, and the buffer to fill. Fill it however you like (blocking, `async`, from a buffer you already have) and resume. No runtime is involved, and a task is `Send`. Get one from `HandlerRegistry::parse_task(format, total)` or `parse_detect_task(total)` for a parse, or `Structure::write_plan_task(&updates)` for a plan.
+Parsing and planning are `async` code that does no I/O: a `Task` runs it, and when it needs bytes it does not hold (`Io` keeps a 4 KiB window, so a run of tiny reads is one request) `Task::resume` returns a `ReadRequest` with the offset, how much, and the buffer to fill. Fill it however you like (blocking, `async`, from a buffer you already have) and resume. No runtime is involved, and a task is `Send`. Get one from `Structure::parse_task(&registry, total, format)` for a parse, or `Structure::write_plan_task(&updates)` for a plan. `Structure::parse_task` borrows the registry and optional format, and reports selection errors when driven. For a known handler, `Task::new(total, move |io| handler.parse_async(io))` can create a task independent of the registry.
 
-A `WritePlan` runs the same way: `WritePlan::start` gives an `Execution` whose `step` returns `Action::Read { offset, buf }`, `Action::Write(bytes)` or `Action::Done`, and does the sink calls, the checking and the read coalescing itself, so every way of running a plan behaves like `execute`. The blocking calls (`HandlerRegistry::parse`, `Structure::write`) are these drivers over a `Read + Seek` and a `Write`.
+A `WritePlan` runs the same way: `WritePlan::start` gives an `Execution` whose `step` returns `Action::Read { offset, buf }`, `Action::Write(bytes)` or `Action::Done`, and does the sink calls, the checking and the read coalescing itself, so every way of running a plan behaves like `execute`. The blocking calls (`Structure::parse`, `Structure::write`) are these drivers over a `Read + Seek` and a `Write`.
 
-`examples/tokio_client.rs` drives parsing, planning and writing with `tokio::fs`, one spawned task per file, hashing the output as it is written; `tests/tokio_driver.rs` checks that what it writes matches the blocking API byte for byte.
+`examples/tokio_client.rs` uses the feature-gated `asset_io::tokio` adapters with
+`tokio::fs`, one spawned task per file, hashing the output as it is written.
+`tests/tokio_adapter.rs` checks adapter parity with the blocking API and error
+propagation; `tests/tokio_driver.rs` also checks low-level task driving and writes
+against the blocking API byte for byte.
 
 Its `edit` command reports wall-clock times for parsing, planning, writing with SHA-256, and the total edit. Writing includes output creation and flushing, but not an explicit disk sync. The total excludes loading the replacement XMP, task spawning, and compilation.
 
@@ -252,24 +328,23 @@ Parsing stays shallow. Opt in to recursive scanning with the same registry,
 including any custom handlers:
 
 ```rust,no_run
-use asset_io::{Encoding, HandlerRegistry, ScanLimits};
+use asset_io::{Asset, Encoding, HandlerRegistry, ScanLimits};
 
 # fn main() -> asset_io::Result<()> {
 let registry = HandlerRegistry::builtin();
-let mut src = std::fs::File::open("photo.heic")?;
-let structure = registry.parse_detect(&mut src)?;
-let embedded = structure.scan_embedded(&mut src, &registry, ScanLimits::default())?;
-for asset in &embedded {
-    match &asset.structure {
+let mut photo = Asset::open_with(&registry, std::fs::File::open("photo.heic")?, None)?;
+let embedded = photo.scan_embedded(&registry, ScanLimits::default())?;
+for found in &embedded {
+    match &found.structure {
         Ok(child) => {
-            let mut reader = asset.reader(&mut src)?;
+            let mut reader = found.reader(photo.source_mut())?;
             for item in child.items().filter(|i| i.encoding() == Encoding::IsoBmff) {
                 let bytes = child.read_item(&mut reader, item)?;
                 // The application interprets these bytes.
                 println!("{} bytes of box content", bytes.len());
             }
         }
-        Err(error) => eprintln!("Embedded item {:?}: {error}", asset.item.uri()),
+        Err(error) => eprintln!("Embedded item {:?}: {error}", found.item.uri()),
     }
 }
 # Ok(())

@@ -4,11 +4,12 @@
 
 #![cfg(all(feature = "bmff", feature = "jpeg"))]
 
-use asset_io::{
-    ByteRange, Encoding, Error, HandlerRegistry, ItemInfo, ItemKind, Name, NullSink, ScanLimits,
-    SegmentId, SegmentKind, Structure, StructureBuilder, TransferEncoding, Updates,
-};
 use std::io::{Cursor, Read, Seek, SeekFrom};
+
+use asset_io::{
+    Asset, ByteRange, Encoding, Error, HandlerRegistry, ItemInfo, ItemKind, Name, NullSink,
+    ScanLimits, SegmentId, SegmentKind, Structure, StructureBuilder, TransferEncoding, Updates,
+};
 
 const URI: &[u8] = b"tag:apple.com,2025:photo:metadata:provenance:processedimage\0";
 
@@ -88,9 +89,8 @@ fn discovers_uri_image_and_reads_raw_boxes_through_multi_extent_items() {
     let (jpeg, expected) = jpeg();
     let file = heif(&jpeg, b"uri ", URI);
     let registry = HandlerRegistry::builtin();
-    let mut src = Cursor::new(&file);
-    let root = registry.parse_detect(&mut src).unwrap();
-    assert!(root.embedded_thumbnail(&mut src).unwrap().is_none());
+    let mut root = Asset::open(Cursor::new(&file), None).unwrap();
+    assert!(root.embedded_thumbnail().unwrap().is_none());
     // A URI declares no media type, so the item is opaque, not an embedded asset.
     assert_eq!(root.embedded_assets().count(), 0);
     let item = root.require_item(ItemKind::Other).unwrap();
@@ -104,13 +104,14 @@ fn discovers_uri_image_and_reads_raw_boxes_through_multi_extent_items() {
         item.uri(),
         Some(std::str::from_utf8(&URI[..URI.len() - 1]).unwrap())
     );
-    assert_eq!(root.read_item(&mut src, item).unwrap(), jpeg);
+    assert_eq!(root.read_item(item).unwrap(), jpeg);
 
     let assets = root
-        .scan_embedded(&mut src, &registry, ScanLimits::default())
+        .scan_embedded(&registry, ScanLimits::default())
         .unwrap();
     // The scan detects that the opaque item is a JPEG.
     assert_eq!(assets.len(), 1);
+    assert_eq!(assets[0].item.uri(), item.uri());
     assert_eq!(assets[0].item.kind(), ItemKind::Other);
     assert_eq!((assets[0].parent, assets[0].depth), (None, 1));
     assert_eq!(assets[0].ranges().len(), 2);
@@ -125,13 +126,12 @@ fn discovers_uri_image_and_reads_raw_boxes_through_multi_extent_items() {
         assert_eq!(item.jumbf_type(), None);
         assert_eq!(
             child
-                .read_item(&mut assets[0].reader(&mut src).unwrap(), item)
+                .read_item(&mut assets[0].reader(root.source_mut()).unwrap(), item)
                 .unwrap(),
             expected
         );
     }
     assert_eq!(items[1].extent_count(), 3);
-    assert_eq!(assets[0].item.uri(), item.uri());
 }
 
 #[test]
@@ -140,15 +140,14 @@ fn recursively_maps_nested_multi_extent_items_to_original_source() {
     let inner = heif(&jpeg, b"jpeg", b"");
     let file = heif(&inner, b"mime", b"image/heic\0");
     let registry = HandlerRegistry::builtin();
-    let mut src = Cursor::new(&file);
-    let root = registry.parse_detect(&mut src).unwrap();
+    let mut root = Asset::open(Cursor::new(&file), None).unwrap();
     let assets = root
-        .scan_embedded(&mut src, &registry, ScanLimits::default())
+        .scan_embedded(&registry, ScanLimits::default())
         .unwrap();
     assert_eq!(assets.len(), 2);
     assert_eq!((assets[1].parent, assets[1].depth), (Some(0), 2));
     let child = assets[1].structure.as_ref().unwrap();
-    let mut reader = assets[1].reader(&mut src).unwrap();
+    let mut reader = assets[1].reader(root.source_mut()).unwrap();
     let mut n = 0;
     for (item, expected) in child.items_of(ItemKind::Other).zip(expected) {
         assert_eq!(child.read_item(&mut reader, item).unwrap(), expected);
@@ -176,26 +175,25 @@ fn embedded_items_and_contents_survive_metadata_relocation() {
     ] {
         let file = heif(&jpeg, ty, extra);
         let registry = HandlerRegistry::builtin();
-        let mut src = Cursor::new(&file);
-        let root = registry.parse_detect(&mut src).unwrap();
-        let mut out = Cursor::new(Vec::new());
+        let root = Asset::open(Cursor::new(&file), None).unwrap();
+        let mut out = Vec::new();
         let dest = root
             .write(
-                &mut src,
                 &mut out,
                 &Updates::new().set_jumbf(vec![0; 100]),
                 &mut NullSink,
             )
             .unwrap();
-        let reparsed = registry.parse_detect(&mut out).unwrap();
+        let written = Asset::from_parts(dest, Cursor::new(&out));
+        let reparsed = Asset::open(Cursor::new(&out), None).unwrap();
         // The first HEIF item, embedded asset or opaque.
         let first = |s: &Structure| s.items().find(|e| e.native_id().is_some()).cloned();
-        for structure in [&dest, &reparsed] {
-            let item = first(structure).unwrap();
-            assert_eq!(structure.read_item(&mut out, &item).unwrap(), jpeg);
+        for asset in [&written, &reparsed] {
+            let item = first(asset).unwrap();
+            assert_eq!(asset.read_item(&item).unwrap(), jpeg);
             assert_eq!(item.info(), first(&root).unwrap().info());
-            assert!(structure
-                .scan_embedded(&mut out, &registry, ScanLimits::default())
+            assert!(asset
+                .scan_embedded(&registry, ScanLimits::default())
                 .unwrap()[0]
                 .structure
                 .is_ok());
@@ -209,19 +207,13 @@ fn scan_enforces_exact_depth_count_and_cumulative_length_budgets() {
     let inner = heif(&jpeg, b"jpeg", b"");
     let file = heif(&inner, b"mime", b"image/heic\0");
     let registry = HandlerRegistry::builtin();
-    let mut src = Cursor::new(&file);
-    let root = registry.parse_detect(&mut src).unwrap();
+    let root = Asset::open(Cursor::new(&file), None).unwrap();
     let limits = ScanLimits {
         max_depth: 2,
         max_assets: 2,
         max_total_bytes: (inner.len() + jpeg.len()) as u64,
     };
-    assert_eq!(
-        root.scan_embedded(&mut src, &registry, limits)
-            .unwrap()
-            .len(),
-        2
-    );
+    assert_eq!(root.scan_embedded(&registry, limits).unwrap().len(), 2);
     for limits in [
         ScanLimits {
             max_depth: 1,
@@ -237,7 +229,7 @@ fn scan_enforces_exact_depth_count_and_cumulative_length_budgets() {
         },
     ] {
         assert!(matches!(
-            root.scan_embedded(&mut src, &registry, limits),
+            root.scan_embedded(&registry, limits),
             Err(Error::LimitExceeded { .. })
         ));
     }
@@ -252,10 +244,9 @@ fn unsupported_and_malformed_children_remain_readable_and_report_errors() {
         // A declared embedded asset is reported whether or not it parses.
         let file = heif(data, b"mime", b"image/png\0");
         let registry = HandlerRegistry::builtin();
-        let mut src = Cursor::new(&file);
-        let root = registry.parse_detect(&mut src).unwrap();
+        let mut root = Asset::open(Cursor::new(&file), None).unwrap();
         let assets = root
-            .scan_embedded(&mut src, &registry, ScanLimits::default())
+            .scan_embedded(&registry, ScanLimits::default())
             .unwrap();
         assert_eq!(assets.len(), 1);
         assert!(assets[0].structure.is_err());
@@ -264,7 +255,7 @@ fn unsupported_and_malformed_children_remain_readable_and_report_errors() {
         }
         let mut raw = Vec::new();
         assets[0]
-            .reader(&mut src)
+            .reader(root.source_mut())
             .unwrap()
             .read_to_end(&mut raw)
             .unwrap();
@@ -275,31 +266,30 @@ fn unsupported_and_malformed_children_remain_readable_and_report_errors() {
 #[test]
 fn uuid_transport_survives_unrelated_jpeg_metadata_edits() {
     let (jpeg, expected) = jpeg();
-    let registry = HandlerRegistry::builtin();
-    let mut src = Cursor::new(&jpeg);
-    let root = registry.parse_detect(&mut src).unwrap();
-    let mut out = Cursor::new(Vec::new());
+    let root = Asset::open(Cursor::new(&jpeg), None).unwrap();
+    let mut out = Vec::new();
     let dest = root
         .write(
-            &mut src,
             &mut out,
             &Updates::new().set_xmp(b"<x/>".to_vec()),
             &mut NullSink,
         )
         .unwrap();
-    let reparsed = registry.parse_detect(&mut out).unwrap();
-    for structure in [&dest, &reparsed] {
-        assert_eq!(other_items(structure, &mut out), expected);
+    let written = Asset::from_parts(dest, Cursor::new(&out));
+    let reparsed = Asset::open(Cursor::new(&out), None).unwrap();
+    for asset in [&written, &reparsed] {
+        assert_eq!(other_items(asset), expected);
     }
 }
 
 /// The bytes of every `Other` item, which must be ISO BMFF boxes, in order.
-fn other_items(s: &Structure, src: &mut Cursor<Vec<u8>>) -> Vec<Vec<u8>> {
-    s.items_of(ItemKind::Other)
+fn other_items<S: Read + Seek>(asset: &Asset<S>) -> Vec<Vec<u8>> {
+    asset
+        .items_of(ItemKind::Other)
         .map(|e| {
             assert_eq!(e.encoding(), Encoding::IsoBmff);
             assert_eq!(e.jumbf_type(), None);
-            s.read_item(src, e).unwrap()
+            asset.read_item(e).unwrap()
         })
         .collect()
 }
@@ -315,20 +305,15 @@ fn superbox(ty: [u8; 16]) -> Vec<u8> {
 fn uuid_boxes_are_not_jumbf_and_survive_jumbf_updates() {
     let (jpeg, expected) = jpeg();
     let store = superbox([7; 16]);
-    let registry = HandlerRegistry::builtin();
-    let root = registry.parse_detect(&mut Cursor::new(&jpeg)).unwrap();
+    let root = Asset::open(Cursor::new(&jpeg), None).unwrap();
     assert!(root.item(ItemKind::Jumbf).unwrap().is_none());
-    let with_store = {
-        let mut out = Cursor::new(Vec::new());
-        root.write(
-            &mut Cursor::new(&jpeg),
-            &mut out,
-            &Updates::new().set_jumbf(store.clone()),
-            &mut NullSink,
-        )
-        .unwrap();
-        out.into_inner()
-    };
+    let mut with_store = Vec::new();
+    root.write(
+        &mut with_store,
+        &Updates::new().set_jumbf(store.clone()),
+        &mut NullSink,
+    )
+    .unwrap();
     for (input, updates, stores) in [
         (&jpeg, Updates::new().set_jumbf(store.clone()), 1),
         (&jpeg, Updates::new().remove_jumbf(), 0),
@@ -337,18 +322,16 @@ fn uuid_boxes_are_not_jumbf_and_survive_jumbf_updates() {
         (&with_store, Updates::new().remove_jumbf_of([7; 16]), 0),
         (&with_store, Updates::new().remove_jumbf_of([8; 16]), 1),
     ] {
-        let src = registry.parse_detect(&mut Cursor::new(input)).unwrap();
-        let mut out = Cursor::new(Vec::new());
-        let dest = src
-            .write(&mut Cursor::new(input), &mut out, &updates, &mut NullSink)
-            .unwrap();
-        let reparsed = registry.parse_detect(&mut out).unwrap();
-        for structure in [&dest, &reparsed] {
-            assert_eq!(other_items(structure, &mut out), expected);
-            assert_eq!(structure.items_of(ItemKind::Jumbf).count(), stores);
+        let src = Asset::open(Cursor::new(input), None).unwrap();
+        let mut bytes = Vec::new();
+        let dest = src.write(&mut bytes, &updates, &mut NullSink).unwrap();
+        let written = Asset::from_parts(dest, Cursor::new(&bytes));
+        let reparsed = Asset::open(Cursor::new(&bytes), None).unwrap();
+        for asset in [&written, &reparsed] {
+            assert_eq!(other_items(asset), expected);
+            assert_eq!(asset.items_of(ItemKind::Jumbf).count(), stores);
         }
         // Byte for byte: every UUID packet is still in the output.
-        let bytes = out.into_inner();
         for (i, seg) in src.segments().iter().enumerate() {
             let id = SegmentId::from_index(i).unwrap();
             if src.items_in(id).any(|e| e.kind() == ItemKind::Other) {
@@ -373,8 +356,7 @@ fn opaque_items_that_are_not_files_are_skipped() {
     ] {
         let file = heif(data, ty, extra);
         let registry = HandlerRegistry::builtin();
-        let mut src = Cursor::new(&file);
-        let root = registry.parse_detect(&mut src).unwrap();
+        let root = Asset::open(Cursor::new(&file), None).unwrap();
         let item = root.require_item(ItemKind::Other).unwrap();
         assert_eq!(item.native_type(), Some(Name::FourCC(*ty)));
         let detected = data.starts_with(&[0xff, 0xd8, 0xff]);
@@ -384,7 +366,7 @@ fn opaque_items_that_are_not_files_are_skipped() {
             max_total_bytes: if detected { data.len() as u64 } else { 0 },
             ..ScanLimits::default()
         };
-        let assets = root.scan_embedded(&mut src, &registry, limits).unwrap();
+        let assets = root.scan_embedded(&registry, limits).unwrap();
         assert_eq!(assets.len(), usize::from(detected));
         if detected {
             // Recognised, and then found malformed: the error is kept.
@@ -401,9 +383,7 @@ fn rejects_duplicate_uuid_packets_and_inconsistent_box_length() {
         packet(1, 1, &data[..30]),
     ] {
         let jpeg = [&[0xff, 0xd8], packets.as_slice(), &[0xff, 0xd9]].concat();
-        assert!(HandlerRegistry::builtin()
-            .parse_detect(&mut Cursor::new(jpeg))
-            .is_err());
+        assert!(Asset::open(Cursor::new(jpeg), None).is_err());
     }
 }
 
@@ -417,10 +397,9 @@ fn uuid_transport_accepts_zero_based_sequences() {
         vec![0xff, 0xd9],
     ]
     .concat();
-    let mut src = Cursor::new(jpeg);
-    let structure = HandlerRegistry::builtin().parse_detect(&mut src).unwrap();
-    let item = structure.require_item(ItemKind::Other).unwrap();
-    assert_eq!(structure.read_item(&mut src, item).unwrap(), data);
+    let asset = Asset::open(Cursor::new(jpeg), None).unwrap();
+    let item = asset.require_item(ItemKind::Other).unwrap();
+    assert_eq!(asset.read_item(item).unwrap(), data);
 }
 
 #[test]
@@ -444,10 +423,9 @@ fn generic_handler_items_scan_siblings_after_an_unsupported_item() {
             )
             .unwrap();
     }
-    let root = builder.finish().unwrap();
-    let mut src = Cursor::new(&bytes);
+    let mut root = Asset::from_parts(builder.finish().unwrap(), Cursor::new(&bytes));
     let assets = root
-        .scan_embedded(&mut src, &registry, ScanLimits::default())
+        .scan_embedded(&registry, ScanLimits::default())
         .unwrap();
     assert_eq!(assets.len(), 2);
     assert!(matches!(assets[0].structure, Err(Error::UnsupportedFormat)));
@@ -457,7 +435,7 @@ fn generic_handler_items_scan_siblings_after_an_unsupported_item() {
     );
     let mut raw = Vec::new();
     assets[1]
-        .reader(&mut src)
+        .reader(root.source_mut())
         .unwrap()
         .read_to_end(&mut raw)
         .unwrap();
@@ -479,12 +457,11 @@ fn transfer_encoded_items_are_not_parsed_or_detected() {
     // A declared asset stored gzip-compressed: reported, not parsed. (The bytes are
     // a plain JPEG here, which shows nothing tried to parse them.)
     let file = heif(&jpeg, b"mime", b"image/jpeg\0gzip\0");
-    let mut src = Cursor::new(&file);
-    let root = registry.parse_detect(&mut src).unwrap();
+    let mut root = Asset::open(Cursor::new(&file), None).unwrap();
     let item = root.embedded_assets().next().unwrap();
     assert_eq!(*item.transfer(), TransferEncoding::Gzip);
     let assets = root
-        .scan_embedded(&mut src, &registry, ScanLimits::default())
+        .scan_embedded(&registry, ScanLimits::default())
         .unwrap();
     assert_eq!(assets.len(), 1);
     assert!(matches!(
@@ -493,7 +470,7 @@ fn transfer_encoded_items_are_not_parsed_or_detected() {
     ));
     let mut raw = Vec::new();
     assets[0]
-        .reader(&mut src)
+        .reader(root.source_mut())
         .unwrap()
         .read_to_end(&mut raw)
         .unwrap();
@@ -501,14 +478,13 @@ fn transfer_encoded_items_are_not_parsed_or_detected() {
 
     // An opaque item with a transfer encoding is not a detection candidate.
     let file = heif(&jpeg, b"mime", b"nonsense\0gzip\0");
-    let mut src = Cursor::new(&file);
-    let root = registry.parse_detect(&mut src).unwrap();
+    let root = Asset::open(Cursor::new(&file), None).unwrap();
     assert_eq!(
         *root.require_item(ItemKind::Other).unwrap().transfer(),
         TransferEncoding::Gzip
     );
     assert!(root
-        .scan_embedded(&mut src, &registry, ScanLimits::default())
+        .scan_embedded(&registry, ScanLimits::default())
         .unwrap()
         .is_empty());
 }

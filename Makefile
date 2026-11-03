@@ -1,22 +1,41 @@
-.PHONY: ci fmt clippy test fuzz-build fuzz fuzz-parse fuzz-write fuzz-xmp fuzz-mpf fuzz-conform fuzz-regress
+.PHONY: ci check-format fmt check-docs clippy test doc fuzz-build fuzz fuzz-parse fuzz-write fuzz-xmp fuzz-mpf fuzz-conform fuzz-regress
 
-# Run the full CI preflight locally (mirrors .github/workflows/ci.yml)
-ci: fmt clippy test
+# Formatting follows c2pa-rs: rustfmt.toml uses unstable options, so it needs
+# nightly rustfmt (rustup toolchain add nightly).
+FMT_MANIFESTS := Cargo.toml asset-io-c/Cargo.toml fuzz/Cargo.toml
 
+# Run the full CI preflight locally (mirrors .github/workflows/ci.yml).
+# Run this before pushing a PR.
+ci: check-format check-docs clippy test
+
+check-format:
+	@set -e; for m in $(FMT_MANIFESTS); do \
+		cargo +nightly fmt --manifest-path $$m -- --check; \
+	done
+
+# Auto format code according to standards
 fmt:
-	cargo fmt --all --check
+	@set -e; for m in $(FMT_MANIFESTS); do \
+		cargo +nightly fmt --manifest-path $$m; \
+	done
+
+check-docs:
+	RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 
 clippy:
-	cargo clippy --workspace --all-features --all-targets -- -D warnings
+	cargo clippy --all-features --all-targets -- -D warnings
+	cargo clippy --no-default-features --all-targets -- -D warnings
 
 test:
-	cargo test -p asset-io-core --no-default-features
-	cargo test -p asset-io --no-default-features
+	cargo test --no-default-features
 	@set -e; for handler in jpeg png bmff riff svg pdf tiff c2pa; do \
-		cargo test -p asset-io --no-default-features --features $$handler; \
-		cargo test -p asset-io-$$handler; \
+		cargo test --no-default-features --features $$handler; \
 	done
-	cargo test --workspace --all-features
+	cargo test --all-features
+
+# Builds and views documentation as docs.rs shows it, with feature badges.
+doc:
+	RUSTDOCFLAGS="--cfg docsrs" cargo +nightly doc --no-deps --all-features --open
 
 # Fuzzing needs nightly and cargo-fuzz (cargo install cargo-fuzz); see fuzz/README.md.
 # FUZZ_TIME is seconds per target.
