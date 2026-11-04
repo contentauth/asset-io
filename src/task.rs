@@ -121,6 +121,18 @@ impl<'f, T> Task<'f, T> {
         }
     }
 
+    /// Reacquire a suspended read without polling the computation.
+    ///
+    /// A foreign or asynchronous driver may drop the request from [`resume`](Self::resume),
+    /// retain its descriptor while doing I/O, then reacquire it to supply bytes
+    /// before resuming. Returns `None` before a read or after completion.
+    pub fn pending_read(&mut self) -> Option<ReadRequest<'_>> {
+        if self.finished {
+            return None;
+        }
+        ReadRequest::take(&self.link)
+    }
+
     /// Run to completion, reading from `src`, which must be the stream the task was
     /// made for.
     pub fn run<R: Read + Seek + ?Sized>(mut self, src: &mut R) -> Result<T> {
@@ -364,6 +376,27 @@ mod tests {
         });
         // Dropping an unstarted task is fine.
         drop(t);
+    }
+
+    #[test]
+    fn suspended_requests_can_be_reacquired_without_polling() {
+        let mut task = Task::new(4, |mut io| async move {
+            let mut bytes = [0; 4];
+            io.read_at(0, &mut bytes).await?;
+            Ok(bytes)
+        });
+        assert!(task.pending_read().is_none());
+        let Progress::Read(req) = task.resume().unwrap() else {
+            panic!("expected a read");
+        };
+        let descriptor = (req.offset(), req.min_len(), req.window_len());
+        drop(req);
+        let mut req = task.pending_read().unwrap();
+        assert_eq!((req.offset(), req.min_len(), req.window_len()), descriptor);
+        req.buffer().extend_from_slice(b"TEST");
+        drop(req);
+        assert!(matches!(task.resume().unwrap(), Progress::Done(bytes) if bytes == *b"TEST"));
+        assert!(task.pending_read().is_none());
     }
 
     #[test]

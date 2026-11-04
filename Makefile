@@ -2,7 +2,7 @@
 
 # Formatting follows c2pa-rs: rustfmt.toml uses unstable options, so it needs
 # nightly rustfmt (rustup toolchain add nightly).
-FMT_MANIFESTS := Cargo.toml asset-io-c/Cargo.toml fuzz/Cargo.toml
+FMT_MANIFESTS := Cargo.toml asset-io-c/Cargo.toml asset-io-wasm/Cargo.toml fuzz/Cargo.toml
 
 # Run the full CI preflight locally (mirrors .github/workflows/ci.yml).
 # Run this before pushing a PR.
