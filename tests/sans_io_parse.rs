@@ -18,7 +18,10 @@
 
 use std::{io::Cursor, path::PathBuf};
 
-use asset_io::{Error, HandlerRegistry, NullSink, Progress, Result, Structure, Task, Updates};
+use asset_io::{
+    task::{Progress, Task},
+    Error, HandlerRegistry, NullSink, Result, Structure, Updates,
+};
 
 fn fixture(name: &str) -> Option<Vec<u8>> {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -189,7 +192,7 @@ fn riff(form: &[u8; 4], kids: &[Vec<u8>]) -> Vec<u8> {
 }
 
 /// The bytes a plan would write.
-fn execute(plan: &asset_io::WritePlan<'_>, source: &[u8]) -> Vec<u8> {
+fn execute(plan: &asset_io::plan::WritePlan<'_>, source: &[u8]) -> Vec<u8> {
     let mut out = Cursor::new(Vec::new());
     plan.execute(&mut Cursor::new(source), &mut out, &mut NullSink)
         .unwrap();
@@ -419,7 +422,7 @@ fn fragmented(fragments: usize) -> Vec<u8> {
 
 #[test]
 fn a_fragmented_file_plans_through_a_task_and_every_fragment_is_relocated() {
-    use asset_io::Step;
+    use asset_io::plan::Step;
     let reg = HandlerRegistry::builtin();
     let f = fragmented(300);
     let s = Structure::parse(&reg, &mut Cursor::new(&f), Some("mp4")).unwrap();

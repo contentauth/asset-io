@@ -74,7 +74,7 @@ struct ItemSpec {
 /// Copy a source, dropping its first segment and appending a new one:
 ///
 /// ```
-/// use asset_io::{Name, PlanBuilder, SegmentId, SegmentKind, Structure};
+/// use asset_io::{container_api::PlanBuilder, Name, SegmentId, SegmentKind, Structure};
 ///
 /// # fn plan(src: &Structure) -> asset_io::Result<()> {
 /// let mut b = PlanBuilder::new(src);
@@ -120,7 +120,7 @@ impl<'s, 'a> PlanBuilder<'s, 'a> {
     }
 
     /// Attach `value` to the output structure, as
-    /// [`StructureBuilder::attach`](crate::StructureBuilder::attach) does to a parsed one,
+    /// [`StructureBuilder::attach`](crate::container_api::StructureBuilder::attach) does to a parsed one,
     /// so a write's result can be read and written again without parsing it.
     pub fn attach<T: std::any::Any + std::fmt::Debug + Send + Sync>(
         &mut self,

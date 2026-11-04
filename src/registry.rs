@@ -124,11 +124,15 @@ impl HandlerRegistry {
     }
 
     /// Every registered handler, in registration order.
+    /// These are [`crate::container_api::ContainerHandler`]s, available to
+    /// compose registries and use container-specific hooks explicitly.
     pub fn handlers(&self) -> impl Iterator<Item = &Arc<dyn ContainerHandler>> {
         self.ordered.iter()
     }
 
     /// The handler for a format string (extension or MIME type).
+    /// Advanced clients can call its [`compose`](ContainerHandler::compose)
+    /// hook; ordinary clients use [`crate::Asset::write`].
     pub fn handler(&self, format: &str) -> Option<&Arc<dyn ContainerHandler>> {
         self.by_format.get(&normalize(format))
     }
@@ -192,8 +196,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        segment::SegmentKind, BoxFuture, ContainerHandler, Error, Io, Name, ReadSeek, Result, Sink,
-        Structure, StructureBuilder, Updates,
+        container_api::{BoxFuture, ContainerHandler, ReadSeek, StructureBuilder},
+        io::Io,
+        segment::SegmentKind,
+        Error, Name, Result, Sink, Structure, Updates,
     };
 
     /// A made-up container: `TOY!` then records of `[len][len bytes]`.

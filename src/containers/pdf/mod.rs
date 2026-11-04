@@ -50,9 +50,14 @@ use lexer::{
 };
 
 use crate::{
-    plan::WritePlan, transfer::inflate, BoxFuture, ByteRange, ContainerHandler, Error, FormatSpec,
-    Io, Item, ItemInfo, ItemKind, MetadataUpdate, Name, PlanBuilder, Result, Role, SegmentId,
-    SegmentKind, Structure, StructureBuilder, TransferEncoding, Updates, MAX_SEGMENT_SIZE,
+    container_api,
+    container_api::{
+        BoxFuture, ContainerHandler, FormatSpec, Io, ItemInfo, MetadataUpdate, PlanBuilder,
+        StructureBuilder, WritePlan, MAX_SEGMENT_SIZE,
+    },
+    transfer::inflate,
+    ByteRange, Error, Item, ItemKind, Name, Result, Role, SegmentId, SegmentKind, Structure,
+    TransferEncoding, Updates,
 };
 
 const MAX_ENTRIES: usize = 1_000_000;
@@ -89,8 +94,7 @@ struct PdfState {
 
 impl PdfState {
     fn of(structure: &Structure) -> Result<&PdfState> {
-        structure
-            .attachment::<PdfState>()
+        container_api::attachment::<PdfState>(structure)
             .ok_or_else(|| invalid("structure was not parsed by the PDF handler"))
     }
 }

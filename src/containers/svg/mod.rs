@@ -51,12 +51,14 @@ use quick_xml::{
 };
 
 use crate::{
+    container_api::{
+        BoxFuture, ContainerHandler, Existing, FormatSpec, Io, ItemInfo, MetadataSlot,
+        MetadataUpdate, PlanBuilder, StructureBuilder, WritePlan, MAX_SEGMENT_SIZE,
+    },
     jumbf::superbox_type,
-    plan::WritePlan,
     transfer::{base64_decode, base64_encode},
-    BoxFuture, ByteRange, ContainerHandler, Error, Existing, FormatSpec, Io, ItemInfo, ItemKind,
-    MetadataSlot, MetadataUpdate, Name, PlanBuilder, Result, Role, Segment, SegmentId, SegmentKind,
-    Structure, StructureBuilder, TransferEncoding, Updates, MAX_SEGMENT_SIZE,
+    ByteRange, Error, ItemKind, Name, Result, Role, Segment, SegmentId, SegmentKind, Structure,
+    TransferEncoding, Updates,
 };
 
 const SVG_NS: &[u8] = b"http://www.w3.org/2000/svg";
@@ -820,7 +822,7 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
-    use crate::{testing::Conformance, NullSink};
+    use crate::{container_api, testing::Conformance, NullSink};
 
     const NS: &str = "http://www.w3.org/2000/svg";
     const PACKET: &str = "<?xpacket begin=\"\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\
@@ -957,7 +959,7 @@ mod tests {
                 0,
                 text.len() as u64,
                 0,
-                e.info().clone().jumbf_type(None),
+                container_api::item_info(e).clone().jumbf_type(None),
             )
             .unwrap();
         let untyped = builder.finish().unwrap();

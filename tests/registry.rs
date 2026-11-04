@@ -1,7 +1,9 @@
 use std::{io::Cursor, sync::Arc};
 
 use asset_io::{
-    Asset, BoxFuture, ContainerHandler, Error, FormatSpec, HandlerRegistry, Io, Result, Structure,
+    container_api::{BoxFuture, ContainerHandler, FormatSpec},
+    io::Io,
+    Asset, Error, HandlerRegistry, Result, Structure,
 };
 
 #[derive(Debug)]

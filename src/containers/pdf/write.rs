@@ -17,7 +17,7 @@
 //! What a revision needs to know is read while parsing (the catalog, the attachment
 //! name tree, the trailer, and how much of the parse budgets is left) and kept in the
 //! structure's attachment as a [`Context`]. Planning is then a pure function of that
-//! and the update, which is what lets it be a [`WritePlan`](crate::WritePlan).
+//! and the update, which is what lets it be a [`WritePlan`](crate::container_api::WritePlan).
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -32,7 +32,10 @@ use super::{
     },
     Parser, Xrefs, MAX_CLASSIC_ENTRIES, MAX_ENTRIES, MAX_OBJECTS, MAX_REVISIONS,
 };
-use crate::{BoxFuture, Error, ItemKind, MetadataUpdate, Result, Updates, MAX_SEGMENT_SIZE};
+use crate::{
+    container_api::{BoxFuture, MetadataUpdate, MAX_SEGMENT_SIZE},
+    Error, ItemKind, Result, Updates,
+};
 
 /// Whether the document can be edited, and if so what an edit needs.
 #[derive(Clone, Debug)]

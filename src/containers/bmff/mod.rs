@@ -97,12 +97,14 @@ mod heif_items;
 use std::{borrow::Cow, io::SeekFrom, sync::Arc};
 
 use crate::{
-    block_on,
-    plan::{OffsetMap, Relocate, WritePlan},
-    BoxFuture, ByteRange, ContainerHandler, Encoding, Error, Existing, FormatSpec, Io, Item,
-    ItemInfo, ItemKind, MetadataSlot, MetadataUpdate, Name, Node, PlanBuilder, ReadSeek, Relation,
-    RelationKind, Result, Role, Segment, SegmentId, SegmentKind, Structure, StructureBuilder,
-    Updates, MAX_SEGMENT_SIZE,
+    container_api,
+    container_api::{
+        block_on, BoxFuture, ContainerHandler, Existing, FormatSpec, Io, ItemInfo, MetadataSlot,
+        MetadataUpdate, OffsetMap, PlanBuilder, ReadSeek, Relocate, StructureBuilder, WritePlan,
+        MAX_SEGMENT_SIZE,
+    },
+    ByteRange, Encoding, Error, Item, ItemKind, Name, Node, Relation, RelationKind, Result, Role,
+    Segment, SegmentId, SegmentKind, Structure, Updates,
 };
 
 /// C2PA content provenance box type, `D8FEC3D6-1B0E-483C-9297-5828877EC481`.
@@ -289,7 +291,7 @@ impl ContainerHandler for BmffHandler {
         src: &mut dyn ReadSeek,
         updates: &Updates,
     ) -> Result<Structure> {
-        crate::block_on(src_structure.total_size(), src, |mut io| async move {
+        block_on(src_structure.total_size(), src, |mut io| async move {
             let (ops, boxes, map) = plan(src_structure, &mut io, updates).await?;
             let plan = assemble(src_structure, &mut io, ops, &boxes, map, false).await?;
             Ok(plan.into_structure())
@@ -606,7 +608,7 @@ fn xmp_item(s: &Structure) -> Result<Option<&Item>> {
         return Ok(Some(first));
     }
     let items: Vec<&Item> = s.items_of(ItemKind::Xmp).collect();
-    if let Some(HeifPrimary(primary)) = s.attachment::<HeifPrimary>() {
+    if let Some(HeifPrimary(primary)) = container_api::attachment::<HeifPrimary>(s) {
         let describes = |e: &&Item| {
             e.relations()
                 .iter()
@@ -1569,7 +1571,7 @@ async fn assemble<'a>(
 ) -> Result<WritePlan<'a>> {
     let map = Arc::new(map);
     let mut b = PlanBuilder::new(src);
-    if let Some(primary) = src.attachment::<HeifPrimary>() {
+    if let Some(primary) = container_api::attachment::<HeifPrimary>(src) {
         b.attach(*primary);
     }
     let open_ended = if with_steps {
@@ -1958,9 +1960,13 @@ mod tests {
     fn rewrite(src: &[u8], u: &Updates) -> Result<Vec<u8>> {
         let s = parse(&mut Cursor::new(src))?;
         let mut out = Cursor::new(Vec::new());
-        let dest = s
-            .handler()
-            .write(&s, &mut Cursor::new(src), &mut out, u, &mut NullSink)?;
+        let dest = container_api::handler(&s).write(
+            &s,
+            &mut Cursor::new(src),
+            &mut out,
+            u,
+            &mut NullSink,
+        )?;
         let out = out.into_inner();
         // The structure returned is the structure of what was written.
         let again = parse(&mut Cursor::new(&out))?;
@@ -2184,8 +2190,7 @@ mod tests {
             seen: 0,
         };
         let u = Updates::new().set_merkle(vec![vec![0u8; 8]]);
-        let dest = src
-            .handler()
+        let dest = container_api::handler(&src)
             .write(&src, &mut Cursor::new(&f), &mut out, &u, &mut sink)
             .unwrap();
         assert_eq!(sink.seen, 5);
@@ -2284,7 +2289,7 @@ mod tests {
         let tables: Vec<_> = plan
             .steps()
             .iter()
-            .filter(|st| matches!(st, crate::Step::Relocate { .. }))
+            .filter(|st| matches!(st, container_api::Step::Relocate { .. }))
             .collect();
         assert_eq!(tables.len(), 1);
         // Planning the structure alone does not read the tables.
@@ -2665,8 +2670,7 @@ mod tests {
         let f = heif(EXIF_ITEM, THUMB);
         let s = parse(&mut Cursor::new(&f)).unwrap();
         let mut out = Cursor::new(Vec::new());
-        let dest = s
-            .handler()
+        let dest = container_api::handler(&s)
             .write(
                 &s,
                 &mut Cursor::new(&f),
@@ -2693,7 +2697,10 @@ mod tests {
             item(&dest, &out, ItemKind::EmbeddedAsset)
         );
         // Native identifiers and relations are carried too.
-        assert_eq!(thumb(&dest).unwrap().info(), thumb(&again).unwrap().info());
+        assert_eq!(
+            container_api::item_info(thumb(&dest).unwrap()),
+            container_api::item_info(thumb(&again).unwrap())
+        );
     }
 
     #[test]
@@ -2997,7 +3004,10 @@ mod tests {
             // Every HEIF item survives with the same identity and bytes.
             for e in src.items() {
                 let id = e.native_id().unwrap();
-                assert_eq!(by_id(&s, id).info(), e.info());
+                assert_eq!(
+                    container_api::item_info(by_id(&s, id)),
+                    container_api::item_info(e)
+                );
                 assert_eq!(
                     s.read_item(&mut Cursor::new(&out), by_id(&s, id)).unwrap(),
                     src.read_item(&mut Cursor::new(&f), e).unwrap()

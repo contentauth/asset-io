@@ -52,9 +52,9 @@ pub fn superbox_type(b: &[u8]) -> Option<[u8; 16]> {
 
 /// [`superbox_type`] of the `len` stored bytes at `offset`, reading at most 32 of
 /// them. For a handler recording an item's type while it parses, as
-/// [`ItemInfo::jumbf_type`](crate::ItemInfo::jumbf_type) asks.
+/// [`ItemInfo::jumbf_type`](crate::container_api::ItemInfo::jumbf_type) asks.
 pub async fn superbox_type_at(
-    io: &mut crate::Io,
+    io: &mut crate::io::Io,
     offset: u64,
     len: u64,
 ) -> Result<Option<[u8; 16]>> {

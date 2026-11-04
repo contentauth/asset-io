@@ -14,8 +14,11 @@ use std::{
 };
 
 use crate::{
-    BoxFuture, ByteRange, ContainerHandler, Error, FormatSpec, Io, Item, ItemInfo, ItemKind, Name,
-    Result, SegmentId, SegmentKind, Structure, StructureBuilder, Updates, WritePlan,
+    container_api,
+    container_api::{
+        BoxFuture, ContainerHandler, FormatSpec, Io, ItemInfo, StructureBuilder, WritePlan,
+    },
+    ByteRange, Error, Item, ItemKind, Name, Result, SegmentId, SegmentKind, Structure, Updates,
 };
 
 /// TIFF tag holding a C2PA manifest store, of type UNDEFINED (7).
@@ -202,8 +205,7 @@ impl TiffLayout {
 
 /// Inspect TIFF-specific tag and directory geometry without additional I/O.
 pub(crate) fn layout(structure: &Structure) -> Result<&TiffLayout> {
-    structure
-        .attachment::<Arc<TiffLayout>>()
+    container_api::attachment::<Arc<TiffLayout>>(structure)
         .map(Arc::as_ref)
         .ok_or(Error::UnsupportedFormat)
 }

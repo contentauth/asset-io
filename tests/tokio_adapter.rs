@@ -3,7 +3,7 @@
 use std::io::Cursor;
 
 use asset_io::{
-    tokio as asset, Asset, Chunk, Error, HandlerRegistry, ItemKind, NullSink, Task, Updates,
+    task::Task, tokio as asset, Asset, Chunk, Error, HandlerRegistry, ItemKind, NullSink, Updates,
 };
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 

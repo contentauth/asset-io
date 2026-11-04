@@ -7,8 +7,10 @@
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
 use asset_io::{
-    Asset, ByteRange, Encoding, Error, HandlerRegistry, ItemInfo, ItemKind, Name, NullSink,
-    ScanLimits, SegmentId, SegmentKind, Structure, StructureBuilder, TransferEncoding, Updates,
+    container_api,
+    container_api::{ItemInfo, StructureBuilder},
+    Asset, ByteRange, Encoding, Error, HandlerRegistry, ItemKind, Name, NullSink, ScanLimits,
+    SegmentId, SegmentKind, Structure, TransferEncoding, Updates,
 };
 
 const URI: &[u8] = b"tag:apple.com,2025:photo:metadata:provenance:processedimage\0";
@@ -191,7 +193,10 @@ fn embedded_items_and_contents_survive_metadata_relocation() {
         for asset in [&written, &reparsed] {
             let item = first(asset).unwrap();
             assert_eq!(asset.read_item(&item).unwrap(), jpeg);
-            assert_eq!(item.info(), first(&root).unwrap().info());
+            assert_eq!(
+                container_api::item_info(&item),
+                container_api::item_info(&first(&root).unwrap())
+            );
             assert!(asset
                 .scan_embedded(&registry, ScanLimits::default())
                 .unwrap()[0]

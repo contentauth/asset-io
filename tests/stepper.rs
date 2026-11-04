@@ -20,7 +20,8 @@
 use std::{io::Cursor, path::PathBuf};
 
 use asset_io::{
-    Action, Asset, ByteRange, Chunk, Error, NullSink, Result, Role, Sink, Updates, WritePlan,
+    execute::Action, plan::WritePlan, Asset, ByteRange, Chunk, Error, NullSink, Result, Role, Sink,
+    Updates,
 };
 
 /// `bytes` as an asset of `format`.

@@ -3,9 +3,9 @@
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
 use asset_io::{
-    containers::c2pa::handler, plan::validate, testing::Conformance, Asset, Encoding, Error,
-    HandlerRegistry, ItemKind, NullSink, Progress, SegmentKind, Structure, TransferEncoding,
-    Updates, DEFAULT_WINDOW,
+    container_api, containers::c2pa::handler, io::DEFAULT_WINDOW, plan::validate, task::Progress,
+    testing::Conformance, Asset, Encoding, Error, HandlerRegistry, ItemKind, NullSink, SegmentKind,
+    Structure, TransferEncoding, Updates,
 };
 
 /// Parse with the sidecar handler directly, from any reader.
@@ -45,8 +45,14 @@ fn write(source: &[u8], updates: &Updates) -> (Vec<u8>, Structure) {
     assert_eq!(written.segments(), reparsed.segments());
     assert_eq!(written.total_size(), bytes.len() as u64);
     assert_eq!(
-        written.items().map(|item| item.info()).collect::<Vec<_>>(),
-        reparsed.items().map(|item| item.info()).collect::<Vec<_>>()
+        written
+            .items()
+            .map(container_api::item_info)
+            .collect::<Vec<_>>(),
+        reparsed
+            .items()
+            .map(container_api::item_info)
+            .collect::<Vec<_>>()
     );
     (bytes, written)
 }

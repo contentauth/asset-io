@@ -11,7 +11,11 @@
 // specific language governing permissions and limitations under
 // each license.
 
-//! Windowed, asynchronous stream reads for container handlers.
+//! Windowed, asynchronous stream reads for handlers and advanced clients.
+//!
+//! Compose reads inside a [`crate::task::Task`], or use the async methods on
+//! [`crate::Structure`]. Handler authors can import [`Io`] and [`BoxFuture`]
+//! through [`crate::container_api`].
 
 use std::{
     future::Future,
@@ -29,7 +33,7 @@ use crate::error::{Error, Result};
 pub const DEFAULT_WINDOW: usize = 4 * 1024;
 
 /// A boxed future that can move between threads, as the `async` parts of a
-/// [`ContainerHandler`](crate::ContainerHandler) return.
+/// [`ContainerHandler`](crate::container_api::ContainerHandler) return.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// What a suspended reader is waiting for, and the buffer it will be given.
@@ -89,7 +93,7 @@ impl Io {
 
     /// Another `Io` over the same stream and driver, with an empty window, for
     /// code that takes an `Io` by value (a handler's
-    /// [`parse_async`](crate::ContainerHandler::parse_async)) inside a longer task.
+    /// [`parse_async`](crate::container_api::ContainerHandler::parse_async)) inside a longer task.
     /// The callee owns the fork, leaving this `Io` available after it finishes.
     /// This does not create a new task, thread, or independent I/O driver.
     ///

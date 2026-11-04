@@ -7,7 +7,7 @@
 use std::borrow::Cow;
 
 use super::*;
-use crate::{MetadataUpdate, Role};
+use crate::{container_api, container_api::MetadataUpdate, Role};
 
 enum Data<'a> {
     New(&'a [u8]),
@@ -311,7 +311,7 @@ fn emit<'a>(
     patches: Vec<(u64, Cow<'a, [u8]>)>,
     appended: Vec<(u64, Output<'a>)>,
 ) -> Result<WritePlan<'a>> {
-    let structure = structure(source.handler().clone(), total, state)?;
+    let structure = structure(container_api::handler(source).clone(), total, state)?;
     let mut pieces = Vec::new();
     let mut at = 0;
     for (offset, bytes) in patches {

@@ -1,6 +1,25 @@
 # asset-io
 
-Streaming, container-agnostic access to the structure and metadata of media files.
+A portable, dynamically extensible container model for media assets.
+
+`asset-io` provides one abstract model for reading, inspecting and updating a wide
+variety of image, audio, video and document formats, including JPEG, PNG, ISO BMFF
+(HEIF, AVIF, MP4), RIFF (WebP, WAV, AVI), TIFF, SVG and PDF. Applications work with
+common structures and metadata items rather than format-specific parsers and writers.
+
+Container support is dynamically extensible: applications register built-in or
+third-party handlers with `HandlerRegistry` at runtime. Handler authors use
+`container_api` to add formats without changing the client API.
+
+The core is portable and independent of any async runtime. The same handler
+implementation runs with blocking streams, async adapters or caller-driven I/O.
+It is designed for high performance: updates stream the output in a single pass
+with bounded buffers, copying unchanged media without loading the whole asset
+into memory. Sinks observe tagged bytes during reads and writes, allowing callers
+to hash output without a second pass.
+
+Used by [c2pa-rs](https://github.com/contentauth/c2pa-rs) for media-container access,
+`asset-io` separates container mechanics from manifest interpretation, hashing and signing.
 
 A parsed file is a `Structure`: a gapless tiling of `Segment`s (header, payload, trailer) plus `Item`s, the logical units the format defines (XMP, JUMBF, EXIF, embedded files), each assembled from one or more `Extent`s. It holds geometry only. It does not hash, sign or interpret C2PA; callers decide what each byte range means.
 
@@ -77,6 +96,21 @@ handlers of the enabled features; `new()` and `default()` are always empty.
 Without any container feature the crate is the handler-free API: structures,
 registry, I/O, write plans, execution and the conformance checks.
 
+The Rust namespaces separate clients from handler authors:
+
+| Namespace | Surface |
+|-----------|---------|
+| `asset_io` | Registry, read-only `Asset`/`Structure` model, reads, writes, `Updates`, `Sink`, C2PA geometry and exact patching |
+| `asset_io::container_api` | `ContainerHandler`, `FormatSpec`, `StructureBuilder`, `ItemInfo`, `PlanBuilder`, metadata-update decisions, handler I/O traits and container utilities |
+| `asset_io::plan` | `WritePlan`, `Step`, validation and offset relocation |
+| `asset_io::io` | `Io`, `Reader`, `BoxFuture`, default read window |
+| `asset_io::task` | `Task`, `Progress`, `ReadRequest`, `block_on` |
+| `asset_io::execute` | `Execution`, `Action` for caller-driven writes |
+| `asset_io::containers` | Feature-gated built-in handler factories and typed options |
+
+Author types and advanced driver types are not also exported at the root.
+This is a Rust import-path change, not a change to container behavior or the C ABI.
+
 Handlers in other crates depend on `asset-io` with `default-features = false`,
 so they do not force any container on the applications that use them, and are
 registered at runtime. A registry is composed by adding handlers; the last
@@ -148,7 +182,7 @@ The API separates resolution, format behavior, and I/O execution:
 | Component | Role |
 |-----------|------|
 | `HandlerRegistry` | Register handlers, resolve format strings, match supplied header bytes, and query format metadata; no stream I/O |
-| `ContainerHandler` | Implement container-specific parsing, planning, and format rules |
+| `container_api::ContainerHandler` | Implement container-specific parsing, planning, and format rules |
 | `Structure::parse`, `parse_async`, `parse_task` | Select a handler and run its parser with blocking I/O, inside a sans-I/O computation, or as a caller-driven task |
 | `Structure` | Describe a parsed asset and operate through its retained handler; I/O-free, so reads take the source as an argument |
 | `Asset` | A `Structure` together with the blocking stream it was parsed from, so reads, writes and patches need no source argument |
@@ -257,7 +291,7 @@ The `Updates` API is deliberately specific to XMP and JUMBF, whose placement eac
 
 `Structure::store(src)` reads the JUMBF store as a reader sees it. For ISO BMFF that combines an original store and its update; `jumbf::{addition_to, extend}` convert between the two forms.
 
-`ContainerHandler::compose(kind, data)` returns the container's own encoding of an item (JPEG APP11 segments, a PNG `caBX` chunk, a BMFF C2PA box), for callers that insert it into an asset themselves. Resolve the handler with `registry.handler(format)`, or use `structure.handler()` for a parsed asset. Callers that use `write` don't need it.
+`container_api::ContainerHandler::compose(kind, data)` returns the container's own encoding of an item (JPEG APP11 segments, a PNG `caBX` chunk, a BMFF C2PA box), for callers that insert it into an asset themselves. Resolve the handler with `registry.handler(format)`, or use `container_api::handler(&structure)` for a parsed asset. Registry handler lookup, iteration and composition remain available. Callers that use `write` don't need it.
 
 Each handler has an `id()` (`"jpeg"`, `"png"`, `"bmff"`, `"riff"`, `"svg"`, `"pdf"`, `"tiff"`, `"c2pa"`) and declares the formats it serves as `FormatSpec`s: a media type, a preferred extension, and any other accepted media types and extensions. `HandlerRegistry::media_type_for("heic")` gives `image/heic` and `extension_for("image/jpeg")` gives `jpg`; aliases resolve to the preferred values (`image/x-webp` gives `image/webp`).
 
@@ -271,12 +305,30 @@ Edits to a multi-picture JPEG add metadata to the first image and shift the size
 
 ## Writing a handler
 
-A handler implements `ContainerHandler`:
+A handler implements `container_api::ContainerHandler`. Import its author API
+explicitly, alongside the client model:
+
+```rust
+use asset_io::container_api::{
+    BoxFuture, ContainerHandler, FormatSpec, Io, ItemInfo, MetadataSlot,
+    PlanBuilder, StructureBuilder, WritePlan,
+};
+use asset_io::{Result, Structure, Updates};
+```
 
 Handlers use `Io` and `BoxFuture` for asynchronous reads, without constructing or
-driving a `Task`. The shared reader types live in
-[`src/io.rs`](src/io.rs); task execution lives in [`src/task.rs`](src/task.rs).
-Both remain available through the crate-root exports.
+driving a `Task`. `container_api` also exposes direct plan construction,
+replacement and relocation primitives for formats whose planning needs them,
+`ReadSeek`/`ReadWriteSeek` for stream hooks, `Crc32` for framing repair, parser
+limits, and `block_on` for optimized nested planning without an async runtime.
+The shared reader implementation lives in [`src/io.rs`](src/io.rs);
+client task execution lives in [`src/task.rs`](src/task.rs).
+
+Raw author state is accessed through `container_api::attachment::<T>(&structure)`,
+`container_api::handler(&structure)` and `container_api::item_info(&item)`,
+not inherent client-model methods. Builders still attach opaque state and
+carry descriptive item fields; clients read each field through `Item`'s
+read-only accessors.
 
 - `parse_async(self: Arc<Self>, io: Io)` builds a `Structure` with `StructureBuilder`, reading the stream through `io` (`io.read_at(offset, &mut buf).await?`, `io.reader(at)` for a run of fields, `io.fetch(..)` for a borrowed slice). Everything but the reads is ordinary code. Return `Box::pin(async move { ... })`.
 - `write_plan_async(&self, structure, io, updates)` describes a write as a `WritePlan`: the structure of the output plus ordered `Step`s that copy source bytes or supply new ones. It reads the source only for what it must know (`io`), and does no writing. A handler that cannot write leaves the default. Decide what the output holds from `Updates` (`xmp()`, `jumbf()`, ...; a `MetadataSlot` says whether each existing XMP or JUMBF item is kept, replaced or dropped, and what is left to insert), then describe it in order with a `PlanBuilder`: `copy_segment(id)` for a source segment kept, `put_segment(kind, name, header, payload, trailer)` for a new one, `item(ItemInfo, &[id])` for the item it holds, `carry_items(|item| ..)` for the items of the kept segments, and `finish()`. Decide what a source segment holds from `Structure::items_in(id)`, not from its kind. The builder works out sizes, offsets and the output structure. When a segment is part copied and part changed, `shape_like`/`shape` add it and `copy`, `put` and `relocate` supply its bytes.
@@ -286,6 +338,10 @@ The blocking `parse`, `write_plan` and `write` are provided: they run those meth
 Register a handler with `HandlerRegistry::with_handler`; the last handler registered for a format wins. Enums and structs a handler touches are `#[non_exhaustive]`, so new variants and fields are not breaking changes.
 
 ## Running with your own I/O
+
+Import `Io`/`Reader` from `asset_io::io`, `Task`/`Progress`/`ReadRequest` and
+`block_on` from `asset_io::task`, `WritePlan`/`Step` from `asset_io::plan`,
+and `Execution`/`Action` from `asset_io::execute`.
 
 Parsing and planning are `async` code that does no I/O: a `Task` runs it, and when it needs bytes it does not hold (`Io` keeps a 4 KiB window, so a run of tiny reads is one request) `Task::resume` returns a `ReadRequest` with the offset, how much, and the buffer to fill. Fill it however you like (blocking, `async`, from a buffer you already have) and resume. No runtime is involved, and a task is `Send`. Get one from `Structure::parse_task(&registry, total, format)` for a parse, or `Structure::write_plan_task(&updates)` for a plan. `Structure::parse_task` borrows the registry and optional format, and reports selection errors when driven. For a known handler, `Task::new(total, move |io| handler.parse_async(io))` can create a task independent of the registry.
 

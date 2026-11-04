@@ -28,9 +28,13 @@ use std::{
 };
 
 use crate::{
-    jumbf::superbox_type, plan::WritePlan, BoxFuture, ContainerHandler, Crc32, Error, Existing,
-    FormatSpec, Io, ItemInfo, ItemKind, MetadataSlot, Name, PlanBuilder, ReadWriteSeek, Result,
-    Segment, SegmentId, SegmentKind, Structure, StructureBuilder, TransferEncoding, Updates,
+    container_api::{
+        BoxFuture, ContainerHandler, Crc32, Existing, FormatSpec, Io, ItemInfo, MetadataSlot,
+        PlanBuilder, ReadWriteSeek, StructureBuilder, WritePlan,
+    },
+    jumbf::superbox_type,
+    Error, ItemKind, Name, Result, Segment, SegmentId, SegmentKind, Structure, TransferEncoding,
+    Updates,
 };
 
 const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";

@@ -153,17 +153,17 @@ fn planned_stores_are_identified_without_reading_the_output() {
 
 /// Run `task` against `source`, answering each request from the slice. Returns the
 /// result and how many requests were made.
-fn drive<T>(mut task: asset_io::Task<'_, T>, source: &[u8]) -> (asset_io::Result<T>, usize) {
+fn drive<T>(mut task: asset_io::task::Task<'_, T>, source: &[u8]) -> (asset_io::Result<T>, usize) {
     let mut requests = 0;
     loop {
         match task.resume() {
-            Ok(asset_io::Progress::Read(mut req)) => {
+            Ok(asset_io::task::Progress::Read(mut req)) => {
                 requests += 1;
                 let from = (req.offset() as usize).min(source.len());
                 let to = (from + req.window_len()).min(source.len());
                 req.buffer().extend_from_slice(&source[from..to]);
             }
-            Ok(asset_io::Progress::Done(v)) => return (Ok(v), requests),
+            Ok(asset_io::task::Progress::Done(v)) => return (Ok(v), requests),
             Ok(_) => unreachable!("a progress this driver does not know"),
             Err(e) => return (Err(e), requests),
         }
@@ -215,7 +215,7 @@ fn one_task_finds_the_store_as_the_blocking_calls_do() {
         let structure = asset.structure();
 
         let registry = &registry;
-        let task = asset_io::Task::new(bytes.len() as u64, |mut io| async move {
+        let task = asset_io::task::Task::new(bytes.len() as u64, |mut io| async move {
             let structure = Structure::parse_async(registry, &mut io, Some(format)).await?;
             let item = structure.c2pa_item_async(&mut io).await?;
             let boxes = structure.c2pa_boxes_with(item).ok();
@@ -227,7 +227,7 @@ fn one_task_finds_the_store_as_the_blocking_calls_do() {
         assert_eq!(store, want_store, "{format}");
         assert_eq!(boxes, want_boxes, "{format}");
 
-        let task = asset_io::Task::new(bytes.len() as u64, |mut io| async move {
+        let task = asset_io::task::Task::new(bytes.len() as u64, |mut io| async move {
             structure
                 .c2pa_item_async(&mut io)
                 .await

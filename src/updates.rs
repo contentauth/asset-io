@@ -57,7 +57,10 @@ pub enum Existing<'a> {
 /// for a value that no existing item took.
 ///
 /// ```
-/// use asset_io::{Existing, MetadataSlot, Updates};
+/// use asset_io::{
+///     container_api::{Existing, MetadataSlot},
+///     Updates,
+/// };
 ///
 /// let updates = Updates::new().set_xmp(b"new".to_vec());
 /// let mut xmp = MetadataSlot::new(updates.xmp());

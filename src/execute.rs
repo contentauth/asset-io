@@ -12,6 +12,10 @@
 // each license.
 
 //! Running a [`WritePlan`] one piece of I/O at a time; see [`Execution`].
+//!
+//! Obtain an execution with [`WritePlan::start`] and service each [`Action`].
+//! This module is the advanced client write driver; synchronous clients use
+//! [`crate::Asset::write`] or [`crate::Structure::write`] instead.
 
 use std::mem;
 
@@ -214,7 +218,7 @@ impl Tracker<'_> {
 /// inside `step`, so every way of running a plan behaves the same.
 ///
 /// ```no_run
-/// # use asset_io::{Action, NullSink, WritePlan};
+/// # use asset_io::{NullSink, execute::{Action}, plan::{WritePlan}};
 /// # use std::io::{Read, Seek, SeekFrom, Write};
 /// # fn run(plan: &WritePlan<'_>, mut src: impl Read + Seek, mut out: impl Write)
 /// #     -> asset_io::Result<()> {

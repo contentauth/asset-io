@@ -9,7 +9,12 @@
 
 use std::{io::SeekFrom, sync::Arc};
 
-use crate::{block_on, Error, HandlerRegistry, Io, ReadSeek, Result, Structure, Task, DETECT_LEN};
+use crate::{
+    container_api::{ReadSeek, DETECT_LEN},
+    io::Io,
+    task::{block_on, Task},
+    Error, HandlerRegistry, Result, Structure,
+};
 
 impl Structure {
     /// Parse a complete stream with blocking I/O.
@@ -39,7 +44,7 @@ impl Structure {
     /// errors are returned when the task is driven, not when it is created. The
     /// task borrows `registry` and `format`; to build a registry-independent task
     /// for a known handler, use [`Task::new`] with
-    /// [`ContainerHandler::parse_async`](crate::ContainerHandler::parse_async).
+    /// [`ContainerHandler::parse_async`](crate::container_api::ContainerHandler::parse_async).
     pub fn parse_task<'a>(
         registry: &'a HandlerRegistry,
         total: u64,
@@ -83,7 +88,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        BoxFuture, ContainerHandler, FormatSpec, Name, Progress, SegmentKind, StructureBuilder,
+        container_api::{BoxFuture, ContainerHandler, FormatSpec, StructureBuilder},
+        task::Progress,
+        Name, SegmentKind,
     };
 
     #[derive(Debug)]

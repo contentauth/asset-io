@@ -23,8 +23,9 @@
 //!
 //! ```no_run
 //! use asset_io::testing::Conformance;
+//! # use asset_io::container_api::ContainerHandler;
 //!
-//! # fn check(handler: std::sync::Arc<dyn asset_io::ContainerHandler>, sample: &[u8]) {
+//! # fn check(handler: std::sync::Arc<dyn ContainerHandler>, sample: &[u8]) {
 //! Conformance::new(handler).check("sample", sample);
 //! # }
 //! ```

@@ -149,7 +149,7 @@ impl<T: std::any::Any + std::fmt::Debug + Send + Sync> Attached for T {
 }
 
 /// A `Structure` holds geometry, and whatever opaque state its container attached
-/// to it (see [`attachment`](Structure::attachment)). It is `Send + Sync` and can be
+/// to it (see [`attachment`](crate::container_api::attachment)). It is `Send + Sync` and can be
 /// shared across threads for parallel reads.
 #[derive(Debug)]
 pub struct Structure {
@@ -180,7 +180,7 @@ impl Structure {
     /// What the container [attached](StructureBuilder::attach) to this structure, if
     /// it is a `T`. Handlers use it for state that is not geometry: how a payload is
     /// encoded, or what a later write needs to know.
-    pub fn attachment<T: std::any::Any>(&self) -> Option<&T> {
+    pub(crate) fn attachment<T: std::any::Any>(&self) -> Option<&T> {
         self.attachment.as_deref()?.as_any().downcast_ref()
     }
 
@@ -220,7 +220,7 @@ impl Structure {
     }
 
     /// The handler that parsed this asset.
-    pub fn handler(&self) -> &Arc<dyn ContainerHandler> {
+    pub(crate) fn handler(&self) -> &Arc<dyn ContainerHandler> {
         &self.handler
     }
 
@@ -611,7 +611,7 @@ impl Structure {
         })
     }
 
-    /// [`c2pa_item`](Self::c2pa_item), reading through `io`, for a [`Task`](crate::Task) where
+    /// [`c2pa_item`](Self::c2pa_item), reading through `io`, for a [`Task`](crate::task::Task) where
     /// the caller does the reads. There are none when the parser recorded the
     /// type of each JUMBF item, as the built-in handlers do.
     pub async fn c2pa_item_async(&self, io: &mut Io) -> Result<Option<&Item>> {
@@ -646,7 +646,7 @@ impl Structure {
         })
     }
 
-    /// [`c2pa_store`](Self::c2pa_store), reading through `io`, for a [`Task`](crate::Task)
+    /// [`c2pa_store`](Self::c2pa_store), reading through `io`, for a [`Task`](crate::task::Task)
     /// where the caller does the reads.
     pub async fn c2pa_store_async(&self, io: &mut Io) -> Result<Option<Vec<u8>>> {
         use crate::segment::labels::{ORIGINAL, UPDATE};
@@ -1086,7 +1086,7 @@ impl StructureBuilder {
     }
 
     /// Keep `value` with the structure, for the container's own use later (read it
-    /// back with [`Structure::attachment`]). It is opaque to everything else. One
+    /// back with [`crate::container_api::attachment`]). It is opaque to everything else. One
     /// value is kept; a second replaces the first.
     pub fn attach<T: std::any::Any + std::fmt::Debug + Send + Sync>(
         &mut self,
@@ -1414,6 +1414,7 @@ impl StructureBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::container_api::{BoxFuture, FormatSpec};
 
     /// A handler that only exists to own structures in these tests.
     #[derive(Debug)]
@@ -1424,15 +1425,12 @@ mod tests {
             "test"
         }
 
-        fn formats(&self) -> &[crate::FormatSpec] {
-            const F: &[crate::FormatSpec] = &[crate::FormatSpec::new("application/x-test", "test")];
+        fn formats(&self) -> &[FormatSpec] {
+            const F: &[FormatSpec] = &[FormatSpec::new("application/x-test", "test")];
             F
         }
 
-        fn parse_async(
-            self: Arc<Self>,
-            _: crate::Io,
-        ) -> crate::BoxFuture<'static, Result<Structure>> {
+        fn parse_async(self: Arc<Self>, _: crate::io::Io) -> BoxFuture<'static, Result<Structure>> {
             Box::pin(async { Err(Error::UnsupportedFormat) })
         }
 
