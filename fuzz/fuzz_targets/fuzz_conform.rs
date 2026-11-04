@@ -15,8 +15,7 @@
 
 use std::io::Cursor;
 
-use asset_io::container_api;
-use asset_io::{testing::Conformance, HandlerRegistry, Structure};
+use asset_io::{container_api, testing::Conformance, HandlerRegistry, Structure};
 use libfuzzer_sys::fuzz_target;
 
 /// A JUMBF with a description box, so a format that wants a type has one.
