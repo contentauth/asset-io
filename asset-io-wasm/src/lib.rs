@@ -1,6 +1,9 @@
 //! Caller-driven parsing. JavaScript owns I/O and all async scheduling.
 
-use asset_io::{HandlerRegistry, Progress, Structure, Task};
+use asset_io::{
+    task::{Progress, Task},
+    HandlerRegistry, Structure,
+};
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
 
