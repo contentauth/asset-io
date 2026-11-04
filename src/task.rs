@@ -121,6 +121,21 @@ impl<'f, T> Task<'f, T> {
         }
     }
 
+    /// Reacquire the current read request without polling the computation.
+    ///
+    /// A driver may drop the request returned by [`resume`](Self::resume), retain
+    /// its offset and lengths while doing host-native I/O, then use this method
+    /// to supply the response before resuming. This does not start a task or
+    /// create a new request. Returns `None` before the first read or after
+    /// completion. As with `resume`, the mutable borrow prevents driving the task
+    /// while the request is held.
+    pub fn pending_read(&mut self) -> Option<ReadRequest<'_>> {
+        if self.finished {
+            return None;
+        }
+        ReadRequest::take(&self.link)
+    }
+
     /// Run to completion, reading from `src`, which must be the stream the task was
     /// made for.
     pub fn run<R: Read + Seek + ?Sized>(mut self, src: &mut R) -> Result<T> {
@@ -364,6 +379,27 @@ mod tests {
         });
         // Dropping an unstarted task is fine.
         drop(t);
+    }
+
+    #[test]
+    fn a_dropped_request_can_be_filled_without_polling_again() {
+        let mut task = Task::new(4, |mut io| async move {
+            let mut b = [0; 4];
+            io.read_at(0, &mut b).await?;
+            Ok(b)
+        });
+        assert!(task.pending_read().is_none());
+        let Progress::Read(req) = task.resume().unwrap() else {
+            panic!("expected a request");
+        };
+        let descriptor = (req.offset(), req.min_len(), req.window_len());
+        drop(req);
+        let mut req = task.pending_read().unwrap();
+        assert_eq!((req.offset(), req.min_len(), req.window_len()), descriptor);
+        req.buffer().extend_from_slice(b"TEST");
+        drop(req);
+        assert!(matches!(task.resume().unwrap(), Progress::Done(b) if b == *b"TEST"));
+        assert!(task.pending_read().is_none());
     }
 
     #[test]

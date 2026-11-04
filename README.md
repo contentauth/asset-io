@@ -235,6 +235,13 @@ output.patch_exact(item, &signed_store)?;
 `Structure` remains the I/O-free core: async and caller-driven code composes
 its `*_async` and `*_task` methods directly.
 
+The [C bindings](asset-io-c/README.md#host-native-async-and-threads-sans-io-parsing)
+also expose resumable parsing: a host-native thread pool or event loop services
+read requests after Rust returns, then supplies bytes and resumes. The
+[pthread proof-of-concept](asset-io-c/examples/threaded_parse.c) compares this
+path with blocking parsing. This C task interface currently covers parsing,
+not metadata reads or writes; Wasm/JS bindings are not yet implemented.
+
 ### Tokio
 
 Enable `tokio` alongside the container features to use `asset_io::tokio` with
