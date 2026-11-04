@@ -21,6 +21,8 @@ to hash output without a second pass.
 Used by [c2pa-rs](https://github.com/contentauth/c2pa-rs) for media-container access,
 `asset-io` separates container mechanics from manifest interpretation, hashing and signing.
 
+See the [release notes](CHANGELOG.md).
+
 A parsed file is a `Structure`: a gapless tiling of `Segment`s (header, payload, trailer) plus `Item`s, the logical units the format defines (XMP, JUMBF, EXIF, embedded files), each assembled from one or more `Extent`s. It holds geometry only. It does not hash, sign or interpret C2PA; callers decide what each byte range means.
 
 ## Concepts
@@ -88,7 +90,7 @@ containers it enables:
 
 ```toml
 [dependencies]
-asset-io = { version = "0.2", features = ["jpeg", "pdf"] }
+asset-io = { version = "0.3", features = ["jpeg", "pdf"] }
 ```
 
 No container is enabled by default. `HandlerRegistry::builtin()` holds the

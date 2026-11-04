@@ -45,7 +45,10 @@ asset-io-c/target/c-smoke
 
 The explicit `--target-dir` makes the linker example independent of global Cargo
 target-directory settings. The linker example works on macOS/Linux. Windows consumers must supply their
-platform's DLL search path/import library configuration.
+platform's DLL search path/import library configuration. When linking the static
+library on Windows, define `ASSET_IO_STATIC` before including the header. For
+runtime symbol lookup without import/export annotations, define
+`ASSET_IO_DYNAMIC_LOADING=1`.
 
 ## Errors, ownership and safety contract
 

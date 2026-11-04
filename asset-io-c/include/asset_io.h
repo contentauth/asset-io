@@ -1,8 +1,15 @@
-/* Application ABI v1. See asset-io-c/README.md for ownership, callbacks and JSON schemas.
- * No Rust handler/plugin ABI is defined.
- * All handles and buffers must be released by asset_io_free in the originating library.
- */
+// Copyright 2025 Adobe. All rights reserved.
+// This file is licensed to you under the Apache License,
+// Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0)
+// or the MIT license (http://opensource.org/licenses/MIT),
+// at your option.
 
+// Unless required by applicable law or agreed to in writing,
+// this software is distributed on an "AS IS" BASIS, WITHOUT
+// WARRANTIES OR REPRESENTATIONS OF ANY KIND, either express or
+// implied. See the LICENSE-MIT and LICENSE-APACHE files for the
+// specific language governing permissions and limitations under
+// each license.
 
 #ifndef ASSET_IO_H
 #define ASSET_IO_H
@@ -14,6 +21,28 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#if defined(ASSET_IO_STATIC) || (defined(ASSET_IO_DYNAMIC_LOADING) && ASSET_IO_DYNAMIC_LOADING)
+    #define ASSET_IO_API
+#elif defined(_WIN32) || defined(_WIN64)
+    #if defined(ASSET_IO_BUILDING_DLL) && ASSET_IO_BUILDING_DLL
+        #if defined(__GNUC__) && __GNUC__
+            #define ASSET_IO_API __attribute__((dllexport))
+        #else
+            #define ASSET_IO_API __declspec(dllexport)
+        #endif
+    #else
+        #if defined(__GNUC__) && __GNUC__
+            #define ASSET_IO_API __attribute__((dllimport))
+        #else
+            #define ASSET_IO_API __declspec(dllimport)
+        #endif
+    #endif
+#elif defined(__GNUC__) || defined(__clang__)
+    #define ASSET_IO_API __attribute__((visibility("default")))
+#else
+    #define ASSET_IO_API
+#endif
+
 
 /**
  * Opaque parsed asset, retaining its source.
@@ -64,22 +93,24 @@ extern "C" {
 /**
  * ABI version, independent of enabled format features.
  */
-uint32_t asset_io_abi_version(void);
+ASSET_IO_API extern uint32_t asset_io_abi_version(void);
 
 /**
  * Create a builtin registry (1), or an empty registry (0). Other values fail.
  */
-struct AssetIoRegistry *asset_io_registry_new(uint32_t builtin);
+ASSET_IO_API extern struct AssetIoRegistry *asset_io_registry_new(uint32_t builtin);
 
 /**
  * Sorted JSON array of supported format strings (extensions, MIME types, aliases).
  */
+ASSET_IO_API extern
 struct AssetIoBuffer *asset_io_registry_formats(struct AssetIoRegistry *registry);
 
 /**
  * Copy input bytes and parse. NULL format detects; otherwise UTF-8 extension/MIME.
  * NULL data is allowed only when len is zero.
  */
+ASSET_IO_API extern
 struct AssetIoAsset *asset_io_parse_memory(struct AssetIoRegistry *registry,
                                            const char *format,
                                            const uint8_t *data,
@@ -88,6 +119,7 @@ struct AssetIoAsset *asset_io_parse_memory(struct AssetIoRegistry *registry,
 /**
  * Parse without copying the whole input. Callback/context must outlive the asset.
  */
+ASSET_IO_API extern
 struct AssetIoAsset *asset_io_parse_source(struct AssetIoRegistry *registry,
                                            const char *format,
                                            uint64_t size,
@@ -97,16 +129,18 @@ struct AssetIoAsset *asset_io_parse_source(struct AssetIoRegistry *registry,
 /**
  * Obtain an owned structure snapshot. It survives freeing the asset.
  */
-struct AssetIoStructure *asset_io_asset_structure(struct AssetIoAsset *asset);
+ASSET_IO_API extern struct AssetIoStructure *asset_io_asset_structure(struct AssetIoAsset *asset);
 
 /**
  * Lossless schema-v1 JSON inspection (see README); binary names/UUIDs are byte arrays.
  */
+ASSET_IO_API extern
 struct AssetIoBuffer *asset_io_structure_json(struct AssetIoStructure *structure);
 
 /**
  * Read a source range into an owned buffer, subject to the core's in-memory read limit.
  */
+ASSET_IO_API extern
 struct AssetIoBuffer *asset_io_read_range(struct AssetIoAsset *asset,
                                           uint64_t offset,
                                           uint64_t len);
@@ -115,13 +149,17 @@ struct AssetIoBuffer *asset_io_read_range(struct AssetIoAsset *asset,
  * Stream every source byte once through the tagged callback, with bounded memory.
  * role: 0=header, 1=payload, 2=trailer. Nonzero callback results stop the read.
  */
-int32_t asset_io_read_stream(struct AssetIoAsset *asset, AssetIoChunk chunk, void *context);
+ASSET_IO_API extern
+int32_t asset_io_read_stream(struct AssetIoAsset *asset,
+                             AssetIoChunk chunk,
+                             void *context);
 
 /**
  * Extract an item by declaration-order index. decoded=0: the stored bytes (extents
  * concatenated, what a hash covers); 1: the content, with the item's transfer
  * encoding (base64, Flate) undone.
  */
+ASSET_IO_API extern
 struct AssetIoBuffer *asset_io_item_bytes(struct AssetIoAsset *asset,
                                           size_t index,
                                           uint32_t decoded);
@@ -130,19 +168,24 @@ struct AssetIoBuffer *asset_io_item_bytes(struct AssetIoAsset *asset,
  * Extract XMP (kind=1) or logical JUMBF store (kind=2).
  * Absence is a NotFound error, not an empty buffer; ambiguity remains an error.
  */
-struct AssetIoBuffer *asset_io_metadata_bytes(struct AssetIoAsset *asset, uint32_t kind);
+ASSET_IO_API extern
+struct AssetIoBuffer *asset_io_metadata_bytes(struct AssetIoAsset *asset,
+                                              uint32_t kind);
 
 /**
  * Read a JUMBF item's type as 16 bytes; error if not known/a superbox.
  */
-struct AssetIoBuffer *asset_io_item_jumbf_type(struct AssetIoAsset *asset, size_t index);
+ASSET_IO_API extern
+struct AssetIoBuffer *asset_io_item_jumbf_type(struct AssetIoAsset *asset,
+                                               size_t index);
 
-struct AssetIoUpdates *asset_io_updates_new(void);
+ASSET_IO_API extern struct AssetIoUpdates *asset_io_updates_new(void);
 
 /**
  * kind: 1=XMP, 2=JUMBF. action: 0=keep, 1=set, 2=remove.
  * Data is copied for set; ignored otherwise. JUMBF set automatically scopes to its superbox type.
  */
+ASSET_IO_API extern
 int32_t asset_io_updates_metadata(struct AssetIoUpdates *updates,
                                   uint32_t kind,
                                   uint32_t action,
@@ -152,6 +195,7 @@ int32_t asset_io_updates_metadata(struct AssetIoUpdates *updates,
 /**
  * Remove only JUMBF of the supplied 16-byte type. len must equal 16.
  */
+ASSET_IO_API extern
 int32_t asset_io_updates_remove_jumbf_type(struct AssetIoUpdates *updates,
                                            const uint8_t *uuid,
                                            size_t len);
@@ -159,21 +203,24 @@ int32_t asset_io_updates_remove_jumbf_type(struct AssetIoUpdates *updates,
 /**
  * Apply remove-all semantics including container-specific metadata defaults.
  */
-int32_t asset_io_updates_remove_all(struct AssetIoUpdates *updates);
+ASSET_IO_API extern int32_t asset_io_updates_remove_all(struct AssetIoUpdates *updates);
 
 /**
  * Mark the currently set JUMBF as an update manifest (core BMFF semantics).
  */
-int32_t asset_io_updates_as_update(struct AssetIoUpdates *updates);
+ASSET_IO_API extern int32_t asset_io_updates_as_update(struct AssetIoUpdates *updates);
 
 /**
  * Inspect planned OUTPUT geometry without writing or retaining borrowed plan steps.
  */
-struct AssetIoStructure *asset_io_plan(struct AssetIoAsset *asset, struct AssetIoUpdates *updates);
+ASSET_IO_API extern
+struct AssetIoStructure *asset_io_plan(struct AssetIoAsset *asset,
+                                       struct AssetIoUpdates *updates);
 
 /**
  * Write the entire updated asset into a new owned buffer.
  */
+ASSET_IO_API extern
 struct AssetIoBuffer *asset_io_write_memory(struct AssetIoAsset *asset,
                                             struct AssetIoUpdates *updates);
 
@@ -181,6 +228,7 @@ struct AssetIoBuffer *asset_io_write_memory(struct AssetIoAsset *asset,
  * Stream output once through the tagged callback. No output-sized allocation.
  * role: 0=header, 1=payload, 2=trailer. On failure output may be partial.
  */
+ASSET_IO_API extern
 int32_t asset_io_write_stream(struct AssetIoAsset *asset,
                               struct AssetIoUpdates *updates,
                               AssetIoChunk chunk,
@@ -190,17 +238,19 @@ int32_t asset_io_write_stream(struct AssetIoAsset *asset,
  * Borrow buffer storage until free. out_len is required and zeroed on handle failure.
  * A successful empty buffer has a non-NULL pointer and length zero.
  */
-const uint8_t *asset_io_buffer_data(struct AssetIoBuffer *buffer, size_t *out_len);
+ASSET_IO_API extern
+const uint8_t *asset_io_buffer_data(struct AssetIoBuffer *buffer,
+                                    size_t *out_len);
 
 /**
  * Copy thread-local last error to owned UTF-8 bytes; NULL if none. Does not clear it.
  */
-struct AssetIoBuffer *asset_io_last_error(void);
+ASSET_IO_API extern struct AssetIoBuffer *asset_io_last_error(void);
 
 /**
  * Release any handle/buffer created by THIS library. NULL succeeds; invalid/double free fails.
  */
-int32_t asset_io_free(void *handle);
+ASSET_IO_API extern int32_t asset_io_free(void *handle);
 
 #ifdef __cplusplus
 }  // extern "C"

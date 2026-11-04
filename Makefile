@@ -1,5 +1,21 @@
 .PHONY: ci check-format fmt check-docs clippy test doc fuzz-build fuzz fuzz-parse fuzz-write fuzz-xmp fuzz-mpf fuzz-conform fuzz-regress
 
+ifeq ($(OS),Windows_NT)
+	PLATFORM := win
+else
+	UNAME := $(shell uname)
+	ifeq ($(UNAME),Linux)
+		PLATFORM := linux
+	endif
+	ifeq ($(UNAME),Darwin)
+		PLATFORM := mac
+	endif
+endif
+
+# Use cargo-nextest if installed (faster), otherwise fall back to cargo test.
+# Install nextest with: cargo install --locked cargo-nextest
+CARGO_TEST := $(shell cargo nextest --version > /dev/null 2>&1 && echo "cargo nextest run" || echo "cargo test")
+
 # Formatting follows c2pa-rs: rustfmt.toml uses unstable options, so it needs
 # nightly rustfmt (rustup toolchain add nightly).
 FMT_MANIFESTS := Cargo.toml asset-io-c/Cargo.toml fuzz/Cargo.toml
@@ -27,11 +43,14 @@ clippy:
 	cargo clippy --no-default-features --all-targets -- -D warnings
 
 test:
-	cargo test --no-default-features
+	$(CARGO_TEST) --no-default-features
+	cargo test --doc --no-default-features
 	@set -e; for handler in jpeg png bmff riff svg pdf tiff c2pa; do \
-		cargo test --no-default-features --features $$handler; \
+		$(CARGO_TEST) --no-default-features --features $$handler; \
+		cargo test --doc --no-default-features --features $$handler; \
 	done
-	cargo test --all-features
+	$(CARGO_TEST) --all-features
+	cargo test --doc --all-features
 
 # Builds and views documentation as docs.rs shows it, with feature badges.
 doc:
