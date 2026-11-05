@@ -126,10 +126,9 @@ impl<S: Read + Seek> Asset<S> {
     /// Parse `source` with the [built-in](HandlerRegistry::builtin) handlers of
     /// the enabled container features.
     ///
-    /// `Some(format)` selects a handler by extension or MIME type; `None` detects
-    /// the container from its leading bytes. An unsupported explicit format fails
-    /// without falling back to detection. With no container feature enabled,
-    /// every format is unsupported.
+    /// Content detection takes precedence. If no handler recognizes the content,
+    /// `Some(format)` selects a handler by extension or MIME type; with `None`,
+    /// parsing fails. With no container feature enabled, every format is unsupported.
     ///
     /// For applications. A library should take a registry from its caller and
     /// use [`open_with`](Self::open_with), so the caller's handlers are used.

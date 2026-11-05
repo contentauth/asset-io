@@ -72,7 +72,8 @@ where
 
 /// Parse `src` using an explicit extension or MIME type, or detect it with `None`.
 ///
-/// An unsupported explicit format fails without falling back to detection.
+/// Content detection takes precedence over an explicit format. If detection
+/// finds no handler, `format` selects one by extension or MIME type.
 /// Stream length is determined by seeking to its end; parsing uses absolute
 /// offsets from the beginning, not its current position.
 pub async fn parse<R>(

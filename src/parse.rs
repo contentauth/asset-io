@@ -19,10 +19,10 @@ use crate::{
 impl Structure {
     /// Parse a complete stream with blocking I/O.
     ///
-    /// `Some(format)` selects a handler by extension or MIME type; `None` detects
-    /// the container from its leading bytes. An unsupported explicit format fails
-    /// without falling back to detection. Format selection does not validate the
-    /// content; the selected handler's parser does that.
+    /// Content detection takes precedence. If no handler recognizes the content,
+    /// `Some(format)` selects a handler by extension or MIME type; with `None`,
+    /// parsing fails. Format selection does not validate the content; the selected
+    /// handler's parser does that.
     ///
     /// The stream's length is determined by seeking to its end. Offsets are relative
     /// to the beginning of the stream, regardless of its initial position. The
@@ -67,13 +67,19 @@ impl Structure {
         io: &mut Io,
         format: Option<&str>,
     ) -> Result<Structure> {
-        let handler = match format {
-            Some(format) => Arc::clone(registry.handler(format).ok_or(Error::UnsupportedFormat)?),
-            None => {
-                let len = (DETECT_LEN as u64).min(io.len()) as usize;
-                let head = io.fetch(0, len).await?;
-                Arc::clone(registry.detect(head).ok_or(Error::UnsupportedFormat)?)
+        let len = (DETECT_LEN as u64).min(io.len()) as usize;
+        let head = io.fetch(0, len).await?;
+        let detected = registry.detect(head);
+        let handler = match (detected, format) {
+            (Some(detected), Some(format)) => match registry.handler(format) {
+                Some(explicit) if explicit.id() == detected.id() => Arc::clone(explicit),
+                _ => Arc::clone(detected),
+            },
+            (Some(detected), None) => Arc::clone(detected),
+            (None, Some(format)) => {
+                Arc::clone(registry.handler(format).ok_or(Error::UnsupportedFormat)?)
             }
+            (None, None) => return Err(Error::UnsupportedFormat),
         };
         handler.parse_async(io.fork()).await
     }
@@ -96,6 +102,7 @@ mod tests {
     #[derive(Debug)]
     struct TestHandler {
         id: &'static str,
+        format: &'static str,
         detects: bool,
         detections: Arc<AtomicUsize>,
     }
@@ -106,8 +113,13 @@ mod tests {
         }
 
         fn formats(&self) -> &[FormatSpec] {
-            const FORMATS: &[FormatSpec] = &[FormatSpec::new("application/x-test", "test")];
-            FORMATS
+            const TEST: &[FormatSpec] = &[FormatSpec::new("application/x-test", "test")];
+            const OTHER: &[FormatSpec] = &[FormatSpec::new("application/x-other", "other")];
+            match self.format {
+                "test" => TEST,
+                "other" => OTHER,
+                _ => unreachable!("test handler format"),
+            }
         }
 
         fn detect(&self, header: &[u8]) -> bool {
@@ -135,9 +147,10 @@ mod tests {
         }
     }
 
-    fn handler(id: &'static str, detects: bool) -> TestHandler {
+    fn handler(id: &'static str, format: &'static str, detects: bool) -> TestHandler {
         TestHandler {
             id,
+            format,
             detects,
             detections: Arc::new(AtomicUsize::new(0)),
         }
@@ -160,8 +173,8 @@ mod tests {
     }
 
     #[test]
-    fn explicit_formats_skip_detection_and_support_handlers_without_detectors() {
-        let h = handler("explicit", false);
+    fn explicit_format_falls_back_when_content_is_not_detected() {
+        let h = handler("explicit", "test", false);
         let detections = Arc::clone(&h.detections);
         let registry = HandlerRegistry::new().with_handler(h);
         for format in [" .TeSt ", "APPLICATION/X-TEST"] {
@@ -176,7 +189,7 @@ mod tests {
             );
             assert_eq!(structure.unwrap().container_id(), "explicit");
         }
-        assert_eq!(detections.load(Ordering::Relaxed), 0);
+        assert!(detections.load(Ordering::Relaxed) > 0);
         assert!(matches!(
             Structure::parse(&registry, &mut Cursor::new(b"TEST"), None),
             Err(Error::UnsupportedFormat)
@@ -185,11 +198,11 @@ mod tests {
 
     #[test]
     fn detection_and_format_selection_prefer_the_latest_registration() {
-        let base = HandlerRegistry::new().with_handler(handler("base", true));
+        let base = HandlerRegistry::new().with_handler(handler("base", "test", true));
         let mut registry = HandlerRegistry::new();
         registry.extend_from(&base);
-        registry.add_handler(handler("first", true));
-        registry.add_handler(handler("latest", true));
+        registry.add_handler(handler("first", "test", true));
+        registry.add_handler(handler("latest", "test", true));
         for format in [None, Some("test")] {
             let structure = Structure::parse(&registry, &mut Cursor::new(b"TEST"), format).unwrap();
             assert_eq!(structure.container_id(), "latest");
@@ -208,24 +221,45 @@ mod tests {
     }
 
     #[test]
-    fn unknown_explicit_formats_and_parser_errors_do_not_fall_back() {
-        let h = handler("test", true);
+    fn content_detection_precedes_format_fallback() {
+        let h = handler("test", "test", true);
         let detections = Arc::clone(&h.detections);
         let registry = HandlerRegistry::new().with_handler(h);
         for format in [Some("unknown"), Some("")] {
-            assert!(matches!(
-                Structure::parse(&registry, &mut Cursor::new(b"TEST"), format),
-                Err(Error::UnsupportedFormat)
-            ));
+            assert_eq!(
+                Structure::parse(&registry, &mut Cursor::new(b"TEST"), format)
+                    .unwrap()
+                    .container_id(),
+                "test"
+            );
             let (result, requests) = drive(Structure::parse_task(&registry, 4, format), b"TEST");
-            assert!(matches!(result, Err(Error::UnsupportedFormat)));
-            assert_eq!(requests, 0);
+            assert_eq!(result.unwrap().container_id(), "test");
+            assert!(requests > 0);
         }
+        let mismatch_registry = HandlerRegistry::new()
+            .with_handler(handler("fallback", "other", false))
+            .with_handler(handler("detected", "test", true));
+        assert_eq!(
+            Structure::parse(&mismatch_registry, &mut Cursor::new(b"TEST"), Some("other"))
+                .unwrap()
+                .container_id(),
+            "detected"
+        );
+        assert!(matches!(
+            Structure::parse(&registry, &mut Cursor::new(b"nope"), Some("unknown")),
+            Err(Error::UnsupportedFormat)
+        ));
+        let (result, _) = drive(
+            Structure::parse_task(&registry, 4, Some("unknown")),
+            b"nope",
+        );
+        assert!(matches!(result, Err(Error::UnsupportedFormat)));
+
         assert!(matches!(
             Structure::parse(&registry, &mut Cursor::new(b"nope"), Some("test")),
             Err(Error::InvalidFormat(_))
         ));
-        assert_eq!(detections.load(Ordering::Relaxed), 0);
+        assert!(detections.load(Ordering::Relaxed) > 0);
         for bytes in [b"".as_slice(), b"T", b"nope"] {
             assert!(matches!(
                 Structure::parse(&registry, &mut Cursor::new(bytes), None),
@@ -241,7 +275,7 @@ mod tests {
 
     #[test]
     fn async_parsing_composes_with_later_reads_in_the_same_task() {
-        let registry = HandlerRegistry::new().with_handler(handler("test", true));
+        let registry = HandlerRegistry::new().with_handler(handler("test", "test", true));
         for format in [None, Some("test")] {
             let registry = &registry;
             let task = Task::new(11, |mut io| async move {
@@ -269,7 +303,7 @@ mod tests {
                 Ok(4)
             }
         }
-        let registry = HandlerRegistry::new().with_handler(handler("test", true));
+        let registry = HandlerRegistry::new().with_handler(handler("test", "test", true));
         for format in [None, Some("test")] {
             assert!(matches!(
                 Structure::parse(&registry, &mut Broken, format),

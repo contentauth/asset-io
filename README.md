@@ -194,9 +194,12 @@ The API separates resolution, format behavior, and I/O execution:
 `Asset::open_with(&registry, source, format)` takes a registry, and is what a
 library should use so its caller's handlers apply.
 
-The parsing functions and `Asset::open` take an optional format: `Some("jpg")` or
-`Some("image/jpeg")` selects the named handler, while `None` detects the format.
-An unsupported explicit format is an error, never a request to try detection.
+The parsing functions and `Asset::open` take an optional format: content
+detection runs first and takes precedence over the supplied extension or MIME
+type. If detection finds no handler, `Some("jpg")` or `Some("image/jpeg")`
+selects the named handler; with `None`, parsing fails. This lets a JPEG whose
+filename ends in `.png` use the JPEG parser, while formats such as SVG that have
+no content signature can still use their registered handler.
 Handlers without a detector (such as SVG) require an explicit format.
 
 ```rust

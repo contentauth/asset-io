@@ -331,7 +331,7 @@ fn a_third_party_handler_runs_under_a_task_with_no_changes() {
     );
     let s = parsed.unwrap();
     assert_eq!(s.total_size(), bytes.len() as u64);
-    assert_eq!(requests, 1); // the whole of a small stream, in one window
+    assert_eq!(requests, 2); // detection and parsing use separate I/O windows
 
     // Detection by content, then the same parse.
     let (parsed, _) = run_by_hand(

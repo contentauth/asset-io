@@ -1,7 +1,10 @@
 // Copyright 2026 Adobe. All rights reserved.
 // Licensed under the Apache License, Version 2.0 or the MIT license, at your option.
 
-use std::io::{self, Cursor, Read, Seek, SeekFrom};
+use std::{
+    io::{self, Cursor, Read, Seek, SeekFrom},
+    sync::Arc,
+};
 
 use crate::{
     containers::tiff::{layout, ByteOrder, C2PA_TAG, XMP_TAG},
@@ -159,7 +162,7 @@ fn fixture(f: Format, pages: usize, extra: &[Tag]) -> Vec<u8> {
 }
 
 fn parse(data: &[u8]) -> Structure {
-    Structure::parse(&registry(), &mut Cursor::new(data), None).unwrap()
+    Structure::parse(&registry(), &mut Cursor::new(data), Some("tif")).unwrap()
 }
 fn registry() -> HandlerRegistry {
     HandlerRegistry::new().with_handler(crate::containers::tiff::TiffHandler)
@@ -227,7 +230,7 @@ fn both_byte_orders_and_widths_read_write_and_conform() {
             let bytes = fixture(f, pages, &[]);
             let source = parse(&bytes);
             let parsed = drive(
-                Structure::parse_task(&registry(), bytes.len() as u64, None),
+                Structure::parse_task(&registry(), bytes.len() as u64, Some("tif")),
                 &bytes,
             );
             assert_eq!(shape(&source), shape(&parsed));
@@ -476,6 +479,98 @@ fn registry_formats_and_composed_metadata_match_upstream() {
             .compose(ItemKind::Exif, b""),
         Err(Error::UnsupportedFormat)
     ));
+}
+
+#[test]
+fn raw_aliases_and_signature_fallback_are_read_only() {
+    let registry = HandlerRegistry::with_builtin();
+    let bytes = fixture(FORMATS[0], 1, &[(XMP_TAG, 1, b"<xmp/>".to_vec())]);
+    let writable_only = HandlerRegistry::new().with_handler(crate::containers::tiff::TiffHandler);
+    assert!(writable_only.detect(&bytes).is_none());
+    assert!(registry.handler("unknown-raw-extension").is_none());
+    assert!(Arc::ptr_eq(
+        registry.detect(&bytes).unwrap(),
+        registry.handler("arw").unwrap()
+    ));
+
+    let mut detected_source = Cursor::new(bytes.clone());
+    let detected = Structure::parse(&registry, &mut detected_source, None).unwrap();
+    let xmp = detected.item(ItemKind::Xmp).unwrap().unwrap();
+    assert_eq!(
+        detected.read_item(&mut detected_source, xmp).unwrap(),
+        b"<xmp/>".to_vec()
+    );
+    for update in [Updates::new(), Updates::new().set_xmp(b"<new/>".to_vec())] {
+        assert!(matches!(
+            registry
+                .detect(&bytes)
+                .unwrap()
+                .write_plan(&detected, &mut detected_source, &update),
+            Err(Error::UnsupportedFeature("read-only TIFF raw format"))
+        ));
+    }
+
+    for format in ["arw", "nef"] {
+        let mut source = Cursor::new(bytes.clone());
+        let structure = Structure::parse(&registry, &mut source, Some(format)).unwrap();
+        assert_eq!(structure.container_id(), "tiff");
+        assert!(matches!(
+            registry.handler(format).unwrap().write_plan(
+                &structure,
+                &mut source,
+                &Updates::new().remove_xmp()
+            ),
+            Err(Error::UnsupportedFeature("read-only TIFF raw format"))
+        ));
+    }
+
+    assert!(matches!(
+        Structure::parse(&registry, &mut Cursor::new(b"not a TIFF"), None),
+        Err(Error::UnsupportedFormat)
+    ));
+    let mut unknown_extension_source = Cursor::new(bytes.clone());
+    let unknown_extension_structure = Structure::parse(
+        &registry,
+        &mut unknown_extension_source,
+        Some("unknown-raw-extension"),
+    )
+    .unwrap();
+    assert!(matches!(
+        registry.detect(&bytes).unwrap().write_plan(
+            &unknown_extension_structure,
+            &mut unknown_extension_source,
+            &Updates::new().remove_xmp()
+        ),
+        Err(Error::UnsupportedFeature("read-only TIFF raw format"))
+    ));
+    assert!(matches!(
+        Structure::parse(
+            &registry,
+            &mut Cursor::new(b"not a TIFF"),
+            Some("unknown-raw-extension")
+        ),
+        Err(Error::UnsupportedFormat)
+    ));
+}
+
+#[test]
+fn tiff_and_dng_formats_remain_writable() {
+    let registry = HandlerRegistry::with_builtin();
+    let tiff = fixture(FORMATS[0], 1, &[]);
+    let dng = fixture(FORMATS[0], 1, &[(50706, 1, vec![1, 6, 0, 0])]);
+    for (format, bytes) in [("tif", tiff), ("dng", dng)] {
+        let mut source = Cursor::new(bytes.clone());
+        let structure = Structure::parse(&registry, &mut source, Some(format)).unwrap();
+        assert!(registry
+            .handler(format)
+            .unwrap()
+            .write_plan(
+                &structure,
+                &mut source,
+                &Updates::new().set_xmp(b"<xmp/>".to_vec())
+            )
+            .is_ok());
+    }
 }
 
 #[test]

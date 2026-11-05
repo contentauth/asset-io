@@ -74,4 +74,6 @@ pub(crate) fn register_builtin(registry: &mut HandlerRegistry) {
     registry.add_arc(tiff::handler());
     #[cfg(feature = "c2pa")]
     registry.add_arc(c2pa::handler());
+    #[cfg(feature = "tiff")]
+    registry.add_arc(tiff::readonly_handler());
 }
