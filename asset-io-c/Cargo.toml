@@ -14,7 +14,7 @@ name = "asset_io_c"
 crate-type = ["rlib", "cdylib", "staticlib"]
 
 [dependencies]
-asset-io = { path = "..", version = "0.3.0", default-features = false }
+asset-io = { path = "..", version = "0.3.1", default-features = false }
 cimpl = "=0.4.1"
 serde_json = "1"
 
