@@ -275,6 +275,22 @@ The [Tokio example](examples/tokio_client.rs) uses these adapters; the
 cargo run --example tokio_client --features all-formats,tokio -- inspect image.jpg
 ```
 
+The [HTTPS range example](examples/https_range.rs) shows the same parser over a
+seekable URL-backed stream. It issues bounded 64 KiB `Range` requests, including
+for offsets above 4 GiB, and requires the server to provide a `HEAD` content
+length and honor range requests with `206 Partial Content`. It does not fall
+back to downloading the full object if ranges are unsupported:
+
+```sh
+cargo run --example https_range --features all-formats,tokio,https-example -- https://example.com/video.mp4
+```
+
+This example demonstrates container parsing and structural inspection only.
+`asset-io` does not validate C2PA signatures or content hashes; an application
+can use the same seekable source with its higher-level validation logic. As
+with all asset-io sources, the remote object must stay unchanged for the duration
+of validation; use a versioned or immutable URL when that guarantee matters.
+
 ## Sinks
 
 `write(src, out, updates, sink)` and `read(src, sink)` both end with a `Sink`. It receives every byte, in order, tagged with its segment and role, so a caller can hash while reading or writing. Runs the sink doesn't `want` are not read.
