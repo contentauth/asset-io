@@ -43,6 +43,15 @@ cc -std=c11 -Wall -Wextra -Werror -Iasset-io-c/include \
 asset-io-c/target/c-smoke
 ```
 
+Run the C binding tests with every container enabled (the repository's
+`make test` also runs this suite):
+
+```sh
+cargo test --locked --manifest-path asset-io-c/Cargo.toml --features all-formats
+# or
+make test-c-ffi
+```
+
 The explicit `--target-dir` makes the linker example independent of global Cargo
 target-directory settings. The linker example works on macOS/Linux. Windows consumers must supply their
 platform's DLL search path/import library configuration. When linking the static

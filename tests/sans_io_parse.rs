@@ -122,13 +122,13 @@ fn a_damaged_file_fails_the_same_way_through_a_task() {
 }
 
 #[test]
-fn a_format_nobody_claims_is_unsupported() {
+fn unknown_formats_are_checked_after_content_detection() {
     let reg = HandlerRegistry::builtin();
     let (got, requests) = drive(Structure::parse_task(&reg, 10, Some("nope")), b"not a file");
     assert!(matches!(got, Err(Error::UnsupportedFormat)));
-    assert_eq!(
-        requests, 0,
-        "an unknown explicit format does not trigger detection"
+    assert!(
+        requests > 0,
+        "content detection runs before format fallback"
     );
     let (got, _) = drive(Structure::parse_task(&reg, 12, None), b"not an image");
     assert!(matches!(got, Err(Error::UnsupportedFormat)));

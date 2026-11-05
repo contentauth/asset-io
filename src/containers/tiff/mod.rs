@@ -218,6 +218,20 @@ pub fn handler() -> Arc<dyn ContainerHandler> {
     Arc::new(TiffHandler)
 }
 
+/// A TIFF parser registered for raw formats and content-detected TIFF files.
+///
+/// Unlike [`TiffHandler`], this handler rejects every write plan. It can expose
+/// the TIFF structures understood by this parser, but does not promise to
+/// preserve proprietary camera metadata.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ReadOnlyTiffHandler;
+
+pub fn readonly_handler() -> Arc<dyn ContainerHandler> {
+    Arc::new(ReadOnlyTiffHandler)
+}
+
+const TIFF_SIGNATURES: [&[u8]; 4] = [b"II\x2a\0", b"MM\0\x2a", b"II\x2b\0", b"MM\0\x2b"];
+
 impl ContainerHandler for TiffHandler {
     fn id(&self) -> &'static str {
         ID
@@ -231,18 +245,12 @@ impl ContainerHandler for TiffHandler {
         FORMATS
     }
 
-    fn detect(&self, header: &[u8]) -> bool {
-        header.starts_with(b"II\x2a\0")
-            || header.starts_with(b"MM\0\x2a")
-            || header.starts_with(b"II\x2b\0")
-            || header.starts_with(b"MM\0\x2b")
+    fn detect(&self, _header: &[u8]) -> bool {
+        false
     }
 
-    fn parse_async(self: Arc<Self>, mut io: Io) -> BoxFuture<'static, Result<Structure>> {
-        Box::pin(async move {
-            let state = read_layout(&mut io).await?;
-            structure(self, io.len(), Arc::new(state))
-        })
+    fn parse_async(self: Arc<Self>, io: Io) -> BoxFuture<'static, Result<Structure>> {
+        parse_tiff(self, io)
     }
 
     fn write_plan_async<'f, 'a: 'f>(
@@ -261,28 +269,90 @@ impl ContainerHandler for TiffHandler {
         }
     }
 
-    // C2PA excludes the manifest store's value bytes and the count field of its IFD
-    // entry, which a store of another size changes (as c2pa-rs's TIFF handler does).
-    // An inline value sits in the entry's value field, right after the count.
     fn c2pa_data_hash_exclusions(
         &self,
         structure: &Structure,
         item: &Item,
     ) -> Result<Vec<ByteRange>> {
-        let entry = layout(structure)?.manifest_entry().ok_or(Error::NotFound {
-            what: "TIFF C2PA manifest entry",
-        })?;
-        let value = entry
-            .value_range()
-            .ok_or_else(|| Error::InvalidFormat("TIFF C2PA entry has no value range".into()))?;
-        let mut extents = item.extents().map(|extent| extent.range());
-        if extents.next() != Some(value) || extents.next().is_some() {
-            return Err(Error::InvalidFormat(
-                "item is not the value of the TIFF C2PA manifest entry".into(),
-            ));
-        }
-        Ok(vec![entry.count_range(), value])
+        tiff_c2pa_data_hash_exclusions(structure, item)
     }
+}
+
+impl ContainerHandler for ReadOnlyTiffHandler {
+    fn id(&self) -> &'static str {
+        ID
+    }
+
+    fn formats(&self) -> &[FormatSpec] {
+        const FORMATS: &[FormatSpec] = &[
+            FormatSpec::new("image/x-sony-arw", "arw"),
+            FormatSpec::new("image/x-nikon-nef", "nef"),
+        ];
+        FORMATS
+    }
+
+    fn detect(&self, header: &[u8]) -> bool {
+        TIFF_SIGNATURES
+            .iter()
+            .any(|signature| header.starts_with(signature))
+    }
+
+    fn parse_async(self: Arc<Self>, io: Io) -> BoxFuture<'static, Result<Structure>> {
+        parse_tiff(self, io)
+    }
+
+    fn write_plan_async<'f, 'a: 'f>(
+        &'f self,
+        _source: &'f Structure,
+        _io: Io,
+        _updates: &'a Updates,
+    ) -> BoxFuture<'f, Result<WritePlan<'a>>> {
+        Box::pin(async { Err(Error::UnsupportedFeature("read-only TIFF raw format")) })
+    }
+
+    fn compose(&self, kind: ItemKind, data: &[u8]) -> Result<Vec<u8>> {
+        match kind {
+            ItemKind::Jumbf | ItemKind::Xmp => Ok(data.to_vec()),
+            _ => Err(Error::UnsupportedFormat),
+        }
+    }
+
+    fn c2pa_data_hash_exclusions(
+        &self,
+        structure: &Structure,
+        item: &Item,
+    ) -> Result<Vec<ByteRange>> {
+        tiff_c2pa_data_hash_exclusions(structure, item)
+    }
+}
+
+fn parse_tiff(
+    handler: Arc<dyn ContainerHandler>,
+    mut io: Io,
+) -> BoxFuture<'static, Result<Structure>> {
+    Box::pin(async move {
+        let state = read_layout(&mut io).await?;
+        structure(handler, io.len(), Arc::new(state))
+    })
+}
+
+// C2PA excludes the manifest store's value bytes and the count field of its IFD
+// entry, which a store of another size changes. An inline value sits in the
+// entry's value field, right after the count.
+fn tiff_c2pa_data_hash_exclusions(structure: &Structure, item: &Item) -> Result<Vec<ByteRange>> {
+    let entry = layout(structure)?.manifest_entry().ok_or(Error::NotFound {
+        what: "TIFF C2PA manifest entry",
+    })?;
+    let value = entry
+        .value_range()
+        .ok_or_else(|| Error::InvalidFormat("TIFF C2PA entry has no value range".into()))?;
+    let mut extents = item.extents().map(|extent| extent.range());
+    if extents.next() != Some(value) || extents.next().is_some() {
+        return Err(Error::InvalidFormat(
+            "item is not the value of the TIFF C2PA manifest entry".into(),
+        ));
+    }
+    Ok(vec![entry.count_range(), value])
 }
 
 fn checked_range(at: u64, len: u64, total: u64) -> Result<ByteRange> {

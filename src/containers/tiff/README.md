@@ -3,8 +3,12 @@
 The handler supports classic TIFF and BigTIFF in both byte orders, including
 multi-page TIFF, DNG SubIFDs, EXIF, GPS, and interoperability directory links.
 Enabled by the `tiff` feature (also in `all-formats`).
-The declared formats are `tif`, `tiff`, and `dng`;
-DNG is identified by its `DNGVersion` tag when parsing by content.
+The writable formats are `tif`, `tiff`, and `dng`; DNG is identified by its
+`DNGVersion` tag when parsing by content. `arw` and `nef` are explicit
+read-only aliases. When no format is supplied and no other handler recognizes
+the content, or an explicit extension is unrecognized, a TIFF signature selects
+a read-only TIFF parser. Unknown extensions are not registered as writable TIFF
+formats.
 
 ## Metadata and writes
 
@@ -28,7 +32,7 @@ Inline TIFF values are supported, including small metadata placeholders.
 use asset_io::{Asset, HandlerRegistry, NullSink, Updates};
 
 let registry = HandlerRegistry::new().with_handler(asset_io::containers::tiff::TiffHandler);
-let asset = Asset::open_with(&registry, std::fs::File::open("image.dng")?, None)?;
+let asset = Asset::open_with(&registry, std::fs::File::open("image.dng")?, Some("dng"))?;
 if let Some(store) = asset.c2pa_store()? {
     println!("manifest store: {} bytes", store.len());
 }
@@ -45,7 +49,9 @@ Unknown field types are preserved without guessing their value geometry.
 Malformed bounds, cyclic links, duplicate tags, and metadata that aliases other
 fields or known image data are errors. Directory, nesting, and entry limits
 bound work on untrusted streams. This handler does not decode pixels, interpret
-manifest contents, sign assets, or claim support for proprietary ARW/NEF writes.
+manifest contents, or sign assets. The read-only raw aliases and signature
+fallback expose only the TIFF structures this parser understands; they do not
+promise to preserve or rewrite proprietary camera metadata.
 
 ## Primary reference
 

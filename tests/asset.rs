@@ -159,10 +159,18 @@ fn borrowed_and_owned_sources_behave_the_same() {
 
 #[test]
 fn opening_reports_format_selection_and_parse_errors() {
-    assert!(matches!(
-        Asset::open(Cursor::new(JPEG), Some("unknown")),
-        Err(Error::UnsupportedFormat)
-    ));
+    assert_eq!(
+        Asset::open(Cursor::new(JPEG), Some("unknown"))
+            .unwrap()
+            .container_id(),
+        "jpeg"
+    );
+    assert_eq!(
+        Asset::open(Cursor::new(JPEG), Some("png"))
+            .unwrap()
+            .container_id(),
+        "jpeg"
+    );
     // SVG has no detector: it needs an explicit format.
     assert!(matches!(
         Asset::open(Cursor::new(SVG), None),

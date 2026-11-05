@@ -46,10 +46,20 @@ fn error() -> String {
 fn registry() -> Handle<AssetIoRegistry> {
     owned(asset_io_registry_new(1))
 }
+fn format_for(input: &[u8]) -> Option<CString> {
+    let is_tiff = input.starts_with(b"II\x2a\0")
+        || input.starts_with(b"MM\0\x2a")
+        || input.starts_with(b"II\x2b\0")
+        || input.starts_with(b"MM\0\x2b");
+    is_tiff.then(|| CString::new("tif").unwrap())
+}
 fn parse(r: &Handle<AssetIoRegistry>, data: &[u8]) -> Handle<AssetIoAsset> {
+    let format = format_for(data);
     owned(asset_io_parse_memory(
         r.0,
-        ptr::null(),
+        format
+            .as_ref()
+            .map_or(ptr::null(), |format| format.as_ptr()),
         data.as_ptr(),
         data.len(),
     ))
@@ -285,9 +295,12 @@ fn callbacks_short_reads_failures_stream_and_reentry() {
             reads: 0,
         };
         let ctx = (&mut c as *mut Context).cast();
+        let format = format_for(input);
         let a = owned(asset_io_parse_source(
             r.0,
-            ptr::null(),
+            format
+                .as_ref()
+                .map_or(ptr::null(), |format| format.as_ptr()),
             input.len() as u64,
             Some(read),
             ctx,
@@ -329,14 +342,28 @@ fn callbacks_short_reads_failures_stream_and_reentry() {
             -1
         );
         assert_eq!(asset_io_write_stream(a.0, u.0, Some(chunk), ctx), -1);
-        assert!(
-            asset_io_parse_source(r.0, ptr::null(), input.len() as u64, Some(read), ctx).is_null()
-        );
+        assert!(asset_io_parse_source(
+            r.0,
+            format
+                .as_ref()
+                .map_or(ptr::null(), |format| format.as_ptr()),
+            input.len() as u64,
+            Some(read),
+            ctx
+        )
+        .is_null());
         c.fail = false;
         c.overread = true;
-        assert!(
-            asset_io_parse_source(r.0, ptr::null(), input.len() as u64, Some(read), ctx).is_null()
-        );
+        assert!(asset_io_parse_source(
+            r.0,
+            format
+                .as_ref()
+                .map_or(ptr::null(), |format| format.as_ptr()),
+            input.len() as u64,
+            Some(read),
+            ctx
+        )
+        .is_null());
         assert!(asset_io_parse_source(r.0, ptr::null(), 0, None, ctx).is_null());
         assert_eq!(asset_io_write_stream(a.0, u.0, None, ctx), -1);
         assert_eq!(asset_io_read_stream(a.0, None, ctx), -1);

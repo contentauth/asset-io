@@ -308,10 +308,8 @@ mod tests {
         assert_eq!(reg.container_for("application/x-toy"), Some("toy"));
         let s = Structure::parse(&reg, &mut Cursor::new(toy_bytes()), None).unwrap();
         assert_eq!(s.container_id(), "toy");
-        assert!(matches!(
-            Structure::parse(&reg, &mut Cursor::new(toy_bytes()), Some("xyz")),
-            Err(Error::UnsupportedFormat)
-        ));
+        let s = Structure::parse(&reg, &mut Cursor::new(toy_bytes()), Some("xyz")).unwrap();
+        assert_eq!(s.container_id(), "toy");
     }
 
     #[test]
@@ -348,11 +346,10 @@ mod tests {
         over.extend_from(&base);
         over.add_handler(Toy2);
 
-        // The later handler wins "toy"; the earlier one still serves the format
-        // string the later one does not claim.
+        // Content detection takes precedence over a mismatched explicit format.
         assert!(matches!(
             Structure::parse(&over, &mut Cursor::new(toy_bytes()), Some("toy")),
-            Err(Error::InvalidFormat(_))
+            Ok(s) if s.container_id() == "toy"
         ));
         assert!(Structure::parse(
             &over,
