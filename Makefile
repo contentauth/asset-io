@@ -1,4 +1,4 @@
-.PHONY: ci check-format fmt check-docs clippy test doc fuzz-build fuzz fuzz-parse fuzz-write fuzz-xmp fuzz-mpf fuzz-conform fuzz-regress
+.PHONY: ci check-format fmt check-docs clippy test test-each-format test-c-ffi doc fuzz-build fuzz fuzz-parse fuzz-write fuzz-xmp fuzz-mpf fuzz-conform fuzz-regress
 
 ifeq ($(OS),Windows_NT)
 	PLATFORM := win
@@ -43,14 +43,23 @@ clippy:
 	cargo clippy --no-default-features --all-targets -- -D warnings
 
 test:
-	$(CARGO_TEST) --no-default-features
-	cargo test --doc --no-default-features
+	$(CARGO_TEST)
+	cargo test --doc
+	$(CARGO_TEST) --all-features
+	cargo test --doc --all-features
+	$(MAKE) test-c-ffi
+
+# Test each built-in container feature in isolation, in addition to the usual
+# default and all-features coverage in `make test`.
+test-each-format:
 	@set -e; for handler in jpeg png bmff riff svg pdf tiff c2pa; do \
 		$(CARGO_TEST) --no-default-features --features $$handler; \
 		cargo test --doc --no-default-features --features $$handler; \
 	done
-	$(CARGO_TEST) --all-features
-	cargo test --doc --all-features
+
+# Test the separate application-facing C bindings crate with every format enabled.
+test-c-ffi:
+	cargo test --locked --manifest-path asset-io-c/Cargo.toml --features all-formats
 
 # Builds and views documentation as docs.rs shows it, with feature badges.
 doc:
