@@ -14,7 +14,7 @@ jobs:
       name: publish
       url: https://crates.io/crates/asset-io
     permissions:
-      contents: read
+      contents: write
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +24,34 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Check release version
+        id: version
+        shell: bash
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "asset-io") | .version')"
+          tag="v$version"
+          versions="$(curl --fail --silent --show-error https://crates.io/api/v1/crates/asset-io/versions)"
+          jq -e '.versions | type == "array"' <<<"$versions" >/dev/null
+          if jq -e --arg version "$version" '.versions | any(.num == $version)' <<<"$versions" >/dev/null; then
+            echo "asset-io $version is already published on crates.io" >&2
+            exit 1
+          fi
+
+          set +e
+          git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "Git tag $tag already exists" >&2
+            exit 1
+          elif [ "$status" -ne 2 ]; then
+            echo "Unable to check whether Git tag $tag exists" >&2
+            exit "$status"
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Test all features
         run: cargo test --locked --all-features
@@ -36,3 +64,8 @@ jobs:
         run: cargo publish --locked
         env:
           CARGO_REGISTRIES_CRATES_IO_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ steps.version.outputs.tag }}" --target "$GITHUB_SHA" --title "${{ steps.version.outputs.tag }}" --generate-notes
