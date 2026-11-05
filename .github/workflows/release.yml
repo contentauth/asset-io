@@ -31,7 +31,9 @@ jobs:
         run: |
           version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "asset-io") | .version')"
           tag="v$version"
-          versions="$(curl --fail --silent --show-error https://crates.io/api/v1/crates/asset-io/versions)"
+          versions="$(curl --fail --silent --show-error \
+            --user-agent "asset-io-release-workflow (https://github.com/contentauth/asset-io)" \
+            https://crates.io/api/v1/crates/asset-io/versions)"
           jq -e '.versions | type == "array"' <<<"$versions" >/dev/null
           if jq -e --arg version "$version" '.versions | any(.num == $version)' <<<"$versions" >/dev/null; then
             echo "asset-io $version is already published on crates.io" >&2
