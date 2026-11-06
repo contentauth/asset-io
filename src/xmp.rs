@@ -298,8 +298,10 @@ fn get_keys_impl(xmp: &str, keys: &[&str]) -> Vec<Option<String>> {
                         // Check if this attribute matches any of our keys
                         for (i, key) in keys.iter().enumerate() {
                             if attr.key == QName(key.as_bytes()) {
-                                // Use decode_and_unescape_value to handle XML entities
-                                if let Ok(s) = attr.decode_and_unescape_value(reader.decoder()) {
+                                if let Ok(s) = attr.decoded_and_normalized_value(
+                                    quick_xml::XmlVersion::Implicit1_0,
+                                    reader.decoder(),
+                                ) {
                                     // Overwrite if found in later block (last wins)
                                     results[i] = Some(s.to_string());
                                 }
@@ -311,8 +313,12 @@ fn get_keys_impl(xmp: &str, keys: &[&str]) -> Vec<Option<String>> {
                     for (i, key) in keys.iter().enumerate() {
                         if e.name() == QName(key.as_bytes()) {
                             if let Ok(s) = reader.read_text(e.name()) {
-                                // Overwrite if found in later block (last wins)
-                                results[i] = Some(s.to_string());
+                                if let Ok(s) = s.xml_content(quick_xml::XmlVersion::Implicit1_0) {
+                                    if let Ok(s) = quick_xml::escape::unescape(&s) {
+                                        // Overwrite if found in later block (last wins)
+                                        results[i] = Some(s.into_owned());
+                                    }
+                                }
                             }
                         }
                     }
@@ -678,6 +684,16 @@ mod tests {
         assert_eq!(values[0], Some("image/jpeg".to_string()));
         assert_eq!(values[1], Some("xmp.did:1234".to_string()));
         assert_eq!(values[2], None);
+    }
+
+    #[test]
+    fn test_get_unescapes_attribute_and_element_values() {
+        let xmp = MiniXmp::new(
+            r#"<rdf:Description dc:attribute="Tom &amp; Jerry"><dc:element>Tom &amp; Jerry</dc:element></rdf:Description>"#,
+        );
+
+        assert_eq!(xmp.get("dc:attribute"), Some("Tom & Jerry".to_string()));
+        assert_eq!(xmp.get("dc:element"), Some("Tom & Jerry".to_string()));
     }
 
     #[test]

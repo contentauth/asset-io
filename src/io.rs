@@ -118,6 +118,15 @@ impl Io {
         Io::new(self.total, self.link.clone())
     }
 
+    #[cfg(feature = "svg")]
+    pub(crate) fn into_tokio_reader(self) -> TokioReader {
+        TokioReader {
+            io: self,
+            pos: 0,
+            asked: false,
+        }
+    }
+
     fn covers(&self, offset: u64, len: usize) -> bool {
         offset >= self.start
             && offset
@@ -185,6 +194,63 @@ impl Io {
         v.truncate(len);
         self.start = 0;
         Ok(v)
+    }
+}
+
+#[cfg(feature = "svg")]
+/// Adapts task-driven reads to Tokio's I/O traits without requiring a runtime.
+pub(crate) struct TokioReader {
+    io: Io,
+    pos: u64,
+    asked: bool,
+}
+
+#[cfg(feature = "svg")]
+impl tokio::io::AsyncRead for TokioReader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+
+        if this.asked {
+            let mut slot = this.io.link.lock();
+            this.io.win = std::mem::take(&mut slot.buf);
+            slot.request = None;
+            this.io.start = this.pos;
+            this.asked = false;
+            if !this.io.covers(this.pos, 1) {
+                return Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "failed to fill whole buffer",
+                )));
+            }
+        }
+
+        if this.io.covers(this.pos, 1) {
+            let from = (this.pos - this.io.start) as usize;
+            let count = (this.io.win.len() - from).min(buf.remaining());
+            buf.put_slice(&this.io.win[from..from + count]);
+            this.pos += count as u64;
+            return Poll::Ready(Ok(()));
+        }
+
+        if this.pos == this.io.total {
+            return Poll::Ready(Ok(()));
+        }
+
+        let window = (DEFAULT_WINDOW as u64).min(this.io.total - this.pos) as usize;
+        let mut bytes = std::mem::take(&mut this.io.win);
+        bytes.clear();
+        let mut slot = this.io.link.lock();
+        slot.request = Some((this.pos, 1, window));
+        slot.buf = bytes;
+        this.asked = true;
+        Poll::Pending
     }
 }
 
