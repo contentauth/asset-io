@@ -11,6 +11,8 @@
 //! inside the adapters. Sources must be seekable and remain unchanged between
 //! parsing and subsequent reads or writes. Sink callbacks run synchronously on
 //! the calling task and should not block.
+//! [`Asset`] pairs a parsed structure with its async source and serializes access
+//! to that source across reads and writes.
 //!
 //! ```no_run
 //! # async fn example() -> asset_io::Result<()> {
@@ -41,6 +43,108 @@ use crate::{
     task::{Progress, Task},
     HandlerRegistry, Item, Result, Sink, Structure, Updates,
 };
+
+/// A parsed [`Structure`] paired with its asynchronous source.
+///
+/// Reads and writes share a seekable source, so operations are serialized. The
+/// source must continue to describe the parsed bytes and must not be changed
+/// externally between operations.
+pub struct Asset<S> {
+    structure: Structure,
+    source: ::tokio::sync::Mutex<S>,
+}
+
+impl<S> Asset<S> {
+    /// Pair an existing structure with its source.
+    pub fn from_parts(structure: Structure, source: S) -> Self {
+        Self {
+            structure,
+            source: ::tokio::sync::Mutex::new(source),
+        }
+    }
+
+    /// The parsed structure.
+    pub fn structure(&self) -> &Structure {
+        &self.structure
+    }
+
+    /// Mutable access to the source when no operation is borrowing this asset.
+    pub fn source_mut(&mut self) -> &mut S {
+        self.source.get_mut()
+    }
+
+    /// Consume the asset and return its structure and source.
+    pub fn into_parts(self) -> (Structure, S) {
+        (self.structure, self.source.into_inner())
+    }
+
+    /// Consume the asset and return its source.
+    pub fn into_source(self) -> S {
+        self.source.into_inner()
+    }
+}
+
+impl<S: AsyncRead + AsyncSeek + Unpin> Asset<S> {
+    /// Parse `source` using the built-in handlers.
+    pub async fn open(source: S, format: Option<&str>) -> Result<Self> {
+        Self::open_with(&HandlerRegistry::builtin(), source, format).await
+    }
+
+    /// Parse `source` using a handler from `registry`.
+    pub async fn open_with(
+        registry: &HandlerRegistry,
+        mut source: S,
+        format: Option<&str>,
+    ) -> Result<Self> {
+        let structure = parse(registry, &mut source, format).await?;
+        Ok(Self::from_parts(structure, source))
+    }
+
+    /// Read an item's stored bytes without decoding its transfer encoding.
+    pub async fn read_item(&self, item: &Item) -> Result<Vec<u8>> {
+        let mut source = self.source.lock().await;
+        read_item(&self.structure, &mut *source, item).await
+    }
+
+    /// Read an item's content, undoing its transfer encoding when supported.
+    pub async fn read_content(&self, item: &Item) -> Result<Vec<u8>> {
+        let mut source = self.source.lock().await;
+        read_content(&self.structure, &mut *source, item).await
+    }
+
+    /// Find the asset's C2PA manifest-store item.
+    pub async fn c2pa_item(&self) -> Result<Option<&Item>> {
+        let mut source = self.source.lock().await;
+        c2pa_item(&self.structure, &mut *source).await
+    }
+
+    /// Read the decoded C2PA store, if present.
+    pub async fn c2pa_store(&self) -> Result<Option<Vec<u8>>> {
+        let mut source = self.source.lock().await;
+        c2pa_store(&self.structure, &mut *source).await
+    }
+
+    /// Plan the write of this asset with `updates` applied.
+    pub async fn write_plan<'a>(&self, updates: &'a Updates) -> Result<WritePlan<'a>> {
+        let mut source = self.source.lock().await;
+        write_plan(&self.structure, &mut *source, updates).await
+    }
+
+    /// Write the updated asset to `out` and return its resulting structure.
+    pub async fn write<W, Si>(
+        &self,
+        out: &mut W,
+        updates: &Updates,
+        sink: &mut Si,
+    ) -> Result<Structure>
+    where
+        W: AsyncWrite + Unpin + ?Sized,
+        Si: Sink + ?Sized,
+    {
+        let mut source = self.source.lock().await;
+        write(&self.structure, &mut *source, out, updates, sink).await
+    }
+}
 
 /// Run a task using asynchronous reads from `src`.
 ///

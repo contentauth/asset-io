@@ -44,6 +44,38 @@ fn store() -> Vec<u8> {
     bytes
 }
 
+#[tokio::test]
+async fn async_asset_owns_its_source_for_reads_and_writes() {
+    let registry = HandlerRegistry::builtin();
+    for (format, input) in inputs() {
+        let source = Cursor::new(input);
+        let asset = asset::Asset::open_with(&registry, source, Some(format))
+            .await
+            .unwrap();
+        let container = if format == "jpg" { "jpeg" } else { format };
+        assert_eq!(asset.structure().container_id(), container);
+
+        let updates = Updates::new().set_jumbf(store());
+        let mut output = Cursor::new(Vec::new());
+        let written = asset
+            .write(&mut output, &updates, &mut NullSink)
+            .await
+            .unwrap();
+        assert_eq!(written.items_of(ItemKind::Jumbf).count(), 1);
+
+        let parsed = asset::Asset::open_with(&registry, output, Some(format))
+            .await
+            .unwrap();
+        let item = parsed
+            .c2pa_item()
+            .await
+            .unwrap()
+            .expect("written C2PA store");
+        assert_eq!(parsed.read_content(item).await.unwrap(), store());
+        assert_eq!(parsed.c2pa_store().await.unwrap(), Some(store()));
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn spawned_adapters_match_blocking_reads_writes_and_sink_bytes() {
     for (format, input) in inputs() {

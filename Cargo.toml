@@ -25,7 +25,11 @@ quick-xml = { version = "0.41", optional = true, default-features = false }
 flate2 = { version = "1", optional = true, default-features = false, features = ["rust_backend"] }
 brotli-decompressor = { version = "5", optional = true, default-features = false, features = ["std"] }
 memmap2 = { version = "0.9", optional = true }
-tokio = { version = "1", features = ["io-util"], optional = true }
+tokio = { version = "1", features = ["io-util", "sync"], optional = true, default-features = false }
+clap = { version = "4", features = ["derive"], optional = true }
+glob = { version = "0.3", optional = true }
+serde_json = { version = "1", optional = true }
+tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
 sha2 = "0.11"
@@ -53,6 +57,26 @@ exif = []
 xmp = ["dep:quick-xml"]
 memory-mapped = ["dep:memmap2"]
 tokio = ["dep:tokio"]
+cli = [
+    "all-formats",
+    "xmp",
+    "exif",
+    "flate",
+    "brotli",
+    "tokio",
+    "dep:clap",
+    "dep:glob",
+    "dep:serde_json",
+    "dep:tempfile",
+    "tokio/fs",
+    "tokio/macros",
+    "tokio/rt-multi-thread",
+]
+
+[[bin]]
+name = "aio"
+path = "src/bin/aio.rs"
+required-features = ["cli"]
 
 [[example]]
 name = "inspect"
