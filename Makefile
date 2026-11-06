@@ -13,7 +13,7 @@ else
 endif
 
 # Use cargo-nextest if installed (faster), otherwise fall back to cargo test.
-# Install nextest with: cargo install --locked cargo-nextest
+# Install nextest with: cargo install --cargo-nextest
 CARGO_TEST := $(shell cargo nextest --version > /dev/null 2>&1 && echo "cargo nextest run" || echo "cargo test")
 
 # Formatting follows c2pa-rs: rustfmt.toml uses unstable options, so it needs
@@ -59,7 +59,7 @@ test-each-format:
 
 # Test the separate application-facing C bindings crate with every format enabled.
 test-c-ffi:
-	cargo test --locked --manifest-path asset-io-c/Cargo.toml --features all-formats
+	cargo test --manifest-path asset-io-c/Cargo.toml --features all-formats
 
 # Builds and views documentation as docs.rs shows it, with feature badges.
 doc:

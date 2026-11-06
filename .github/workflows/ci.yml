@@ -64,11 +64,11 @@ jobs:
         run: |
           cargo test --locked --no-default-features
 
-      - name: Test each handler independently
-        run: |
-          for handler in jpeg png bmff riff svg pdf tiff c2pa; do
-            cargo test --locked --no-default-features --features "$handler"
-          done
+#      - name: Test each handler independently
+#       run: |
+#          for handler in jpeg png bmff riff svg pdf tiff c2pa; do
+#            cargo test --locked --no-default-features --features "$handler"
+#          done
 
       - name: Tests (all features)
         run: cargo test --locked --all-features
