@@ -271,8 +271,65 @@ Sources must remain unchanged after parsing. Writes start at the destination's
 current position, flush on success, and may leave partial output on errors or
 cancellation. Sink callbacks are synchronous and should not block.
 
-The [Tokio example](examples/tokio_client.rs) uses these adapters; the
-[synchronous inspect example](examples/inspect.rs) uses the blocking APIs.
+Content detection takes precedence over the optional format argument. Pass an
+extension or MIME type, such as `Some("svg")`, for formats without a detector.
+Only handlers enabled or registered in your application are available.
+
+### The API in brief
+
+- **`Asset`** pairs a parsed file with its blocking stream. Start here for
+  reading and writing files.
+- **`Structure`** describes segments, metadata items and byte ranges without
+  owning the bytes. Use it for async I/O, write planning and hashing geometry.
+- **`Updates`** describes XMP and JUMBF changes. `write` returns the output's
+  structure; `plan` describes it without writing.
+- **`HandlerRegistry`** selects built-in or custom handlers. Libraries should
+  accept a registry and use `Asset::open_with` so callers control format support.
+
+`read_item` returns container-stored bytes; `read_content` undoes transfer
+encoding (such as base64 or compression). Missing optional decoders return
+`UnsupportedFeature`.
+
+## Supported formats and features
+
+Every built-in handler supports reading and metadata updates:
+
+| Feature | Formats | Notes |
+|---------|---------|-------|
+| `jpeg` | JPEG | Includes multi-picture JPEG (MPF) |
+| `png` | PNG | |
+| `bmff` | MP4, HEIF, HEIC, AVIF | Rewrites chunk offsets when needed |
+| `riff` | WebP, WAV, AVI | |
+| `svg` | SVG | Splices metadata without re-serializing the document |
+| `pdf` | PDF 1.0-2.0 | [Incremental updates](src/containers/pdf/README.md) |
+| `tiff` | TIFF, BigTIFF, DNG | [Append-only IFD updates](src/containers/tiff/README.md) |
+| `c2pa` | Raw C2PA sidecars | [Whole-file JUMBF storage](src/containers/c2pa/README.md) |
+| `id3` | MP3, FLAC | C2PA in a `GEOB` frame and XMP in a `PRIV` frame of a leading ID3v2.3/2.4 tag; [policy](src/containers/id3/mod.rs) |
+| `all-formats` | All of the above | |
+
+Optional features:
+
+| Feature | Adds |
+|---------|------|
+| `tokio` | Adapters for Tokio streams |
+| `memory-mapped` | `MappedFile` for borrowed reads; the file must not change while mapped |
+| `xmp` | `MiniXmp` for minimal XMP read/modify |
+| `exif` | Basic EXIF fields and EXIF JPEG thumbnails |
+| `flate` | zlib, deflate and gzip decoding; also enabled by `pdf` |
+| `brotli` | Brotli decoding |
+| `cli` | The `aio` tool, all formats, decoders, XMP, EXIF and Tokio |
+
+`all-formats` does not enable every optional feature.
+
+## Async I/O
+
+Enable `tokio` alongside your format features. The
+[`asset_io::tokio` adapters](https://docs.rs/asset-io/latest/asset_io/tokio/)
+provide async parsing, metadata reads and writes over Tokio streams; no custom
+task driver is needed.
+
+See the [Tokio example](examples/tokio_client.rs) for inspection, updates and
+hashing during writes:
 
 ```sh
 cargo run --example tokio_client --features all-formats,tokio -- inspect image.jpg
