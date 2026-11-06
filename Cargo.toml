@@ -20,7 +20,7 @@ thiserror = "1.0"
 # Container dependencies, enabled by the container features below.
 md5 = { version = "0.7", optional = true }
 memchr = { version = "2", optional = true }
-quick-xml = { version = "0.38", optional = true, default-features = false }
+quick-xml = { version = "0.41", optional = true, default-features = false }
 # Optional decoders and I/O.
 flate2 = { version = "1", optional = true, default-features = false, features = ["rust_backend"] }
 brotli-decompressor = { version = "5", optional = true, default-features = false, features = ["std"] }
