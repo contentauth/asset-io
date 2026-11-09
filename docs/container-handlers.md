@@ -11,6 +11,7 @@ complete handler written against only the public API. The
 documents the author-facing traits and builders, and the [user guide](guide.md)
 describes the model clients see.
 
+- [Design priorities](#design-priorities)
 - [Namespaces](#namespaces)
 - [Dependency and registration](#dependency-and-registration)
 - [Model invariants](#model-invariants)
@@ -19,6 +20,35 @@ describes the model clients see.
 - [C2PA hooks](#c2pa-hooks)
 - [Testing](#testing)
 - [Adding a built-in container](#adding-a-built-in-container)
+
+## Design priorities
+
+Every handler, and every change to the core, is weighed against these, in order:
+
+1. **Stable and safe against hostile input.** Assets come from untrusted
+   sources, and a handler must never panic, hang or exhaust memory on them.
+   - Check every length, offset and count before using it, with checked
+     arithmetic.
+   - Bound allocations, segment counts and nesting with the limits
+     `container_api` exports, such as `MAX_SEGMENTS` and `MAX_SEGMENT_SIZE`.
+   - Return an error for malformed or unsupported input rather than guessing.
+   - Don't use `unsafe`.
+   - Cover new parsing paths with the conformance checks and add fuzz seeds.
+2. **Highly performant: zero-copy wherever possible.**
+   - Parse by reading only the bytes a decision needs; never load the whole
+     asset.
+   - Describe writes as plans that copy unchanged segments straight through in
+     one streaming pass with bounded buffers.
+   - Borrow new data (`Cow`, slices) rather than copying it, as the GIF handler
+     does with sub-block payloads.
+   - Record what later operations need, such as JUMBF types or C2PA box
+     boundaries, while parsing, so they don't reread the asset.
+3. **Small code, few dependencies.**
+   - The core requires only `thiserror`.
+   - Prefer a few lines of format-specific code to a general-purpose crate.
+   - A dependency a container needs must be small, pure Rust, and optional
+     behind that container's feature, like `quick-xml` for SVG.
+   - Justify any new dependency in its pull request.
 
 ## Namespaces
 
@@ -67,8 +97,7 @@ a recognizable signature. Without one, callers must name the format.
   without reading it.
 - Expose what the format's specifications define. Placing portable content such as
   C2PA manifests is container knowledge; interpreting it is not.
-- Treat input as hostile: check lengths and offsets, bound allocations and nesting
-  with the exported limits, and return errors rather than guessing or panicking.
+- Treat input as hostile; see [Design priorities](#design-priorities).
 
 ## Parsing
 
