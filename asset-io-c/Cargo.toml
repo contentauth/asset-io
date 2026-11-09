@@ -1,12 +1,14 @@
-[workspace]
-
 [package]
 name = "asset-io-c"
-version = "0.3.2"
-edition = "2021"
-rust-version = "1.96"
-license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Application-facing C bindings for asset-io (not a handler plugin ABI)"
+# Distributed as C libraries built from this repository, not through crates.io.
+publish = false
 build = "build.rs"
 
 [lib]
@@ -14,15 +16,16 @@ name = "asset_io_c"
 crate-type = ["rlib", "cdylib", "staticlib"]
 
 [dependencies]
-asset-io = { path = "..", version = "0.3.2", default-features = false }
+asset-io.workspace = true
 cimpl = "=0.4.1"
 serde_json = "1"
 
 [build-dependencies]
 cbindgen = "=0.29.2"
 
+# Like asset-io, no container handlers are enabled by default.
 [features]
-default = ["jpeg", "png"]
+default = []
 jpeg = ["asset-io/jpeg"]
 png = ["asset-io/png"]
 bmff = ["asset-io/bmff"]

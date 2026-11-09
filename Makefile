@@ -18,7 +18,8 @@ CARGO_TEST := $(shell cargo nextest --version > /dev/null 2>&1 && echo "cargo ne
 
 # Formatting follows c2pa-rs: rustfmt.toml uses unstable options, so it needs
 # nightly rustfmt (rustup toolchain add nightly).
-FMT_MANIFESTS := Cargo.toml asset-io-c/Cargo.toml fuzz/Cargo.toml
+# The root workspace includes asset-io-c; fuzz is a separate cargo-fuzz workspace.
+FMT_MANIFESTS := Cargo.toml fuzz/Cargo.toml
 
 # Run the full CI preflight locally (mirrors .github/workflows/ci.yml).
 # Run this before pushing a PR.
@@ -26,13 +27,13 @@ ci: check-format check-docs clippy test
 
 check-format:
 	@set -e; for m in $(FMT_MANIFESTS); do \
-		cargo +nightly fmt --manifest-path $$m -- --check; \
+		cargo +nightly fmt --manifest-path $$m --all -- --check; \
 	done
 
 # Auto format code according to standards
 fmt:
 	@set -e; for m in $(FMT_MANIFESTS); do \
-		cargo +nightly fmt --manifest-path $$m; \
+		cargo +nightly fmt --manifest-path $$m --all; \
 	done
 
 check-docs:
@@ -41,6 +42,7 @@ check-docs:
 clippy:
 	cargo clippy --all-features --all-targets -- -D warnings
 	cargo clippy --no-default-features --all-targets -- -D warnings
+	cargo clippy -p asset-io-c --all-features --all-targets -- -D warnings
 
 test: check-format
 	$(CARGO_TEST)
@@ -57,9 +59,10 @@ test-each-format:
 		cargo test --doc --no-default-features --features $$handler; \
 	done
 
-# Test the separate application-facing C bindings crate with every format enabled.
+# Test the C bindings with no handlers and with every feature enabled.
 test-c-ffi:
-	cargo test --manifest-path asset-io-c/Cargo.toml --features all-formats
+	cargo test -p asset-io-c
+	cargo test -p asset-io-c --all-features
 
 # Builds and views documentation as docs.rs shows it, with feature badges.
 doc:
