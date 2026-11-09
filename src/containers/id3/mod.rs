@@ -54,8 +54,8 @@ use std::sync::Arc;
 
 use crate::{
     container_api::{
-        BoxFuture, ContainerHandler, Existing, FormatSpec, Io, ItemInfo, MetadataSlot,
-        PlanBuilder, StructureBuilder, WritePlan,
+        BoxFuture, ContainerHandler, Existing, FormatSpec, Io, ItemInfo, MetadataSlot, PlanBuilder,
+        StructureBuilder, WritePlan,
     },
     jumbf::superbox_type,
     ByteRange, C2paHash, Error, Item, ItemKind, Name, Result, SegmentId, SegmentKind, Structure,
@@ -211,7 +211,9 @@ impl Tag {
     /// Frames can be walked in place: v2.3 or v2.4, without unsynchronisation, an
     /// extended header or flags this code does not know.
     fn readable(&self) -> bool {
-        matches!(self.major, 3 | 4) && self.flags & !0x30 == 0 && (self.major == 4 || self.flags & 0x10 == 0)
+        matches!(self.major, 3 | 4)
+            && self.flags & !0x30 == 0
+            && (self.major == 4 || self.flags & 0x10 == 0)
     }
 
     fn footer(&self) -> u64 {
@@ -342,7 +344,10 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<St
     };
     let end = tag.map_or(0, |t| t.end());
     if end > total {
-        return Err(Error::invalid_segment(0, "ID3 tag extends past end of file"));
+        return Err(Error::invalid_segment(
+            0,
+            "ID3 tag extends past end of file",
+        ));
     }
 
     let lead = if total - end >= 4 {
@@ -493,7 +498,10 @@ fn plan<'a>(src: &Structure, head: [u8; 10], updates: &'a Updates) -> Result<Wri
         // A bare file or an opaque tag: nothing to rearrange.
         media = Some(SegmentId::from_index(m)?).filter(|_| !opaque);
     }
-    for (kind, add) in [(ItemKind::Xmp, xmp.pending()), (ItemKind::Jumbf, jumbf.pending())] {
+    for (kind, add) in [
+        (ItemKind::Xmp, xmp.pending()),
+        (ItemKind::Jumbf, jumbf.pending()),
+    ] {
         if let Some(d) = add {
             if opaque {
                 return Err(Error::UnsupportedFeature(
@@ -522,12 +530,13 @@ fn plan<'a>(src: &Structure, head: [u8; 10], updates: &'a Updates) -> Result<Wri
         };
         len = len.saturating_add(n);
     }
-    let size = u32::try_from(len).ok().filter(|&n| u64::from(n) <= MAX_TAG).ok_or(
-        Error::LimitExceeded {
+    let size = u32::try_from(len)
+        .ok()
+        .filter(|&n| u64::from(n) <= MAX_TAG)
+        .ok_or(Error::LimitExceeded {
             what: "ID3 tag size",
             limit: MAX_TAG,
-        },
-    )?;
+        })?;
 
     // The source's version and flags, without a footer, or a new v2.4 tag.
     let mut hdr = *b"ID3\x04\0\0\0\0\0\0";
@@ -536,14 +545,21 @@ fn plan<'a>(src: &Structure, head: [u8; 10], updates: &'a Updates) -> Result<Wri
         hdr[5] &= !0x10;
     }
     hdr[6..10].copy_from_slice(&to_synchsafe(size));
-    b.put_segment(SegmentKind::Preamble, HEADER, hdr.to_vec(), &[][..], &[][..])?;
+    b.put_segment(
+        SegmentKind::Preamble,
+        HEADER,
+        hdr.to_vec(),
+        &[][..],
+        &[][..],
+    )?;
     for op in body {
         match op {
             Op::Copy(id) => {
                 b.copy_segment(id)?;
             }
             Op::New { ty, prefix, data } => {
-                let mut header = frame_header(hdr[3], ty, (prefix.len() + data.len()) as u32).to_vec();
+                let mut header =
+                    frame_header(hdr[3], ty, (prefix.len() + data.len()) as u32).to_vec();
                 header.extend_from_slice(prefix);
                 let id = b.put_segment(
                     SegmentKind::Metadata,

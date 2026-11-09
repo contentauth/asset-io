@@ -42,7 +42,7 @@ clippy:
 	cargo clippy --all-features --all-targets -- -D warnings
 	cargo clippy --no-default-features --all-targets -- -D warnings
 
-test:
+test: check-format
 	$(CARGO_TEST)
 	cargo test --doc
 	$(CARGO_TEST) --all-features
