@@ -52,7 +52,7 @@ test: check-format
 # Test each built-in container feature in isolation, in addition to the usual
 # default and all-features coverage in `make test`.
 test-each-format:
-	@set -e; for handler in jpeg png bmff riff svg pdf tiff c2pa id3; do \
+	@set -e; for handler in jpeg png bmff riff svg pdf tiff c2pa gif id3; do \
 		$(CARGO_TEST) --no-default-features --features $$handler; \
 		cargo test --doc --no-default-features --features $$handler; \
 	done

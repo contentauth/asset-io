@@ -33,6 +33,9 @@ pub mod bmff;
 #[cfg(feature = "c2pa")]
 #[cfg_attr(docsrs, doc(cfg(feature = "c2pa")))]
 pub mod c2pa;
+#[cfg(feature = "gif")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gif")))]
+pub mod gif;
 #[cfg(feature = "id3")]
 #[cfg_attr(docsrs, doc(cfg(feature = "id3")))]
 pub mod id3;
@@ -77,6 +80,8 @@ pub(crate) fn register_builtin(registry: &mut HandlerRegistry) {
     registry.add_arc(tiff::handler());
     #[cfg(feature = "c2pa")]
     registry.add_arc(c2pa::handler());
+    #[cfg(feature = "gif")]
+    registry.add_arc(gif::handler());
     #[cfg(feature = "id3")]
     registry.add_arc(id3::handler());
     #[cfg(feature = "tiff")]

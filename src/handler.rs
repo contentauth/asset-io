@@ -142,7 +142,8 @@ pub trait ContainerHandler: std::fmt::Debug + Send + Sync {
     /// [`Structure::c2pa_hash`].
     ///
     /// The default is [`C2paHash::Box`] when every element of the container's own
-    /// structure has a [`box_name`](Self::box_name), so
+    /// structure has a [`box_name`](Self::box_name) or
+    /// [continues](Self::c2pa_box_continues) a box, so
     /// [`Structure::c2pa_boxes`] can list it, and [`C2paHash::Data`] otherwise:
     /// for containers without meaningful boxes.
     fn c2pa_hash(&self, structure: &Structure) -> Option<C2paHash> {
@@ -150,8 +151,10 @@ pub trait ContainerHandler: std::fmt::Debug + Send + Sync {
             .iter()
             .enumerate()
             .all(|(i, s)| {
-                SegmentId::from_index(i)
-                    .is_ok_and(|id| self.c2pa_box_name(structure, id, s).is_some())
+                SegmentId::from_index(i).is_ok_and(|id| {
+                    self.c2pa_box_name(structure, id, s).is_some()
+                        || self.c2pa_box_continues(structure, id, s)
+                })
             });
         Some(if named { C2paHash::Box } else { C2paHash::Data })
     }
@@ -168,6 +171,20 @@ pub trait ContainerHandler: std::fmt::Debug + Send + Sync {
         element: &Segment,
     ) -> Option<Cow<'static, str>> {
         self.box_name(element.name())
+    }
+
+    /// Whether `element` of `segment` is the rest of the box before it, so
+    /// [`Structure::c2pa_boxes`] lists both as one box. Called before
+    /// [`c2pa_box_name`](Self::c2pa_box_name). The default is `false`. A
+    /// container that splits one box into several segments overrides it: GIF
+    /// stores each data sub-block of an application extension as a segment.
+    fn c2pa_box_continues(
+        &self,
+        _structure: &Structure,
+        _segment: SegmentId,
+        _element: &Segment,
+    ) -> bool {
+        false
     }
 
     /// The ranges a C2PA data hash (`c2pa.hash.data`) excludes when `item` is the
