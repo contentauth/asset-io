@@ -1,6 +1,6 @@
 [package]
 name = "asset-io"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 authors = ["Gavin Peacock <gpeacock@adobe.com>"]
 license = "MIT OR Apache-2.0"
@@ -45,7 +45,8 @@ svg = ["dep:quick-xml", "dep:tokio", "quick-xml/async-tokio"]
 pdf = ["flate"]
 tiff = []
 c2pa = []
-all-formats = ["jpeg", "png", "bmff", "riff", "svg", "pdf", "tiff", "c2pa"]
+id3 = []
+all-formats = ["jpeg", "png", "bmff", "riff", "svg", "pdf", "tiff", "c2pa", "id3"]
 # Transfer-encoding decoders: zlib, raw deflate and gzip; Brotli.
 flate = ["dep:flate2"]
 brotli = ["dep:brotli-decompressor"]

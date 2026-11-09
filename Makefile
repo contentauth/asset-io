@@ -13,7 +13,7 @@ else
 endif
 
 # Use cargo-nextest if installed (faster), otherwise fall back to cargo test.
-# Install nextest with: cargo install --locked cargo-nextest
+# Install nextest with: cargo install --cargo-nextest
 CARGO_TEST := $(shell cargo nextest --version > /dev/null 2>&1 && echo "cargo nextest run" || echo "cargo test")
 
 # Formatting follows c2pa-rs: rustfmt.toml uses unstable options, so it needs
@@ -42,7 +42,7 @@ clippy:
 	cargo clippy --all-features --all-targets -- -D warnings
 	cargo clippy --no-default-features --all-targets -- -D warnings
 
-test:
+test: check-format
 	$(CARGO_TEST)
 	cargo test --doc
 	$(CARGO_TEST) --all-features
@@ -52,14 +52,14 @@ test:
 # Test each built-in container feature in isolation, in addition to the usual
 # default and all-features coverage in `make test`.
 test-each-format:
-	@set -e; for handler in jpeg png bmff riff svg pdf tiff c2pa; do \
+	@set -e; for handler in jpeg png bmff riff svg pdf tiff c2pa id3; do \
 		$(CARGO_TEST) --no-default-features --features $$handler; \
 		cargo test --doc --no-default-features --features $$handler; \
 	done
 
 # Test the separate application-facing C bindings crate with every format enabled.
 test-c-ffi:
-	cargo test --locked --manifest-path asset-io-c/Cargo.toml --features all-formats
+	cargo test --manifest-path asset-io-c/Cargo.toml --features all-formats
 
 # Builds and views documentation as docs.rs shows it, with feature badges.
 doc:
