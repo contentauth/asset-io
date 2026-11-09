@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/contentauth/asset-io/compare/v0.3.2...v0.4.0) - 2026-11-09
+
+### Added
+
+- add GIF container support
+- add ID3 metadata handler for MP3 and FLAC
+- svg stream parsing with quick-xml 0.41
+
+### Documentation
+
+- reorganize README and add user and handler guides
+
+### Fixed
+
+- remove orphaned svg doc comment
+- fix clippy tests in ci
+
+### Other
+
+- Automate release PRs and changelog with release-plz ([#34](https://github.com/contentauth/asset-io/pull/34))
+- make asset-io-c a workspace member ([#33](https://github.com/contentauth/asset-io/pull/33))
+- Add required open source files and make some README URLs absolute
+- check formatting in make test
+- *(gif)* support C2PA box hash
+
 ## [0.3.2](https://github.com/contentauth/asset-io/compare/v0.3.1...v0.3.2) - 2026-11-05
 
 ### Other
