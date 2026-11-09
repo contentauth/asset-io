@@ -270,8 +270,10 @@ fn plain(major: u8, format_flags: u8) -> bool {
 /// Length of the string at the start of `s`, terminator included.
 fn string_len(s: &[u8], encoding: u8) -> Option<usize> {
     if matches!(encoding, 1 | 2) {
-        s.chunks_exact(2)
-            .position(|c| c[0] == 0 && c[1] == 0)
+        s.as_chunks::<2>()
+            .0
+            .iter()
+            .position(|c| *c == [0, 0])
             .map(|i| 2 * i + 2)
     } else {
         s.iter().position(|&b| b == 0).map(|i| i + 1)
@@ -496,7 +498,7 @@ fn plan<'a>(src: &Structure, head: [u8; 10], updates: &'a Updates) -> Result<Wri
         }
     } else if let Some(m) = src.segments().len().checked_sub(1) {
         // A bare file or an opaque tag: nothing to rearrange.
-        media = Some(SegmentId::from_index(m)?).filter(|_| !opaque);
+        media = (!opaque).then_some(SegmentId::from_index(m)?);
     }
     for (kind, add) in [
         (ItemKind::Xmp, xmp.pending()),

@@ -243,10 +243,10 @@ fn rejects_bad_tags() {
 fn unreadable_tags_pass_through_untouched() {
     let hidden = geob(4, "application/c2pa", b"hidden");
     let cases = [
-        cat(&[&tag(4, 0x80, &[hidden.clone()], 0), &mp3()]), // unsynchronised
-        cat(&[&tag(4, 0x40, &[hidden.clone()], 0), &mp3()]), // extended header
-        cat(&[&tag(4, 0x01, &[hidden], 0), &mp3()]),         // unknown flag
-        cat(&[&tag(2, 0, &[], 4), &mp3()]),                  // ID3v2.2
+        cat(&[&tag(4, 0x80, std::slice::from_ref(&hidden), 0), &mp3()]), // unsynchronised
+        cat(&[&tag(4, 0x40, std::slice::from_ref(&hidden), 0), &mp3()]), // extended header
+        cat(&[&tag(4, 0x01, &[hidden], 0), &mp3()]),                     // unknown flag
+        cat(&[&tag(2, 0, &[], 4), &mp3()]),                              // ID3v2.2
     ];
     for f in cases {
         assert_eq!(parse(&f).unwrap().items().count(), 0);
