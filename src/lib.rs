@@ -117,7 +117,7 @@
 //! # Containers and features
 //!
 //! Each built-in container is a Cargo feature (`jpeg`, `png`, `bmff`, `riff`,
-//! `svg`, `pdf`, `tiff`, `c2pa`, or `all-formats`) and a module under
+//! `svg`, `pdf`, `tiff`, `c2pa`, `gif`, `id3`, or `all-formats`) and a module under
 //! [`containers`]. No container is enabled by default.
 //! [`HandlerRegistry::builtin`] holds the handlers of the enabled features, and
 //! handlers from other crates are registered at runtime. Without any container

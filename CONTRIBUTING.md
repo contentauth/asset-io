@@ -66,6 +66,25 @@ The conventional commit message requirement does not apply to individual commits
 
 TIP: For single-commit PRs, ensure the commit message conforms to the conventional commit requirement, since by default that will also be the title of the PR.
 
+## Development
+
+Formatting uses nightly-only rustfmt options, so install a nightly toolchain
+(`rustup toolchain add nightly`). Before opening a pull request, run the checks CI
+runs:
+
+```sh
+make ci    # nightly rustfmt check, docs, Clippy and tests
+make fmt   # apply formatting
+```
+
+No container formats are enabled by default. Configure your editor to check with
+all features (for rust-analyzer, `"rust-analyzer.cargo.features": "all"`), or
+errors in feature-gated containers appear only in CI.
+
+To add a container format, follow the
+[container handler guide](docs/container-handlers.md#adding-a-built-in-container).
+See [FUZZING_SETUP.md](FUZZING_SETUP.md) for fuzzing.
+
 ## From contributor to committer
 
 We love contributions from our community! If you'd like to go a step beyond contributor

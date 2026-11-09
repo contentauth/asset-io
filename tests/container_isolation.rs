@@ -20,7 +20,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const CONTAINERS: &[&str] = &["bmff", "c2pa", "jpeg", "pdf", "png", "riff", "svg", "tiff"];
+const CONTAINERS: &[&str] = &[
+    "bmff", "c2pa", "gif", "id3", "jpeg", "pdf", "png", "riff", "svg", "tiff",
+];
 
 /// Public modules a container may reach through `crate::`; everything else it
 /// uses comes from the crate root's client re-exports. Advanced client modules

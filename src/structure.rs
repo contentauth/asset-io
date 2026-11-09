@@ -668,7 +668,9 @@ impl Structure {
     ///
     /// Each element ([`elements`](Self::elements)) is one box, named by the
     /// handler's [`c2pa_box_name`](ContainerHandler::c2pa_box_name): a JPEG scan
-    /// with restart markers is its `SOS` box and one box per `RSTn`. Elements past
+    /// with restart markers is its `SOS` box and one box per `RSTn`. An element
+    /// that [continues](ContainerHandler::c2pa_box_continues) the box before it
+    /// is part of that box. Elements past
     /// the container's own structure that are boxes (later images of a
     /// Multi-Picture Format JPEG) are listed as they are. The segments of the C2PA
     /// manifest store ([`c2pa_item`](Self::c2pa_item)) are one box named
@@ -727,6 +729,22 @@ impl Structure {
                     }),
                 }
                 return Ok(());
+            }
+            if self.handler.c2pa_box_continues(self, id, element) {
+                return match boxes.last_mut() {
+                    Some(last)
+                        if after.is_none()
+                            && last.name != crate::C2PA_BOX
+                            && last.range.end() == range.offset() =>
+                    {
+                        last.range =
+                            ByteRange::new(last.range.offset(), last.range.len() + range.len())?;
+                        last.metadata
+                            .extend(metadata.iter().filter(|m| range.contains(m)).copied());
+                        Ok(())
+                    }
+                    _ => Err(unsupported("C2PA box hash: a continuation follows no box")),
+                };
             }
             match (
                 self.handler.c2pa_box_name(self, id, element),
