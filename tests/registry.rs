@@ -53,6 +53,8 @@ fn builtin_registry_contains_exactly_the_enabled_families() {
         ("dng", cfg!(feature = "tiff"), "tiff"),
         ("c2pa", cfg!(feature = "c2pa"), "c2pa"),
         ("gif", cfg!(feature = "gif"), "gif"),
+        ("mp3", cfg!(feature = "id3"), "id3"),
+        ("flac", cfg!(feature = "id3"), "id3"),
     ];
     for (extension, enabled, id) in families {
         assert_eq!(
