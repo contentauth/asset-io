@@ -40,15 +40,11 @@ jobs:
         with:
           components: clippy
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      # Caches dependencies, pruned of stale artifacts. Only main saves, so pull
+      # requests reuse its cache without evicting it.
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Clippy (all features)
         run: |
@@ -83,6 +79,12 @@ jobs:
         with:
           components: clippy
 
+      # Caches dependencies, pruned of stale artifacts. Only main saves, so pull
+      # requests reuse its cache without evicting it.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - name: Lint
         run: |
           cargo clippy --locked -p asset-io-c --all-features --all-targets -- -D warnings
@@ -94,10 +96,10 @@ jobs:
 
       - name: Compile and run C and C++ consumers
         run: |
-          cargo build --locked -p asset-io-c --all-features --target-dir asset-io-c/target
+          cargo build --locked -p asset-io-c --all-features
           cc -std=c11 -Wall -Wextra -Werror -Iasset-io-c/include asset-io-c/examples/smoke.c \
-            -Lasset-io-c/target/debug -lasset_io_c -Wl,-rpath,"$PWD/asset-io-c/target/debug" -o asset-io-c/target/c-smoke
-          asset-io-c/target/c-smoke
+            -Ltarget/debug -lasset_io_c -Wl,-rpath,"$PWD/target/debug" -o target/c-smoke
+          target/c-smoke
           c++ -x c++ -std=c++17 -Wall -Wextra -Werror -Iasset-io-c/include asset-io-c/examples/smoke.c \
-            -Lasset-io-c/target/debug -lasset_io_c -Wl,-rpath,"$PWD/asset-io-c/target/debug" -o asset-io-c/target/cpp-smoke
-          asset-io-c/target/cpp-smoke
+            -Ltarget/debug -lasset_io_c -Wl,-rpath,"$PWD/target/debug" -o target/cpp-smoke
+          target/cpp-smoke
