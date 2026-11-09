@@ -1,0 +1,39 @@
+name: PR title
+
+# Pull requests are squash-merged, so the title becomes the commit message and
+# the CHANGELOG.md entry (see release-plz.toml). Keep the types in sync with
+# CONTRIBUTING.md.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Conventional commit title
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test|update)(\([a-z0-9_-]+\))?!?: [^[:space:]].*$'
+          if printf '%s' "$TITLE" | grep -Eq "$pattern"; then
+            echo "PR title OK: $TITLE"
+            exit 0
+          fi
+          {
+            echo "PR title is not a conventional commit summary: $TITLE"
+            echo
+            echo "Use: type(scope): description"
+            echo "  type:        build, chore, ci, docs, feat, fix, perf, refactor, revert, style, test or update"
+            echo "  (scope):     optional, lowercase, such as (gif) or (c2pa_c_ffi)"
+            echo "  !            optional, after type or scope, marks a breaking change"
+            echo "  description: required, after a colon and a space"
+            echo
+            echo "Example: feat(gif): support C2PA box hash"
+            echo "See CONTRIBUTING.md#pull-request-titles"
+          } >&2
+          exit 1

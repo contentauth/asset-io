@@ -1,0 +1,25 @@
+# release-plz prepares releases: on each push to main it opens or updates a
+# release PR that bumps the workspace version and updates CHANGELOG.md.
+# It never publishes, tags or creates GitHub releases; after the release PR is
+# merged, run the Release workflow (.github/workflows/release.yml) to do that.
+# See https://release-plz.dev/docs/config.
+
+[workspace]
+# Bump 0.x versions by minor for new features, not only for breaking changes.
+features_always_increment_minor = true
+# Matches the tags release.yml creates; used for changelog compare links.
+git_tag_name = "v{{ version }}"
+publish = false
+git_tag_enable = false
+git_release_enable = false
+
+[changelog]
+commit_parsers = [
+  { message = "^Merge ", skip = true },
+  { message = "^chore: release", skip = true },
+  { message = "^feat", group = "added" },
+  { message = "^fix", group = "fixed" },
+  { message = "^perf", group = "performance" },
+  { message = "^docs?", group = "documentation" },
+  { message = "^.*", group = "other" },
+]

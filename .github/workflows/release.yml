@@ -55,6 +55,22 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+      # The release PR (release-plz.yml) adds this section; checked before
+      # publishing so a missing entry stops the release early.
+      - name: Extract release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          awk -v heading="## [$VERSION]" '
+            index($0, heading) == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/release-notes.md"; then
+            echo "CHANGELOG.md has no entry for $VERSION; merge the release PR first" >&2
+            exit 1
+          fi
+
       - name: Test all features
         run: cargo test --locked -p asset-io --all-features
 
@@ -70,4 +86,4 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ steps.version.outputs.tag }}" --target "$GITHUB_SHA" --title "${{ steps.version.outputs.tag }}" --generate-notes
+        run: gh release create "${{ steps.version.outputs.tag }}" --target "$GITHUB_SHA" --title "${{ steps.version.outputs.tag }}" --notes-file "$RUNNER_TEMP/release-notes.md"
