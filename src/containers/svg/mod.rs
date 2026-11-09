@@ -38,9 +38,11 @@
 //! [`Base64`](TransferEncoding::Base64) transfer encoding, which
 //! [`Structure::read_content`](crate::Structure::read_content) undoes. [`Structure::store`](crate::Structure::store) does that for you.
 //!
-//! The whole document is read to parse it (up to 256 MiB), since an XML parser needs
-//! it all. A manifest that is not in `svg > metadata` is not one; several are
-//! ambiguous, as in any container.
+//! The document is parsed in one pass through a buffered reader (up to 256 MiB).
+//! The reader retains its input window and current XML event, rather than a copy of
+//! the complete document. A single XML event, such as a large text node, is still
+//! buffered by quick-xml. A manifest that is not in `svg > metadata` is not one;
+//! several are ambiguous, as in any container.
 
 use std::{borrow::Cow, sync::Arc};
 
@@ -173,6 +175,7 @@ struct Element {
     header: u64,
     payload: u64,
     trailer: u64,
+    jumbf_type: Option<[u8; 16]>,
 }
 
 impl Element {
@@ -231,14 +234,15 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
-fn scan(data: &[u8]) -> Result<Scan> {
-    let mut reader = NsReader::from_reader(data);
+async fn scan(io: Io) -> Result<Scan> {
+    let mut reader = NsReader::from_reader(tokio::io::BufReader::new(io.into_tokio_reader()));
+    let mut buf = Vec::new();
     let mut depth = 0usize;
     let mut path = [Kind::Other; 3];
     let mut root_end = None;
     let mut metadata_end = None;
     let mut manifests: Vec<Element> = Vec::new();
-    let mut open: Option<(u64, u64)> = None;
+    let mut open: Option<(u64, u64, Option<Vec<u8>>)> = None;
     let mut xmps = Vec::new();
     // Where an xpacket began and how deep, and how shallow the document has been
     // since. Until it ends we do not know whether it is an item. Whether or not it is
@@ -249,9 +253,32 @@ fn scan(data: &[u8]) -> Result<Scan> {
 
     loop {
         let before = reader.buffer_position();
-        let (bound, event) = reader.read_resolved_event().map_err(xml_error)?;
+        let (bound, event) = reader
+            .read_resolved_event_into_async(&mut buf)
+            .await
+            .map_err(xml_error)?;
         let ns = ns_of(&bound);
         let after = reader.buffer_position();
+        if let Some((_, _, head)) = open.as_mut() {
+            if head.as_ref().is_some_and(|head| head.len() < TYPE_CHARS) {
+                match &event {
+                    Event::Text(text) => {
+                        if let Some(head) = head {
+                            let remaining = TYPE_CHARS - head.len();
+                            head.extend(
+                                text.as_ref()
+                                    .iter()
+                                    .copied()
+                                    .filter(|c| !c.is_ascii_whitespace())
+                                    .take(remaining),
+                            );
+                        }
+                    }
+                    Event::End(_) if depth == 3 => {}
+                    _ => *head = None,
+                }
+            }
+        }
         match event {
             Event::Start(e) => {
                 let first_root = depth == 0 && root_end.is_none();
@@ -273,7 +300,7 @@ fn scan(data: &[u8]) -> Result<Scan> {
                     metadata_end = Some(after);
                 }
                 if kind == Kind::Manifest {
-                    open = Some((before, after));
+                    open = Some((before, after, Some(Vec::with_capacity(TYPE_CHARS))));
                 }
                 if let Some(slot) = path.get_mut(depth) {
                     *slot = kind;
@@ -295,6 +322,7 @@ fn scan(data: &[u8]) -> Result<Scan> {
                         header: after - before,
                         payload: 0,
                         trailer: 0,
+                        jumbf_type: None,
                     });
                 }
             }
@@ -304,12 +332,15 @@ fn scan(data: &[u8]) -> Result<Scan> {
                     .ok_or_else(|| xml_error("an end tag with nothing open"))?;
                 low = low.min(depth);
                 if depth == 2 {
-                    if let Some((start, header_end)) = open.take() {
+                    if let Some((start, header_end, head)) = open.take() {
                         manifests.push(Element {
                             start,
                             header: header_end - start,
                             payload: before - header_end,
                             trailer: after - before,
+                            jumbf_type: head
+                                .and_then(|head| base64_decode(&head).ok())
+                                .and_then(|data| superbox_type(&data)),
                         });
                     }
                 }
@@ -339,6 +370,7 @@ fn scan(data: &[u8]) -> Result<Scan> {
             Event::Eof => break,
             _ => {}
         }
+        buf.clear();
     }
     if open.is_some() {
         return Err(Error::InvalidFormat(
@@ -401,7 +433,7 @@ struct Span {
     el: Element,
 }
 
-async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<Structure> {
+async fn parse_with(handler: Arc<dyn ContainerHandler>, io: Io) -> Result<Structure> {
     let total = io.len();
     if total > MAX_SEGMENT_SIZE {
         return Err(Error::LimitExceeded {
@@ -409,8 +441,7 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<St
             limit: MAX_SEGMENT_SIZE,
         });
     }
-    let data = io.read_vec(0, total as usize).await?;
-    let sc = scan(&data)?;
+    let sc = scan(io).await?;
 
     // Items do not overlap: what is inside one is part of it.
     let mut spans: Vec<Span> = sc
@@ -425,6 +456,7 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<St
             header: 0,
             payload: e - s,
             trailer: 0,
+            jumbf_type: None,
         },
     }));
     spans.sort_by_key(|s| s.el.start);
@@ -458,11 +490,9 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<St
             let id = b.push_span(SegmentKind::Metadata, Name::None, h, p, t)?;
             // An empty element holds no manifest.
             if p > 0 {
-                let text = &data[(s.el.start + s.el.header) as usize..][..p as usize];
-                let ty = base64_head(text).and_then(|head| superbox_type(&head));
                 b.item_of_segments(
                     ItemInfo::jumbf()
-                        .jumbf_type(ty)
+                        .jumbf_type(s.el.jumbf_type)
                         .transfer(TransferEncoding::Base64),
                     &[id],
                 )?;
@@ -492,17 +522,6 @@ fn gap(b: &mut StructureBuilder, from: u64, to: u64, cut: Option<u64>) -> Result
         b.push_span(SegmentKind::Other, Name::None, 0, to - from, 0)?;
     }
     Ok(())
-}
-
-/// The first bytes of the JUMBF `text` is the base64 of, enough to tell its type.
-fn base64_head(text: &[u8]) -> Option<Vec<u8>> {
-    let head: Vec<u8> = text
-        .iter()
-        .copied()
-        .filter(|c| !c.is_ascii_whitespace())
-        .take(TYPE_CHARS)
-        .collect();
-    base64_decode(&head).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -880,6 +899,52 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn a_manifest_type_is_found_across_large_whitespace_runs() {
+        let encoded = b64(&jumbf(64));
+        let text = format!(
+            "{}{}{}",
+            &encoded[..8],
+            " ".repeat(crate::io::DEFAULT_WINDOW + 1),
+            &encoded[8..]
+        );
+        let svg = with_manifest(&text);
+        let s = parsed(&svg);
+
+        assert_eq!(
+            s.require_item(ItemKind::Jumbf).unwrap().jumbf_type(),
+            Some([0xc2; 16])
+        );
+    }
+
+    #[test]
+    fn parsing_reads_svg_in_bounded_windows() {
+        use crate::task::{Progress, Task};
+
+        let svg = format!(r#"<svg xmlns="{NS}">{}</svg>"#, "<g/>".repeat(20_000));
+        let mut task = Task::new(svg.len() as u64, |io| async move {
+            parse_with(handler(), io).await
+        });
+        let mut requests = 0;
+        let mut max_window = 0;
+        let structure = loop {
+            match task.resume().unwrap() {
+                Progress::Read(mut req) => {
+                    requests += 1;
+                    max_window = max_window.max(req.window_len());
+                    let start = req.offset() as usize;
+                    let end = (start + req.window_len()).min(svg.len());
+                    req.buffer().extend_from_slice(&svg.as_bytes()[start..end]);
+                }
+                Progress::Done(result) => break result,
+            }
+        };
+
+        assert_eq!(structure.container_id(), ID);
+        assert!(requests > 1);
+        assert!(max_window <= crate::io::DEFAULT_WINDOW);
     }
 
     #[test]
