@@ -128,7 +128,8 @@ cargo run --example tokio_client --features all-formats,tokio -- inspect photo.j
 - [User guide](https://github.com/contentauth/asset-io/blob/main/docs/guide.md): the model, updates, C2PA, embedded files and I/O
 - [Container handler guide](https://github.com/contentauth/asset-io/blob/main/docs/container-handlers.md):
   writing, testing and adding format handlers
-- [C bindings](https://github.com/contentauth/asset-io/blob/main/asset-io-c/README.md) for C, C++, Python and Swift
+- [C bindings](https://github.com/contentauth/asset-io/blob/main/asset-io-c/README.md) for C, C++, Python and Swift,
+  built from this repository
 - [Release notes](https://github.com/contentauth/asset-io/blob/main/CHANGELOG.md)
 
 ## Contributions and feedback

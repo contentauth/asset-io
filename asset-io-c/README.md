@@ -1,7 +1,9 @@
 # asset-io application C bindings (ABI 1)
 
-This **separate, standalone Cargo package** uses the `asset-io` crate and keeps
-its own JPEG/PNG defaults; the Rust crate has no default handlers.
+This package is a member of the `asset-io` Cargo workspace. It shares the
+crate's version, minimum Rust version and lockfile, and like `asset-io` it enables
+no container handlers by default. It is not published to crates.io; build it from
+this repository.
 It produces `libasset_io_c.{dylib,so,a}` (Windows: DLL/import library)
 and an `rlib`. Applications in C/C++, Swift or Python can use the C ABI. This is
 **not** a Rust handler/plugin ABI. There is no dynamic handler loading, registration
@@ -9,24 +11,24 @@ of foreign handlers, or registry sharing between separately loaded libraries.
 
 ## Reproducible builds
 
-From the repository root (Rust 1.96+):
+From the repository root (Rust 1.88+):
 
 ```sh
 # No built-in handlers:
-cargo build --locked --manifest-path asset-io-c/Cargo.toml --no-default-features
-# Default JPEG and PNG:
-cargo build --locked --manifest-path asset-io-c/Cargo.toml
+cargo build --locked -p asset-io-c
+# JPEG and PNG only:
+cargo build --locked -p asset-io-c --features jpeg,png
 # All formats, optional core inspectors:
-cargo build --locked --manifest-path asset-io-c/Cargo.toml \
-  --features all-formats,xmp,exif
+cargo build --locked -p asset-io-c --features all-formats,xmp,exif
 ```
 
-Individual `jpeg`, `png`, `bmff`, `riff`, `svg`, `pdf`, `tiff`, `c2pa`, `xmp`, `exif`,
-`memory-mapped`, `flate` and `brotli` (transfer-encoding decoders) switches forward
-through to `asset-io` without enabling additional handlers.
-Inspector switches compile core functionality; inspector-specific methods are
-not currently exported. Query the registry rather than assuming feature presence.
-The no-default library can construct registries but cannot parse any format.
+The `jpeg`, `png`, `bmff`, `riff`, `svg`, `pdf`, `tiff`, `c2pa`, `gif`, `id3`,
+`all-formats`, `xmp`, `exif`, `memory-mapped`, `flate` and `brotli`
+(transfer-encoding decoders) features forward to the `asset-io` features of the
+same name. Inspector features compile core functionality; inspector-specific
+methods are not currently exported. Query the registry rather than assuming
+feature presence. A library built without container features can construct
+registries but cannot parse any format.
 
 `include/asset_io.h` is checked in and usable without Rust tooling by consumers.
 `build.rs` uses pinned cbindgen 0.29.2 and verifies that the header matches source;
@@ -34,20 +36,21 @@ it writes normal generated output only under Cargo's build directory.
 After changing declarations, regenerate and commit the header:
 
 ```sh
-ASSET_IO_UPDATE_HEADER=1 cargo build --locked --manifest-path asset-io-c/Cargo.toml \
+ASSET_IO_UPDATE_HEADER=1 cargo build --locked -p asset-io-c \
   --target-dir asset-io-c/target
-cargo test --locked --manifest-path asset-io-c/Cargo.toml
+cargo test --locked -p asset-io-c
 cc -std=c11 -Wall -Wextra -Werror -Iasset-io-c/include \
   asset-io-c/examples/smoke.c -Lasset-io-c/target/debug -lasset_io_c \
   -Wl,-rpath,"$PWD/asset-io-c/target/debug" -o asset-io-c/target/c-smoke
 asset-io-c/target/c-smoke
 ```
 
-Run the C binding tests with every container enabled (the repository's
-`make test` also runs this suite):
+Run the C binding tests with no handlers and with every feature (the
+repository's `make test` also runs these):
 
 ```sh
-cargo test --locked --manifest-path asset-io-c/Cargo.toml --features all-formats
+cargo test --locked -p asset-io-c
+cargo test --locked -p asset-io-c --all-features
 # or
 make test-c-ffi
 ```

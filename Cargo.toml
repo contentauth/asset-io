@@ -1,15 +1,32 @@
-[package]
-name = "asset-io"
+[workspace]
+members = [".", "asset-io-c"]
+# cargo-fuzz builds the fuzz targets in their own workspace with nightly.
+exclude = ["fuzz"]
+
+# Shared by every crate in the workspace, so they release with one version.
+[workspace.package]
 version = "0.3.2"
 edition = "2021"
+rust-version = "1.88"
 authors = ["Gavin Peacock <gpeacock@adobe.com>"]
 license = "MIT OR Apache-2.0"
-description = "Streaming, container-agnostic access to media file structure and metadata (JUMBF, XMP)"
 repository = "https://github.com/contentauth/asset-io"
+
+[workspace.dependencies]
+asset-io = { path = ".", version = "0.3.2", default-features = false }
+
+[package]
+name = "asset-io"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Streaming, container-agnostic access to media file structure and metadata (JUMBF, XMP)"
+repository.workspace = true
 keywords = ["asset", "c2pa", "xmp", "jumbf", "metadata"]
 categories = ["multimedia", "parsing"]
 exclude = ["tests/", "fuzz/", "fuzz.sh", "FUZZING_SETUP.md", "Makefile", "asset-io-c/", ".github/", ".vscode/"]
-rust-version = "1.88"
+rust-version.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
