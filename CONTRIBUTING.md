@@ -42,29 +42,42 @@ This will give us an opportunity to discuss API design and avoid duplicate effor
 
 ### Pull request titles
 
-Titles of pull requests that target a long-lived branch such as _main_ or a release-specific branch should follow [conventional commits](https://www.conventionalcommits.org/en/v1.0.0/#specification). The repository's [commit lint rules](https://github.com/contentauth/c2pa-rs/blob/main/.commitlintrc.yml) require that the first word of the pull request title must be one of the following:
-
-- `fix`
-- `feat`
-- `chore`
-- `update`
-- `doc`
-
-Optionally, but preferred, a scope can be added in parentheses after the type. The scope should be the name of the module or component that the commit affects. For example, `feat(api): Introduce a new API to validate 1.0 claims`.
-
-If more detail is warranted, add a blank line and then continue with sentences (these sentences should be punctuated as such) and paragraphs as needed to provide that detail. There is no need to word-wrap this message.
-
-For example:
+Pull requests are squash-merged: the PR title becomes the commit message and the
+PR's `CHANGELOG.md` entry, and its description becomes the commit body. Titles
+must follow [conventional commits](https://www.conventionalcommits.org/en/v1.0.0/#specification);
+the [PR title workflow](.github/workflows/pr-title.yml) checks this:
 
 ```text
-feat(api): Introduce a new API to validate 1.0 claims
-
-Repurpose existing v2 API for 0.8 compatibility (read: no validation) mode.
+type(scope)!: description
 ```
 
-The conventional commit message requirement does not apply to individual commits within a pull request, provided that those commits will be squashed when the PR is merged and the resulting squash commit does follow the conventional commit requirement. This may require the person merging the PR to verify the commit message syntax when performing the squash merge.  
+`type` is required and must be one of the following:
 
-TIP: For single-commit PRs, ensure the commit message conforms to the conventional commit requirement, since by default that will also be the title of the PR.
+| Type | Use for | Changelog section |
+|------|---------|-------------------|
+| `feat` | New functionality | Added (bumps the minor version) |
+| `fix` | Bug fixes | Fixed |
+| `perf` | Performance improvements | Performance |
+| `docs` | Documentation only | Documentation |
+| `refactor` | Code changes that neither fix bugs nor add features | Other |
+| `test` | Tests only | Other |
+| `build` | Build system, Cargo manifests and dependencies | Other |
+| `ci` | CI and release workflows | Other |
+| `chore` | Maintenance not covered above | Other |
+| `style` | Formatting only | Other |
+| `update` | Dependency updates | Other |
+| `revert` | Reverting an earlier change | Other |
+
+`(scope)` is optional, lowercase, and names the affected module or component,
+such as `(gif)`, `(tiff)` or `(c2pa_c_ffi)`. Add `!` before the colon for a
+breaking change. The description is required. For example:
+
+```text
+feat(gif): Support C2PA box hash
+```
+
+Commits within a pull request don't need to follow this format, since they are
+squashed into one commit titled with the PR title.
 
 ## Development
 
@@ -84,6 +97,27 @@ errors in feature-gated containers appear only in CI.
 To add a container format, follow the
 [container handler guide](docs/container-handlers.md#adding-a-built-in-container).
 See [FUZZING_SETUP.md](FUZZING_SETUP.md) for fuzzing.
+
+## Releases
+
+Maintainers release in two steps. Pull requests are squash-merged, so each PR's
+title becomes its `CHANGELOG.md` entry; keep titles conventional.
+
+1. **Merge the release PR.** On each push to `main`, the
+   [Release PR workflow](.github/workflows/release-plz.yml) runs
+   [release-plz](https://release-plz.dev) to open or update a pull request
+   that bumps the workspace version and adds a `CHANGELOG.md` entry generated
+   from commit messages. New features bump the minor version. Review the entry;
+   new commits on `main` regenerate the PR, replacing manual edits. Configuration
+   is in [release-plz.toml](release-plz.toml).
+2. **Run the [Release workflow](.github/workflows/release.yml)** from `main`.
+   It publishes `asset-io` to crates.io with trusted publishing, tags `vX.Y.Z`
+   and creates the GitHub release from the version's `CHANGELOG.md` section. It
+   stops before publishing if that version is already on crates.io, its tag
+   exists, or the changelog has no entry for it.
+
+Run the Release workflow soon after merging the release PR: commits merged in
+between are released without a changelog entry. `asset-io-c` is not published.
 
 ## From contributor to committer
 
