@@ -524,7 +524,6 @@ fn gap(b: &mut StructureBuilder, from: u64, to: u64, cut: Option<u64>) -> Result
     Ok(())
 }
 
-/// The first bytes of the JUMBF `text` is the base64 of, enough to tell its type.
 // ---------------------------------------------------------------------------
 // Writing
 // ---------------------------------------------------------------------------
