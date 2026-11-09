@@ -78,8 +78,8 @@ The main types:
 - **`HandlerRegistry`**: built-in and custom handlers. Libraries should accept a
   registry and call `Asset::open_with`, so their callers control format support.
 
-The [user guide](docs/guide.md) covers the model, C2PA support, embedded
-files and custom I/O in depth.
+The [user guide](https://github.com/contentauth/asset-io/blob/main/docs/guide.md) covers the model, C2PA
+support, embedded files and custom I/O in depth.
 
 ## Supported formats
 
@@ -92,12 +92,12 @@ Each feature enables one built-in handler that reads and updates metadata.
 | `png` | PNG | Box | |
 | `bmff` | MP4, MOV, M4A, M4V, HEIF, HEIC, AVIF | BMFF | Rewrites chunk offsets; merkle boxes |
 | `riff` | WebP, WAV, AVI | Box | |
-| `tiff` | TIFF, BigTIFF, DNG; ARW and NEF read-only | Data | [Append-only IFD updates](src/containers/tiff/README.md) |
-| `gif` | GIF | Box | [Application extensions](src/containers/gif/mod.rs) |
-| `id3` | MP3, FLAC | Data | [Leading ID3v2.3/2.4 tag](src/containers/id3/mod.rs) |
+| `tiff` | TIFF, BigTIFF, DNG; ARW and NEF read-only | Data | [Append-only IFD updates](https://github.com/contentauth/asset-io/blob/main/src/containers/tiff/README.md) |
+| `gif` | GIF | Box | [Application extensions](https://github.com/contentauth/asset-io/blob/main/src/containers/gif/mod.rs) |
+| `id3` | MP3, FLAC | Data | [Leading ID3v2.3/2.4 tag](https://github.com/contentauth/asset-io/blob/main/src/containers/id3/mod.rs) |
 | `svg` | SVG | Data | Splices metadata without re-serializing |
-| `pdf` | PDF 1.0–2.0 | — | [Incremental updates](src/containers/pdf/README.md) |
-| `c2pa` | C2PA sidecars (`.c2pa`) | — | [Whole-file manifest store](src/containers/c2pa/README.md) |
+| `pdf` | PDF 1.0–2.0 | — | [Incremental updates](https://github.com/contentauth/asset-io/blob/main/src/containers/pdf/README.md) |
+| `c2pa` | C2PA sidecars (`.c2pa`) | — | [Whole-file manifest store](https://github.com/contentauth/asset-io/blob/main/src/containers/c2pa/README.md) |
 
 Optional features:
 
@@ -125,25 +125,19 @@ cargo run --example tokio_client --features all-formats,tokio -- inspect photo.j
 ## Documentation
 
 - [API documentation](https://docs.rs/asset-io)
-- [User guide](docs/guide.md): the model, updates, C2PA, embedded files and I/O
-- [Container handler guide](docs/container-handlers.md): writing, testing and
-  adding format handlers
-- [C bindings](asset-io-c/README.md) for C, C++, Python and Swift
-- [Release notes](CHANGELOG.md)
+- [User guide](https://github.com/contentauth/asset-io/blob/main/docs/guide.md): the model, updates, C2PA, embedded files and I/O
+- [Container handler guide](https://github.com/contentauth/asset-io/blob/main/docs/container-handlers.md):
+  writing, testing and adding format handlers
+- [C bindings](https://github.com/contentauth/asset-io/blob/main/asset-io-c/README.md) for C, C++, Python and Swift
+- [Release notes](https://github.com/contentauth/asset-io/blob/main/CHANGELOG.md)
 
-## Contributing
+## Contributions and feedback
 
-Run the checks CI runs before opening a pull request:
-
-```sh
-make ci    # nightly rustfmt, docs, Clippy and tests
-make fmt   # apply formatting (requires nightly rustfmt)
-```
-
-See the [container handler guide](docs/container-handlers.md#adding-a-built-in-container)
-for adding a format, and [FUZZING_SETUP.md](FUZZING_SETUP.md) for fuzzing.
+We welcome contributions to this project. For information on contributing,
+providing feedback, and about ongoing work, see
+[Contributing](https://github.com/contentauth/asset-io/blob/main/CONTRIBUTING.md).
 
 ## License
 
-Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at
-your option.
+Licensed under either of [MIT](https://github.com/contentauth/asset-io/blob/main/LICENSE-MIT) or
+[Apache-2.0](https://github.com/contentauth/asset-io/blob/main/LICENSE-APACHE), at your option.
