@@ -21,7 +21,7 @@ to hash output without a second pass.
 Used by [c2pa-rs](https://github.com/contentauth/c2pa-rs) for media-container access,
 `asset-io` separates container mechanics from manifest interpretation, hashing and signing.
 
-See the [release notes](CHANGELOG.md).
+See the [release notes](https://github.com/contentauth/asset-io/blob/main/CHANGELOG.md).
 
 A parsed file is a `Structure`: a gapless tiling of `Segment`s (header, payload, trailer) plus `Item`s, the logical units the format defines (XMP, JUMBF, EXIF, embedded files), each assembled from one or more `Extent`s. It holds geometry only. It does not hash, sign or interpret C2PA; callers decide what each byte range means.
 
@@ -440,12 +440,16 @@ Lengths are checked, segment counts and nesting are capped, and malformed input 
 
 ## Application C bindings
 
-The standalone [`asset-io-c`](asset-io-c/README.md) package provides a checked-in C
+The standalone [`asset-io-c`](https://github.com/contentauth/asset-io/tree/main/asset-io-c) package provides a checked-in C
 header and shared/static libraries for C++, Python and Swift applications, with
 memory/read-at parsing, structure inspection, metadata updates and tagged streaming
 output. It supports minimal, JPEG/PNG-default and all-formats builds independently
 of this Rust crate. It does not define a dynamically loaded handler/plugin ABI.
 
+## Contributions and feedback
+
+We welcome contributions to this project. For information on contributing, providing feedback, and about ongoing work, see [Contributing](https://github.com/contentauth/asset-io/blob/main/CONTRIBUTING.md).
+
 ## License
 
-MIT OR Apache-2.0
+[MIT](https://github.com/contentauth/asset-io/blob/main/LICENSE-MIT) OR [Apache-2.0](https://github.com/contentauth/asset-io/blob/main/LICENSE-APACHE).
