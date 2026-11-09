@@ -17,7 +17,8 @@
     feature = "riff",
     feature = "svg",
     feature = "bmff",
-    feature = "c2pa"
+    feature = "c2pa",
+    feature = "gif"
 ))]
 
 use std::io::Cursor;
@@ -27,6 +28,9 @@ use asset_io::{Asset, ByteRange, Error, ItemKind, NullSink, Updates};
 fn open<'a>(format: &str, bytes: &'a [u8]) -> Asset<Cursor<&'a [u8]>> {
     Asset::open(Cursor::new(bytes), Some(format)).unwrap()
 }
+
+/// A GIF89a with a 1x1 screen and nothing else.
+const GIF: &[u8] = b"GIF89a\x01\0\x01\0\0\0\0\x3b";
 
 fn store(len: usize) -> Vec<u8> {
     let mut bytes = (len as u32).to_be_bytes().to_vec();
@@ -142,6 +146,7 @@ fn each_container_names_its_c2pa_hard_binding() {
             Some(C2paHash::Box),
         ),
         ("wav", b"RIFF\x04\0\0\0WAVE".to_vec(), Some(C2paHash::Box)),
+        ("gif", GIF.to_vec(), Some(C2paHash::Box)),
         (
             "svg",
             br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#.to_vec(),
@@ -168,6 +173,7 @@ fn c2pa_boxes_tile_the_asset_with_one_store_box() {
             b"\x89PNG\r\n\x1a\n\0\0\0\0IEND\xae\x42\x60\x82".to_vec(),
         ),
         ("wav", b"RIFF\x04\0\0\0WAVE".to_vec()),
+        ("gif", GIF.to_vec()),
     ] {
         for len in [33, 160_001] {
             let asset = open(format, &input);

@@ -31,20 +31,25 @@
 //! item. A write stores the trailer in sub-blocks of its own.
 //!
 //! A write replaces an existing item in place. A new block goes after the
-//! global color table, and a GIF87a header becomes GIF89a. The C2PA hard binding
-//! is a data hash that excludes the whole C2PA block.
+//! global color table, and a GIF87a header becomes GIF89a.
+//!
+//! The C2PA hard binding is a box hash with the boxes c2pa-rs lists: the header
+//! (`GIF89a`), the logical screen descriptor with its global color table
+//! (`LSD`), each extension (`21` and its label in hex, such as `21F9`), each
+//! image descriptor with its local color table (`2C`), its image data (`TBID`)
+//! and the trailer (`3B`). An application extension is one box, whatever its
+//! sub-blocks. A data hash excluding the whole C2PA block is also supported.
 
 use std::{borrow::Cow, sync::Arc};
 
 use crate::{
     container_api::{
-        BoxFuture, ContainerHandler, Existing, FormatSpec, Io, ItemInfo, MetadataSlot,
-        PlanBuilder, StructureBuilder, WritePlan,
+        BoxFuture, ContainerHandler, Existing, FormatSpec, Io, ItemInfo, MetadataSlot, PlanBuilder,
+        StructureBuilder, WritePlan,
     },
     io::Reader,
     jumbf::superbox_type,
-    ByteRange, C2paHash, Error, ItemKind, Name, Result, SegmentId, SegmentKind, Structure,
-    Updates,
+    ByteRange, Error, ItemKind, Name, Result, Segment, SegmentId, SegmentKind, Structure, Updates,
 };
 
 /// The GIF container's [`ContainerHandler::id`].
@@ -60,6 +65,18 @@ const TRAILER: u8 = 0x3b;
 const HEADER: Name = Name::FourCC(*b"GIFh");
 const SCREEN: Name = Name::FourCC(*b"LSD ");
 const IMAGE_DATA: Name = Name::FourCC(*b"TBID");
+
+/// An extension block, named as a C2PA box hash lists it: `21` and the label in
+/// hex, such as `21F9`.
+const fn extension(label: u8) -> Name {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    Name::FourCC([
+        b'2',
+        b'1',
+        HEX[(label >> 4) as usize],
+        HEX[(label & 0xf) as usize],
+    ])
+}
 
 /// Application identifier and authentication code.
 const C2PA_APP: &[u8; 11] = b"C2PA_GIF\x01\x00\x00";
@@ -114,9 +131,24 @@ impl ContainerHandler for GifHandler {
         header.starts_with(b"GIF87a") || header.starts_with(b"GIF89a")
     }
 
-    // A box hash would need one element per block; C2PA and XMP blocks are split.
-    fn c2pa_hash(&self, _structure: &Structure) -> Option<C2paHash> {
-        Some(C2paHash::Data)
+    // The names c2pa-rs lists. It names the header `GIF89a` for either version.
+    fn box_name(&self, name: Name) -> Option<Cow<'static, str>> {
+        if name == HEADER {
+            return Some(Cow::Borrowed("GIF89a"));
+        }
+        if name == SCREEN {
+            return Some(Cow::Borrowed("LSD"));
+        }
+        match name {
+            Name::None => None,
+            Name::Marker(m) => Some(Cow::Owned(format!("{m:02X}"))),
+            other => Some(Cow::Owned(other.to_string())),
+        }
+    }
+
+    // The data sub-blocks after an application extension's first are part of its box.
+    fn c2pa_box_continues(&self, _: &Structure, _: SegmentId, element: &Segment) -> bool {
+        element.kind() == SegmentKind::Metadata && element.name().is_none()
     }
 
     fn parse_async(self: Arc<Self>, io: Io) -> BoxFuture<'static, Result<Structure>> {
@@ -230,7 +262,7 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<St
                     None => {
                         // Any extension, known or not, is a label and sub-blocks.
                         let end = skip_sub_blocks(&mut r, pos + 2, total).await?;
-                        b.push_span(SegmentKind::Other, Name::Marker(label), 2, end - pos - 2, 0)?;
+                        b.push_span(SegmentKind::Other, extension(label), 2, end - pos - 2, 0)?;
                     }
                 }
             }
@@ -293,7 +325,13 @@ async fn app_block(
     let mut at = pos + u64::from(INTRO_LEN);
     let mut n = read_byte(r, at, total).await?;
     if n == 0 {
-        b.push_span(SegmentKind::Metadata, Name::Marker(APPLICATION), INTRO_LEN, 0, 1)?;
+        b.push_span(
+            SegmentKind::Metadata,
+            extension(APPLICATION),
+            INTRO_LEN,
+            0,
+            1,
+        )?;
         return Ok(());
     }
     let mut parts = Vec::new();
@@ -301,7 +339,7 @@ async fn app_block(
         let next_at = at + 1 + u64::from(n);
         let next = read_byte(r, next_at, total).await?;
         let (name, header) = match parts.is_empty() {
-            true => (Name::Marker(APPLICATION), INTRO_LEN + 1),
+            true => (extension(APPLICATION), INTRO_LEN + 1),
             false => (Name::None, 1),
         };
         let id = b.push_span(
@@ -485,7 +523,7 @@ fn put_block<'a>(b: &mut PlanBuilder<'_, 'a>, kind: ItemKind, data: &'a [u8]) ->
             let mut h = vec![EXTENSION, APPLICATION, 11];
             h.extend_from_slice(app);
             h.push(n as u8);
-            (Name::Marker(APPLICATION), Cow::Owned(h))
+            (extension(APPLICATION), Cow::Owned(h))
         } else {
             (Name::None, Cow::Borrowed(&LENGTHS[n..=n]))
         };

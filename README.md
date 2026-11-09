@@ -165,7 +165,7 @@ each container on its own, and everything together. Formatting follows c2pa-rs:
 | `pdf`   | PDF 1.0–2.0 | XMP and the document's C2PA store, found through the catalog | appends an incremental revision; see [its module documentation](src/containers/pdf/README.md) |
 | `tiff`  | TIFF, BigTIFF, DNG | yes | yes, append-only IFD updates; see [its module documentation](src/containers/tiff/README.md) |
 | `c2pa`  | Raw C2PA sidecar | entire file as one JUMBF item | replaces the file; removal emits an empty sidecar; see [its module documentation](src/containers/c2pa/README.md) |
-| `gif`   | GIF87a, GIF89a | C2PA and XMP application extensions | yes; data hash only; see [its module documentation](src/containers/gif/mod.rs) |
+| `gif`   | GIF87a, GIF89a | C2PA and XMP application extensions | yes; box or data hash; see [its module documentation](src/containers/gif/mod.rs) |
 
 Decoders for transfer encodings are optional features, in neither the defaults nor `all-formats`:
 
