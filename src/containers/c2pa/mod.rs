@@ -36,11 +36,6 @@ pub fn handler() -> Arc<dyn ContainerHandler> {
 }
 
 impl ContainerHandler for C2paHandler {
-    // A sidecar is the store; it embeds no manifest to bind.
-    fn c2pa_hash(&self, _structure: &Structure) -> Option<crate::C2paHash> {
-        None
-    }
-
     // A sidecar is the store, not an asset that embeds one.
     fn c2pa_data_hash_exclusions(
         &self,

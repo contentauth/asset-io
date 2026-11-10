@@ -160,17 +160,49 @@ only one container understands go through `Updates::set_extension` and
 `compose(kind, data)` returns the container's native encoding of an item for
 callers that insert it themselves.
 
+## Box naming
+
+`box_name(structure, segment, element)` supplies the container-defined name for
+inspection and other consumers of the asset structure. The default formats
+FourCCs, numeric IDs and hexadecimal marker codes. Override it for names such as
+JPEG marker symbols and GIF block names, or names needing parsed context, such
+as RIFF form and list types.
+
+Segments are the units a writer copies, replaces or moves. `Structure::elements`
+expands subdividing segments into their finer elements; both views tile the
+asset. The naming hook receives the owning segment ID and the actual element,
+which may be smaller than that segment, such as a JPEG restart interval.
+`Name::Display` only formats the raw identity without container context.
+
+`Structure::boxes()` returns `BoxInfo` values covering the asset in order,
+combining elements where `box_continues` is true (GIF application-extension
+sub-blocks). The default `box_continues` is false. Unnamed bytes are retained
+with `name: None`; a named box has `name: Some(...)`. Each box also reports its
+range and the XMP/EXIF extents it contains.
+
+`Structure::boxes_with(item, name)` groups each contiguous run of the selected
+item's segments under a caller-supplied name, framing included. The item must
+belong to that structure. Group membership is determined by the item, not by
+matching native box names. Both methods read nothing and work on planned
+structures.
+
+`Structure::supports_named_boxes()` derives a boolean capability from this box
+view, including subdivisions and continuations. It requires the container's own
+structure to be nonempty and entirely named; unnamed trailing bytes are allowed.
+It does not select a hash binding, and handlers need no separate capability hook.
+
 ## C2PA hooks
 
 Each has a default; override only where the format differs:
 
 | Hook | Default | Override when |
 |------|---------|---------------|
-| `c2pa_hash` | `Box` if every element has a box name, else `Data` | The format uses another binding or none |
-| `box_name` | FourCCs and numeric IDs as text | Names use other text (JPEG marker symbols, GIF block names) |
-| `c2pa_box_name` | `box_name` of the element's name | The C2PA name is not the element name (RIFF lists chunks by form or list type) |
-| `c2pa_box_continues` | `false` | One box spans several segments (GIF application-extension sub-blocks) |
 | `c2pa_data_hash_exclusions` | Every segment carrying the store | Padding stays hashed (RIFF), only part is excluded (SVG), or the format binds differently (`UnsupportedFeature`) |
+
+`Structure::c2pa_boxes` consumes the generic box view, using `boxes_with` to group
+the manifest store under `C2PA`. Only this adapter applies C2PA box-hash constraints
+and lists unnamed trailing bytes as `c2pa.after`. For caller-driven I/O, use
+`Structure::c2pa_boxes_async`.
 
 Planned structures must give the same answers as the written output, so clients
 can compute hash geometry before writing. When a reference implementation such as

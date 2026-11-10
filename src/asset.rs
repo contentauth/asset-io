@@ -28,7 +28,7 @@ use crate::{
     range::ByteRange,
     registry::HandlerRegistry,
     sink::Sink,
-    structure::{C2paBox, Structure},
+    structure::{BoxInfo, Structure},
     thumbnail::Thumbnail,
     updates::Updates,
     walk::Node,
@@ -61,7 +61,7 @@ use crate::{
 /// ```
 ///
 /// It dereferences to its [`Structure`], so the methods that need no I/O
-/// (`items`, `segments`, `c2pa_hash`, `c2pa_data_hash_exclusions`, ...) are
+/// (`items`, `segments`, `supports_named_boxes`, `c2pa_data_hash_exclusions`, ...) are
 /// available directly. Where both define a method, the `Asset` one reads from
 /// the held source.
 ///
@@ -210,7 +210,7 @@ impl<S: Read + Seek> Asset<S> {
     }
 
     /// See [`Structure::c2pa_boxes`].
-    pub fn c2pa_boxes(&self) -> Result<Vec<C2paBox>> {
+    pub fn c2pa_boxes(&self) -> Result<Vec<BoxInfo>> {
         self.structure.c2pa_boxes(&mut *self.src()?)
     }
 

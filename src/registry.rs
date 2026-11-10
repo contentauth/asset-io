@@ -252,8 +252,13 @@ mod tests {
             Err(Error::UnsupportedFormat)
         }
 
-        fn box_name(&self, name: Name) -> Option<Cow<'static, str>> {
-            match name {
+        fn box_name(
+            &self,
+            _: &Structure,
+            _: crate::SegmentId,
+            element: &crate::Segment,
+        ) -> Option<Cow<'static, str>> {
+            match element.name() {
                 Name::Id(n) => Some(Cow::Owned(format!("rec{n}"))),
                 Name::FourCC(cc) => Some(Cow::Owned(String::from_utf8_lossy(&cc).into_owned())),
                 _ => None,
@@ -279,10 +284,10 @@ mod tests {
 
         let mut names = Vec::new();
         let mut next = 0;
-        s.elements(|_, e| {
+        s.elements(|id, e| {
             assert_eq!(e.range().offset(), next);
             next = e.range().end();
-            names.push(s.box_name(e.name()).map(|n| n.into_owned()));
+            names.push(s.box_name(id, e).map(|n| n.into_owned()));
             Ok(())
         })
         .unwrap();

@@ -121,14 +121,19 @@ impl ChunkTypes {
 impl ContainerHandler for RiffHandler {
     // A `RIFF` chunk is listed under its form and a `LIST` chunk under its list
     // type; nested chunks are part of their `LIST`.
-    fn c2pa_box_name(
+    fn box_name(
         &self,
         structure: &Structure,
         segment: SegmentId,
         element: &Segment,
     ) -> Option<Cow<'static, str>> {
         let ty = container_api::attachment::<ChunkTypes>(structure).and_then(|t| t.get(segment));
-        self.box_name(ty.map_or(element.name(), Name::FourCC))
+        match ty.map_or(element.name(), Name::FourCC) {
+            Name::None => None,
+            Name::FourCC(cc) => Some(Cow::Owned(String::from_utf8_lossy(&cc).into_owned())),
+            Name::Id(n) => Some(Cow::Owned(n.to_string())),
+            name @ Name::Marker(_) => Some(Cow::Owned(name.to_string())),
+        }
     }
 
     fn c2pa_data_hash_exclusions(
@@ -664,6 +669,52 @@ mod tests {
         let mut kids = vec![chunk(b"fmt ", &[1; 16]), chunk(b"data", b"abcde")];
         kids.extend_from_slice(extra);
         riff(b"WAVE", &kids)
+    }
+
+    #[test]
+    fn inspection_and_walk_use_box_hash_names() {
+        let bytes = riff(
+            b"WAVE",
+            &[
+                chunk(
+                    b"LIST",
+                    &[b"INFO".as_slice(), &chunk(b"INAM", b"abc")].concat(),
+                ),
+                chunk(b"data", &[1, 2, 3]),
+            ],
+        );
+        let s = parse(&mut Cursor::new(&bytes)).unwrap();
+        let mut elements = Vec::new();
+        s.elements(|id, element| {
+            elements.push((
+                s.box_name(id, element).unwrap().into_owned(),
+                element.range(),
+            ));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            elements
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["WAVE", "INFO", "data"]
+        );
+        let boxes = s.c2pa_boxes(&mut Cursor::new(&bytes)).unwrap();
+        assert_eq!(
+            elements,
+            boxes
+                .into_iter()
+                .map(|b| (b.name.unwrap().into_owned(), b.range))
+                .collect::<Vec<_>>()
+        );
+        let mut paths = Vec::new();
+        s.walk(&mut Cursor::new(&bytes), |node| {
+            paths.push(node.path.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(paths, ["/WAVE", "/INFO", "/data"]);
     }
 
     fn rewrite(src: &[u8], u: &Updates) -> Result<Vec<u8>> {

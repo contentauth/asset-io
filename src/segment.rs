@@ -106,14 +106,15 @@ pub enum Role {
 
 /// Compact, allocation-free identity of a container element.
 ///
-/// What the name means is container-defined: a JPEG marker byte, or the four
-/// character code of a PNG chunk, RIFF chunk or BMFF box.
+/// What the name means is container-defined: a one-byte marker or block code,
+/// or the four character code of a PNG chunk, RIFF chunk or BMFF box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Name {
     /// Unnamed (fill, trailing data, ...).
     None,
-    /// JPEG marker code (the byte after `0xFF`).
+    /// Container-defined one-byte marker or block code, excluding any framing.
+    /// For JPEG, this is the byte after `0xFF`; for GIF, the block introducer.
     Marker(u8),
     /// Four character code.
     FourCC([u8; 4]),
@@ -126,7 +127,7 @@ impl std::fmt::Display for Name {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Name::None => Ok(()),
-            Name::Marker(m) => write!(f, "0xFF{m:02X}"),
+            Name::Marker(m) => write!(f, "0x{m:02X}"),
             Name::Id(n) => write!(f, "#{n}"),
             Name::FourCC(cc) => {
                 for &b in cc {
@@ -264,6 +265,18 @@ mod tests {
     fn none_name() {
         assert!(Name::None.is_none());
         assert!(!Name::Marker(0xd8).is_none());
+    }
+
+    #[test]
+    fn marker_display_is_container_neutral() {
+        for (marker, expected) in [
+            (0x00, "0x00"),
+            (0x3b, "0x3B"),
+            (0xd8, "0xD8"),
+            (0xff, "0xFF"),
+        ] {
+            assert_eq!(Name::Marker(marker).to_string(), expected);
+        }
     }
 
     #[test]

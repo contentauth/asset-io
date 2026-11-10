@@ -184,8 +184,13 @@ impl ContainerHandler for JpegHandler {
         ID
     }
 
-    fn box_name(&self, name: Name) -> Option<Cow<'static, str>> {
-        match name {
+    fn box_name(
+        &self,
+        _structure: &Structure,
+        _segment: SegmentId,
+        element: &Segment,
+    ) -> Option<Cow<'static, str>> {
+        match element.name() {
             Name::Marker(m) => Some(marker_symbol(m)),
             Name::None => None,
             other => Some(Cow::Owned(other.to_string())),
@@ -1379,7 +1384,18 @@ mod tests {
         assert_eq!(n(0xfd), "JPG13");
         assert_eq!(n(0xfe), "COM");
         assert_eq!(n(0x10), "RES");
-        assert!(JpegHandler.box_name(Name::None).is_none());
+        let s = parse(&mut Cursor::new(sample_jpeg())).unwrap();
+        let unnamed = Segment::new(
+            ByteRange::new(0, 1).unwrap(),
+            0,
+            0,
+            SegmentKind::Other,
+            Name::None,
+        )
+        .unwrap();
+        assert!(s
+            .box_name(SegmentId::from_index(0).unwrap(), &unnamed)
+            .is_none());
     }
 
     #[test]
@@ -1600,6 +1616,16 @@ mod tests {
                 m(APP11),
                 m(EOI)
             ]
+        );
+        let mut box_names = Vec::new();
+        s.elements(|id, element| {
+            box_names.push(s.box_name(id, element).unwrap().into_owned());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            box_names,
+            ["SOI", "APP0", "SOF2", "DHT", "SOS", "RST0", "RST1", "DHT", "SOS", "APP11", "EOI"]
         );
         let mut next = 0;
         for (name, r) in &els {
@@ -2210,7 +2236,11 @@ mod tests {
             assert_eq!(subs[0].segments().end, subs[1].segments().start);
             let names: Vec<_> = s.segments()[subs[1].segments()]
                 .iter()
-                .map(|g| s.box_name(g.name()).unwrap().into_owned())
+                .enumerate()
+                .map(|(i, g)| {
+                    let id = SegmentId::from_index(subs[1].segments().start + i).unwrap();
+                    s.box_name(id, g).unwrap().into_owned()
+                })
                 .collect();
             assert_eq!(names, ["SOI", "APP0", "DQT", "SOS", "EOI"]);
             assert_eq!(subs[1].relative(subs[1].range().offset() + 3), Some(3));

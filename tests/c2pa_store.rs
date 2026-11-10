@@ -230,8 +230,7 @@ fn one_task_finds_the_store_as_the_blocking_calls_do() {
         let registry = &registry;
         let task = asset_io::task::Task::new(bytes.len() as u64, |mut io| async move {
             let structure = Structure::parse_async(registry, &mut io, Some(format)).await?;
-            let item = structure.c2pa_item_async(&mut io).await?;
-            let boxes = structure.c2pa_boxes_with(item).ok();
+            let boxes = structure.c2pa_boxes_async(&mut io).await.ok();
             let store = structure.c2pa_store_async(&mut io).await?;
             Ok((store, boxes))
         });
@@ -263,9 +262,9 @@ fn boxes_need_the_store_item_of_the_same_structure() {
         &Updates::new().set_jumbf(c2pa),
     );
     let (a, b) = (open("jpg", &bytes), open("jpg", &bytes));
-    let item = b.c2pa_item().unwrap();
+    let item = b.c2pa_item().unwrap().unwrap();
     assert!(matches!(
-        a.c2pa_boxes_with(item),
+        a.boxes_with(item, "store"),
         Err(Error::InvalidFormat(_))
     ));
 }

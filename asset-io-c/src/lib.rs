@@ -23,7 +23,7 @@ use std::{
 };
 
 use asset_io::{
-    container_api::MetadataUpdate, HandlerRegistry, Name, Relation, Role, Structure,
+    container_api::MetadataUpdate, HandlerRegistry, Name, Relation, Role, SegmentId, Structure,
     TransferEncoding, Updates,
 };
 use cimpl::{
@@ -196,17 +196,25 @@ fn transfer(t: &TransferEncoding) -> Value {
 fn relation(r: &Relation) -> Value {
     json!({"kind": r.kind().as_str(), "native": r.native(), "target": r.target()})
 }
-fn describe(s: &Structure) -> Value {
-    json!({
+fn describe(s: &Structure) -> asset_io::Result<Value> {
+    let segments = s
+        .segments()
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            Ok(json!({
+                "kind":v.kind().as_str(), "name":name(v.name()), "range":range(v.range()),
+                "box_name":s.box_name(SegmentId::from_index(i)?, v),
+                "regions":v.regions().map(|(r,b)|json!({"role":role(r),"range":range(b)})).collect::<Vec<_>>(),
+                "subdivides":v.subdivides()
+            }))
+        })
+        .collect::<asset_io::Result<Vec<_>>>()?;
+    Ok(json!({
         "schema": 1,
         "container": s.container_id(), "media_type": s.media_type(), "size": s.total_size(),
         "trailing": s.trailing().map(range),
-        "segments": s.segments().iter().map(|v| json!({
-            "kind":v.kind().as_str(), "name":name(v.name()), "range":range(v.range()),
-            "box_name":s.box_name(v.name()),
-            "regions":v.regions().map(|(r,b)|json!({"role":role(r),"range":range(b)})).collect::<Vec<_>>(),
-            "subdivides":v.subdivides()
-        })).collect::<Vec<_>>(),
+        "segments": segments,
         "items": s.items().map(|e|json!({
             "kind":e.kind().as_str(), "category":e.kind().category().as_str(),
             "encoding":e.encoding().as_str(), "transfer":transfer(e.transfer()), "label":e.label(), "media_type":e.media_type(),
@@ -221,7 +229,7 @@ fn describe(s: &Structure) -> Value {
             "media_type":a.media_type(),"primary":a.is_primary()
         })).collect::<Vec<_>>(),
         "regions":s.regions().map(|r|json!({"segment":r.segment.index(),"role":role(r.role),"range":range(r.range)})).collect::<Vec<_>>()
-    })
+    }))
 }
 
 fn parse(reg: &HandlerRegistry, format: *const c_char, mut source: Source) -> *mut AssetIoAsset {
@@ -333,7 +341,8 @@ pub extern "C" fn asset_io_asset_structure(asset: *mut AssetIoAsset) -> *mut Ass
 pub extern "C" fn asset_io_structure_json(structure: *mut AssetIoStructure) -> *mut AssetIoBuffer {
     boundary(ptr::null_mut(), || {
         let s = deref_or_return!(structure, AssetIoStructure, ptr::null_mut());
-        json_buffer(describe(&s.0))
+        let value = ok_or_return!(describe(&s.0).map_err(CoreError), ptr::null_mut());
+        json_buffer(value)
     })
 }
 

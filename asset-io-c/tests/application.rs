@@ -91,6 +91,20 @@ fn fixtures() -> Vec<&'static [u8]> {
 }
 
 #[test]
+#[cfg(feature = "riff")]
+fn inspection_uses_contextual_box_names() {
+    let r = registry();
+    let a = parse(&r, b"RIFF\x10\0\0\0WAVELIST\x04\0\0\0INFO");
+    let geometry = inspect(a.0);
+    assert_eq!(geometry["segments"][0]["box_name"], "WAVE");
+    assert_eq!(geometry["segments"][1]["box_name"], "INFO");
+    assert_eq!(
+        geometry["segments"][0]["name"]["bytes"],
+        serde_json::json!([82, 73, 70, 70])
+    );
+}
+
+#[test]
 fn roundtrip_and_geometry() {
     let r = registry();
     for input in fixtures() {

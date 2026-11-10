@@ -132,7 +132,13 @@ impl ContainerHandler for GifHandler {
     }
 
     // The names c2pa-rs lists. It names the header `GIF89a` for either version.
-    fn box_name(&self, name: Name) -> Option<Cow<'static, str>> {
+    fn box_name(
+        &self,
+        _structure: &Structure,
+        _segment: SegmentId,
+        element: &Segment,
+    ) -> Option<Cow<'static, str>> {
+        let name = element.name();
         if name == HEADER {
             return Some(Cow::Borrowed("GIF89a"));
         }
@@ -147,7 +153,7 @@ impl ContainerHandler for GifHandler {
     }
 
     // The data sub-blocks after an application extension's first are part of its box.
-    fn c2pa_box_continues(&self, _: &Structure, _: SegmentId, element: &Segment) -> bool {
+    fn box_continues(&self, _: &Structure, _: SegmentId, element: &Segment) -> bool {
         element.kind() == SegmentKind::Metadata && element.name().is_none()
     }
 

@@ -100,10 +100,6 @@ impl PdfState {
 }
 
 impl ContainerHandler for PdfHandler {
-    fn c2pa_hash(&self, _structure: &Structure) -> Option<crate::C2paHash> {
-        None
-    }
-
     // PDF's C2PA embedding rules for incremental updates are not implemented.
     fn c2pa_data_hash_exclusions(
         &self,

@@ -26,6 +26,18 @@ schemas. Callers decide what each byte range means.
   writer copies, replaces or moves. Each has framing (header and trailer
   **roles**) and a payload. Its `SegmentKind` gives its dominant purpose:
   `Preamble`, `Metadata`, `MediaData` or `Other`.
+- **Elements** are the finest tiling: `elements` expands subdividing segments
+  into their smaller structural units, such as JPEG restart intervals.
+- **Boxes** group elements according to the container, such as a GIF application
+  extension and its data sub-blocks. `boxes()` returns `BoxInfo` values containing
+  a name, range and XMP/EXIF metadata ranges. Unnamed bytes have `name: None`.
+  This view tiles the asset without C2PA-specific names or restrictions.
+  `boxes_with(item, name)` groups each contiguous run of the selected item's
+  segments under a supplied name, framing included. Both methods read nothing
+  and work on planned structures.
+  `supports_named_boxes()` reports whether the container's own structure is
+  entirely named boxes, ignoring unnamed trailing bytes. It is a structural
+  capability, not a choice of hashing or signing scheme.
 - **Items** are the logical units a format defines, such as XMP, JUMBF, EXIF or
   an embedded file. Each has an `ItemKind` (the specification that defines it), an
   `Encoding` (its serialization) and a category derived from its kind (metadata
@@ -155,25 +167,24 @@ found before the output exists.
 
 ### Hard bindings
 
-`c2pa_hash()` names the binding an embedded manifest calls for:
-
-| Binding | Containers |
-|---------|------------|
-| `C2paHash::Box` (`c2pa.hash.boxes`) | JPEG, PNG, RIFF, GIF |
-| `C2paHash::Data` (`c2pa.hash.data`) | SVG, TIFF, ID3 |
-| `C2paHash::Bmff` (`c2pa.hash.bmff`) | ISO BMFF |
-| None | PDF, C2PA sidecars |
-
-A caller may use a data hash where a box hash is named. Building and checking the
-assertion is the caller's job.
+Choosing, building and checking a C2PA hard-binding assertion is the caller's
+job, following the applicable container specification. `supports_named_boxes()`
+only reports a structural capability; it does not select or recommend a C2PA
+binding. For example, ISO BMFF has named boxes but C2PA defines its own
+`c2pa.hash.bmff` rules.
 
 `c2pa_boxes()` lists the boxes a `c2pa.hash.boxes` covers (C2PA 2.4, 18.7), in
 order and tiling the asset. Box names come from the handler; for example, a JPEG
 scan with restart markers is its `SOS` box plus one per `RSTn`, and a RIFF `LIST`
 chunk is named by its list type. The store is one `C2PA` box and bytes after the
 structure are one `c2pa.after` box. Each box lists the metadata ranges (XMP,
-EXIF) a box hash may exclude. It works on planned structures, and
-`c2pa_boxes_with(item)` reads nothing.
+EXIF) a box hash may exclude. It returns the same `BoxInfo` type as `boxes()`,
+with every name set. It works on planned structures;
+`Structure::c2pa_boxes_async(io)` supports caller-driven I/O.
+
+The generic `boxes_with(item, name)` does not identify a C2PA store, assign
+`c2pa.after`, or enforce C2PA hashing constraints. Use `c2pa_boxes()` when the
+C2PA-specific view is required.
 
 `c2pa_data_hash_exclusions(item)` returns the ranges a `c2pa.hash.data` excludes,
 checked, sorted and merged. The default excludes the whole segments carrying the

@@ -51,22 +51,6 @@ impl<T: Read + Write + Seek + ?Sized> ReadWriteSeek for T {}
 /// How many leading bytes [`ContainerHandler::detect`] is given.
 pub const DETECT_LEN: usize = 64;
 
-/// The kind of C2PA hard-binding assertion a container's embedded manifest uses;
-/// see [`ContainerHandler::c2pa_hash`]. Creating and checking the assertion is
-/// the caller's; this only says which one the container calls for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum C2paHash {
-    /// `c2pa.hash.data`: every byte outside the ranges
-    /// [`Structure::c2pa_data_hash_exclusions`] returns.
-    Data,
-    /// `c2pa.hash.boxes`: each box [`Structure::c2pa_boxes`] lists.
-    Box,
-    /// `c2pa.hash.bmff`: the ISO BMFF box tree, as the C2PA specification
-    /// defines it for BMFF.
-    Bmff,
-}
-
 /// One format a container handler serves: a media type and its file extensions.
 ///
 /// A container that carries several media types (ISO BMFF: HEIC, MP4, M4A...)
@@ -137,48 +121,35 @@ pub trait ContainerHandler: std::fmt::Debug + Send + Sync {
     /// The formats this handler serves, each a media type with its extensions.
     fn formats(&self) -> &[FormatSpec];
 
-    /// The C2PA hard binding an embedded manifest in `structure` should use, or
-    /// `None` when asset-io cannot support embedding one. Called by
-    /// [`Structure::c2pa_hash`].
+    /// The container-defined box name of `element`, or `None` if it is not a
+    /// named box. Called by [`Structure::box_name`] for inspection and other
+    /// consumers of the container structure, including [`Structure::c2pa_boxes`].
+    /// The default covers four character codes, numeric ids and hexadecimal
+    /// one-byte marker codes. Override it for names with other text (JPEG marker
+    /// symbols) or names that need parsed context (RIFF form and list types).
     ///
-    /// The default is [`C2paHash::Box`] when every element of the container's own
-    /// structure has a [`box_name`](Self::box_name) or
-    /// [continues](Self::c2pa_box_continues) a box, so
-    /// [`Structure::c2pa_boxes`] can list it, and [`C2paHash::Data`] otherwise:
-    /// for containers without meaningful boxes.
-    fn c2pa_hash(&self, structure: &Structure) -> Option<C2paHash> {
-        let named = structure.segments()[..structure.box_count()]
-            .iter()
-            .enumerate()
-            .all(|(i, s)| {
-                SegmentId::from_index(i).is_ok_and(|id| {
-                    self.c2pa_box_name(structure, id, s).is_some()
-                        || self.c2pa_box_continues(structure, id, s)
-                })
-            });
-        Some(if named { C2paHash::Box } else { C2paHash::Data })
-    }
-
-    /// The name a C2PA box hash lists `element` of `segment` under, or `None` if it
-    /// is not a box. Called by [`Structure::c2pa_boxes`]. The default is
-    /// [`box_name`](Self::box_name); a container whose C2PA box names are not its
-    /// element names (RIFF lists a `RIFF` or `LIST` chunk under its type)
-    /// overrides it.
-    fn c2pa_box_name(
+    /// `segment` identifies the owning segment in `structure`; `element` may be
+    /// a finer element within it, as reported by [`Structure::elements`].
+    fn box_name(
         &self,
         _structure: &Structure,
         _segment: SegmentId,
         element: &Segment,
     ) -> Option<Cow<'static, str>> {
-        self.box_name(element.name())
+        match element.name() {
+            Name::None => None,
+            Name::FourCC(cc) => Some(Cow::Owned(String::from_utf8_lossy(&cc).into_owned())),
+            Name::Id(n) => Some(Cow::Owned(n.to_string())),
+            name @ Name::Marker(_) => Some(Cow::Owned(name.to_string())),
+        }
     }
 
     /// Whether `element` of `segment` is the rest of the box before it, so
-    /// [`Structure::c2pa_boxes`] lists both as one box. Called before
-    /// [`c2pa_box_name`](Self::c2pa_box_name). The default is `false`. A
+    /// [`Structure::boxes`] lists both as one box. Called before
+    /// [`box_name`](Self::box_name). The default is `false`. A
     /// container that splits one box into several segments overrides it: GIF
     /// stores each data sub-block of an application extension as a segment.
-    fn c2pa_box_continues(
+    fn box_continues(
         &self,
         _structure: &Structure,
         _segment: SegmentId,
@@ -358,10 +329,10 @@ pub trait ContainerHandler: std::fmt::Debug + Send + Sync {
         f: &mut dyn FnMut(&Node<'_>) -> Result<()>,
     ) -> Result<()> {
         let mut path = String::new();
-        for seg in structure.segments() {
+        for (i, seg) in structure.segments().iter().enumerate() {
             path.clear();
             path.push('/');
-            if let Some(n) = self.box_name(seg.name()) {
+            if let Some(n) = self.box_name(structure, SegmentId::from_index(i)?, seg) {
                 path.push_str(&n);
             }
             f(&Node {
@@ -387,17 +358,5 @@ pub trait ContainerHandler: std::fmt::Debug + Send + Sync {
         _segment: SegmentId,
     ) -> Result<()> {
         Ok(())
-    }
-
-    /// The name a box-based hash lists for `name`, or `None` if the element is not
-    /// a box. The default covers four character codes and numeric ids; override it
-    /// for names with other text, such as JPEG marker symbols.
-    fn box_name(&self, name: Name) -> Option<Cow<'static, str>> {
-        match name {
-            Name::None => None,
-            Name::FourCC(cc) => Some(Cow::Owned(String::from_utf8_lossy(&cc).into_owned())),
-            Name::Id(n) => Some(Cow::Owned(n.to_string())),
-            Name::Marker(_) => Some(Cow::Owned(name.to_string())),
-        }
     }
 }

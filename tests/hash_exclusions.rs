@@ -136,30 +136,41 @@ fn containers_with_other_bindings_refuse_rather_than_guess() {
 }
 
 #[test]
-fn each_container_names_its_c2pa_hard_binding() {
-    use asset_io::C2paHash;
+fn each_container_reports_named_box_support() {
     for (format, input, expected) in [
-        ("jpg", vec![0xff, 0xd8, 0xff, 0xd9], Some(C2paHash::Box)),
+        ("jpg", vec![0xff, 0xd8, 0xff, 0xd9], true),
         (
             "png",
             b"\x89PNG\r\n\x1a\n\0\0\0\0IEND\xae\x42\x60\x82".to_vec(),
-            Some(C2paHash::Box),
+            true,
         ),
-        ("wav", b"RIFF\x04\0\0\0WAVE".to_vec(), Some(C2paHash::Box)),
-        ("gif", GIF.to_vec(), Some(C2paHash::Box)),
+        ("wav", b"RIFF\x04\0\0\0WAVE".to_vec(), true),
+        ("gif", GIF.to_vec(), true),
         (
             "svg",
             br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#.to_vec(),
-            Some(C2paHash::Data),
+            false,
         ),
+        ("mp4", b"\0\0\0\x18ftypisom\0\0\0\0isommp42".to_vec(), true),
+        ("c2pa", store(33), false),
+        #[cfg(feature = "pdf")]
         (
-            "mp4",
-            b"\0\0\0\x18ftypisom\0\0\0\0isommp42".to_vec(),
-            Some(C2paHash::Bmff),
+            "pdf",
+            include_bytes!("fixtures/pdf_metadata.pdf").to_vec(),
+            false,
         ),
-        ("c2pa", store(33), None),
+        #[cfg(feature = "tiff")]
+        (
+            "tif",
+            include_bytes!("fixtures/tiff_multipage.tif").to_vec(),
+            false,
+        ),
     ] {
-        assert_eq!(open(format, &input).c2pa_hash(), expected, "{format}");
+        assert_eq!(
+            open(format, &input).supports_named_boxes(),
+            expected,
+            "{format}"
+        );
     }
 }
 
@@ -185,6 +196,13 @@ fn c2pa_boxes_tile_the_asset_with_one_store_box() {
             asset.write(&mut bytes, &updates, &mut NullSink).unwrap();
             let parsed = open(format, &bytes);
 
+            assert!(parsed.supports_named_boxes(), "{format}");
+            assert!(planned.supports_named_boxes(), "{format}");
+            assert_eq!(
+                planned.boxes().unwrap(),
+                parsed.boxes().unwrap(),
+                "{format}"
+            );
             let boxes = parsed.c2pa_boxes().unwrap();
             assert_eq!(
                 planned.c2pa_boxes(&mut Cursor::new([])).unwrap(),
@@ -197,10 +215,27 @@ fn c2pa_boxes_tile_the_asset_with_one_store_box() {
                 end = b.range.end();
             }
             assert_eq!(end, parsed.total_size());
-            let store_boxes: Vec<_> = boxes.iter().filter(|b| b.name == C2PA_BOX).collect();
+            let store_boxes: Vec<_> = boxes
+                .iter()
+                .filter(|b| b.name.as_deref() == Some(C2PA_BOX))
+                .collect();
             assert_eq!(store_boxes.len(), 1, "{format}, {len}");
             // The store box covers whatever its data-hash exclusion does.
             let item = parsed.require_item(ItemKind::Jumbf).unwrap();
+            let grouped = parsed.boxes_with(item, "selected").unwrap();
+            let selected: Vec<_> = grouped
+                .iter()
+                .filter(|b| b.name.as_deref() == Some("selected"))
+                .collect();
+            assert_eq!(selected.len(), 1, "{format}, {len}");
+            assert_eq!(selected[0].range, store_boxes[0].range);
+            assert_eq!(
+                planned
+                    .boxes_with(planned.require_item(ItemKind::Jumbf).unwrap(), "selected")
+                    .unwrap(),
+                grouped,
+                "{format}"
+            );
             let excluded = parsed.c2pa_data_hash_exclusions(item).unwrap();
             assert!(store_boxes[0].range.offset() <= excluded[0].offset());
             assert!(store_boxes[0].range.end() >= excluded[excluded.len() - 1].end());
@@ -211,11 +246,16 @@ fn c2pa_boxes_tile_the_asset_with_one_store_box() {
                 continue;
             }
             bytes.extend_from_slice(b"trailing");
-            let boxes = open(format, &bytes).c2pa_boxes().unwrap();
+            let parsed = open(format, &bytes);
+            assert!(
+                parsed.supports_named_boxes(),
+                "{format}: unnamed trailing bytes"
+            );
+            let boxes = parsed.c2pa_boxes().unwrap();
             let last = boxes.last().unwrap();
             assert_eq!(
-                (last.name.as_ref(), last.range.len()),
-                (AFTER_BOX, 8),
+                (last.name.as_deref(), last.range.len()),
+                (Some(AFTER_BOX), 8),
                 "{format}"
             );
         }
@@ -230,10 +270,16 @@ fn c2pa_boxes_tile_the_asset_with_one_store_box() {
 /// Box names and ranges, as `(name, offset, len)`.
 type Named = Vec<(String, u64, u64)>;
 
-fn named(boxes: &[asset_io::C2paBox]) -> Named {
+fn named(boxes: &[asset_io::BoxInfo]) -> Named {
     boxes
         .iter()
-        .map(|b| (b.name.to_string(), b.range.offset(), b.range.len()))
+        .map(|b| {
+            (
+                b.name.as_deref().unwrap().to_owned(),
+                b.range.offset(),
+                b.range.len(),
+            )
+        })
         .collect()
 }
 
@@ -248,7 +294,13 @@ fn planned_and_written(format: &str, input: &[u8]) -> (Named, Named, Vec<u8>) {
     let planned_boxes = named(&planned.c2pa_boxes(&mut Cursor::new(input)).unwrap());
     let mut bytes = Vec::new();
     asset.write(&mut bytes, &updates, &mut NullSink).unwrap();
-    let written_boxes = named(&open(format, &bytes).c2pa_boxes().unwrap());
+    let written = open(format, &bytes);
+    assert_eq!(
+        planned.boxes().unwrap(),
+        written.boxes().unwrap(),
+        "{format}"
+    );
+    let written_boxes = named(&written.c2pa_boxes().unwrap());
     (planned_boxes, written_boxes, bytes)
 }
 
@@ -365,12 +417,15 @@ fn boxes_report_their_asset_metadata() {
         )
         .unwrap();
     let boxes = open("png", &bytes).c2pa_boxes().unwrap();
-    let itxt = boxes.iter().find(|b| b.name == "iTXt").unwrap();
+    let itxt = boxes
+        .iter()
+        .find(|b| b.name.as_deref() == Some("iTXt"))
+        .unwrap();
     assert_eq!(itxt.metadata.len(), 1);
     let m = itxt.metadata[0];
     assert_eq!(&bytes[m.offset() as usize..m.end() as usize], &xmp[..]);
     assert!(boxes
         .iter()
-        .filter(|b| b.name != "iTXt")
+        .filter(|b| b.name.as_deref() != Some("iTXt"))
         .all(|b| b.metadata.is_empty()));
 }

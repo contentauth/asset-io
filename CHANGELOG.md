@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Replace `ContainerHandler::c2pa_box_name` and the context-free `box_name` with
+  one contextual `box_name` hook. `Structure::box_name` now takes the owning
+  segment ID and element, so inspection and C2PA hashing use the same naming rules.
+- Replace `C2paBox` with generic `BoxInfo`, whose name is optional for unnamed
+  bytes. Add `Structure::boxes()` and replace `c2pa_boxes_with` with
+  `boxes_with(item, name)` for caller-selected grouping. Rename the handler's
+  continuation hook to `box_continues`. C2PA naming and validation remain in
+  `c2pa_boxes`, with `c2pa_boxes_async` for caller-driven I/O.
+- Replace `C2paHash` and `c2pa_hash` with `Structure::supports_named_boxes()`,
+  a boolean derived from the generic box structure. Hash-binding selection is
+  left to callers.
+
 ## [0.4.0](https://github.com/contentauth/asset-io/compare/v0.3.2...v0.4.0) - 2026-11-09
 
 ### Added

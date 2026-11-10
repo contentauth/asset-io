@@ -16,7 +16,7 @@ use std::io::Cursor;
 use super::*;
 use crate::{
     testing::{write, Conformance},
-    C2paHash, NullSink,
+    NullSink,
 };
 
 // ── Builders ─────────────────────────────────────────────────────────────────
@@ -236,7 +236,7 @@ fn data_hash_excludes_the_whole_block() {
     let manifest = block(ItemKind::Jumbf, &jumbf_stub(600));
     let g = gif(b"GIF89a", &[manifest.clone(), image()]);
     let s = parse(&g).unwrap();
-    assert_eq!(s.c2pa_hash(), Some(C2paHash::Box));
+    assert!(s.supports_named_boxes());
     let ex = s
         .c2pa_data_hash_exclusions(s.require_item(ItemKind::Jumbf).unwrap())
         .unwrap();
@@ -305,7 +305,13 @@ fn boxes_of(s: &Structure, src: &[u8]) -> Vec<(String, u64, u64)> {
     s.c2pa_boxes(&mut Cursor::new(src))
         .unwrap()
         .iter()
-        .map(|b| (b.name.to_string(), b.range.offset(), b.range.len()))
+        .map(|b| {
+            (
+                b.name.as_deref().unwrap().to_owned(),
+                b.range.offset(),
+                b.range.len(),
+            )
+        })
         .collect()
 }
 
@@ -330,7 +336,7 @@ fn box_hash_lists_each_block_as_c2pa_rs_does() {
     let planned = src.plan(&mut Cursor::new(&g), &updates).unwrap();
     let out = edit(&g, &updates).unwrap();
     let written = parse(&out).unwrap();
-    assert_eq!(written.c2pa_hash(), Some(C2paHash::Box));
+    assert!(written.supports_named_boxes());
 
     let c2pa = block(ItemKind::Jumbf, &store).len() as u64;
     let mut at = 0;

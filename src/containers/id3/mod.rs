@@ -58,8 +58,7 @@ use crate::{
         StructureBuilder, WritePlan,
     },
     jumbf::superbox_type,
-    ByteRange, C2paHash, Error, Item, ItemKind, Name, Result, SegmentId, SegmentKind, Structure,
-    Updates,
+    ByteRange, Error, Item, ItemKind, Name, Result, SegmentId, SegmentKind, Structure, Updates,
 };
 
 /// The ID3 container's [`ContainerHandler::id`].
@@ -116,11 +115,6 @@ impl ContainerHandler for Id3Handler {
     /// file; parsing tells MP3 from FLAC.
     fn detect(&self, header: &[u8]) -> bool {
         header.starts_with(b"ID3") || header.starts_with(FLAC_MARKER)
-    }
-
-    // No box structure to hash: the data hash excludes the object data.
-    fn c2pa_hash(&self, _structure: &Structure) -> Option<C2paHash> {
-        Some(C2paHash::Data)
     }
 
     fn c2pa_data_hash_exclusions(

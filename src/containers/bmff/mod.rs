@@ -231,10 +231,6 @@ pub fn handler() -> Arc<dyn ContainerHandler> {
 pub const ID: &str = "bmff";
 
 impl ContainerHandler for BmffHandler {
-    fn c2pa_hash(&self, _structure: &Structure) -> Option<crate::C2paHash> {
-        Some(crate::C2paHash::Bmff)
-    }
-
     // C2PA binds ISO BMFF with `c2pa.hash.bmff`, not a data hash.
     fn c2pa_data_hash_exclusions(
         &self,

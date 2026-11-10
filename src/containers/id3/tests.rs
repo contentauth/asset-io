@@ -208,7 +208,7 @@ fn data_hash_excludes_only_the_object_data() {
     let ex = s.c2pa_data_hash_exclusions(item).unwrap();
     assert_eq!(ex.len(), 1);
     assert_eq!(&f[ex[0].offset() as usize..ex[0].end() as usize], &stub[..]);
-    assert_eq!(s.c2pa_hash(), Some(C2paHash::Data));
+    assert!(!s.supports_named_boxes());
 }
 
 #[test]
