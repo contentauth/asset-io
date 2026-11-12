@@ -48,7 +48,6 @@ use crate::{
         StructureBuilder, WritePlan,
     },
     io::Reader,
-    jumbf::superbox_type,
     ByteRange, Error, ItemKind, Name, Result, Segment, SegmentId, SegmentKind, Structure, Updates,
 };
 
@@ -190,7 +189,7 @@ impl ContainerHandler for GifHandler {
 
 fn app_id(kind: ItemKind) -> Option<&'static [u8; 11]> {
     match kind {
-        ItemKind::Jumbf => Some(C2PA_APP),
+        ItemKind::C2pa => Some(C2PA_APP),
         ItemKind::Xmp => Some(XMP_APP),
         _ => None,
     }
@@ -314,7 +313,7 @@ async fn app_kind(r: &mut Reader<'_>, at: u64, total: u64) -> Result<Option<Item
     r.seek(at);
     let a = r.array::<12>().await?;
     Ok(match (a[0], &a[1..]) {
-        (11, id) if id == C2PA_APP => Some(ItemKind::Jumbf),
+        (11, id) if id == C2PA_APP => Some(ItemKind::C2pa),
         (11, id) if id == XMP_APP => Some(ItemKind::Xmp),
         _ => None,
     })
@@ -362,15 +361,8 @@ async fn app_block(
         (at, n) = (next_at, next);
     }
 
-    if kind == ItemKind::Jumbf {
-        let first = parts[0].1;
-        let ty = if first.len() >= 32 {
-            r.seek(first.offset());
-            superbox_type(r.take(32).await?)
-        } else {
-            None
-        };
-        return b.item(ItemInfo::jumbf().jumbf_type(ty), &parts);
+    if kind == ItemKind::C2pa {
+        return b.item(ItemInfo::c2pa(), &parts);
     }
     match xmp_extents(r, &parts).await? {
         Some(extents) => b.item(ItemInfo::xmp(), &extents),
@@ -426,7 +418,7 @@ enum Op<'a> {
 fn plan<'a>(src: &Structure, gif87a: bool, updates: &'a Updates) -> Result<WritePlan<'a>> {
     let segs = src.segments();
     let mut xmp = MetadataSlot::new(updates.xmp());
-    let mut jumbf = MetadataSlot::new(updates.jumbf());
+    let mut jumbf = MetadataSlot::new(updates.c2pa());
     let mut ops = Vec::with_capacity(segs.len() + 2);
     let (mut changed, mut after_screen) = (false, None);
 
@@ -448,7 +440,7 @@ fn plan<'a>(src: &Structure, gif87a: bool, updates: &'a Updates) -> Result<Write
         }
         let slot = match src.items_in(id).next().map(|e| e.kind()) {
             Some(ItemKind::Xmp) => Some((ItemKind::Xmp, &mut xmp)),
-            Some(ItemKind::Jumbf) => Some((ItemKind::Jumbf, &mut jumbf)),
+            Some(ItemKind::C2pa) => Some((ItemKind::C2pa, &mut jumbf)),
             _ => None,
         };
         match slot.map(|(kind, s)| (kind, s.existing())) {
@@ -467,7 +459,7 @@ fn plan<'a>(src: &Structure, gif87a: bool, updates: &'a Updates) -> Result<Write
     }
 
     let adds: Vec<Op<'a>> = [
-        (ItemKind::Jumbf, jumbf.pending()),
+        (ItemKind::C2pa, jumbf.pending()),
         (ItemKind::Xmp, xmp.pending()),
     ]
     .into_iter()
@@ -517,7 +509,7 @@ fn plan<'a>(src: &Structure, gif87a: bool, updates: &'a Updates) -> Result<Write
 /// Add a C2PA or XMP block holding `data`, one segment per sub-block, and its item.
 /// The data is borrowed, not copied. Empty data adds nothing.
 fn put_block<'a>(b: &mut PlanBuilder<'_, 'a>, kind: ItemKind, data: &'a [u8]) -> Result<()> {
-    let app = app_id(kind).ok_or(Error::UnsupportedFormat)?;
+    let app = app_id(kind).ok_or(Error::UnsupportedItem(kind))?;
     if data.is_empty() {
         return Ok(());
     }
@@ -541,7 +533,7 @@ fn put_block<'a>(b: &mut PlanBuilder<'_, 'a>, kind: ItemKind, data: &'a [u8]) ->
     }
     let info = match kind {
         ItemKind::Xmp => ItemInfo::xmp(),
-        _ => ItemInfo::jumbf(),
+        _ => ItemInfo::c2pa(),
     };
     b.item(info, &content)
 }

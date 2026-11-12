@@ -61,13 +61,19 @@ impl ContainerHandler for C2paHandler {
         superbox_type(header) == Some(C2PA_STORE_TYPE)
     }
 
-    fn parse_async(self: Arc<Self>, mut io: Io) -> BoxFuture<'static, Result<Structure>> {
+    fn parse_async(self: Arc<Self>, io: Io) -> BoxFuture<'static, Result<Structure>> {
         Box::pin(async move {
             let total = io.len();
             let mut builder = StructureBuilder::new(self, "application/c2pa", total);
             if total != 0 {
-                let info = item_info(io.fetch(0, total.min(32) as usize).await?);
-                builder.push_item(SegmentKind::Metadata, Name::None, 0, total, 0, info)?;
+                builder.push_item(
+                    SegmentKind::Metadata,
+                    Name::None,
+                    0,
+                    total,
+                    0,
+                    ItemInfo::c2pa(),
+                )?;
             }
             builder.finish()
         })
@@ -83,7 +89,7 @@ impl ContainerHandler for C2paHandler {
     }
 
     fn compose(&self, kind: ItemKind, data: &[u8]) -> Result<Vec<u8>> {
-        if kind != ItemKind::Jumbf {
+        if kind != ItemKind::C2pa {
             return Err(Error::UnsupportedFormat);
         }
         Ok(data.to_vec())
@@ -99,26 +105,16 @@ impl ContainerHandler for C2paHandler {
     }
 }
 
-fn item_info(data: &[u8]) -> ItemInfo {
-    ItemInfo::jumbf().jumbf_type(superbox_type(data))
-}
-
 fn plan<'a>(source: &Structure, updates: &'a Updates) -> Result<WritePlan<'a>> {
     match updates.xmp() {
         MetadataUpdate::Keep | MetadataUpdate::Remove => {}
-        _ => {
-            return Err(Error::UnsupportedFeature(
-                "C2PA sidecars cannot contain XMP",
-            ))
-        }
+        _ => return Err(Error::UnsupportedItem(ItemKind::Xmp)),
     }
 
     let mut builder = PlanBuilder::new(source);
-    let keep = match updates.jumbf() {
+    let keep = match updates.c2pa() {
         MetadataUpdate::Keep => true,
-        MetadataUpdate::Remove => !source
-            .items_of(ItemKind::Jumbf)
-            .any(|item| updates.jumbf_targets(item.jumbf_type())),
+        MetadataUpdate::Remove => false,
         MetadataUpdate::Set(data) => {
             if !data.is_empty() {
                 let id = builder.put_segment(
@@ -128,7 +124,7 @@ fn plan<'a>(source: &Structure, updates: &'a Updates) -> Result<WritePlan<'a>> {
                     data.as_slice(),
                     &[][..],
                 )?;
-                builder.item(item_info(data), &[id])?;
+                builder.item(ItemInfo::c2pa(), &[id])?;
             }
             false
         }

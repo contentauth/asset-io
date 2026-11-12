@@ -23,7 +23,7 @@
 //!
 //! C2PA's content provenance boxes (`uuid` D8FEC3D6-...) are
 //! [`Metadata`](SegmentKind::Metadata) segments holding one item each:
-//! `manifest`, `original` and `update` boxes are [`ItemKind::Jumbf`] items
+//! `manifest`, `original` and `update` boxes are [`ItemKind::C2pa`] items
 //! labelled with their purpose, whose payload is the manifest store itself (the
 //! purpose string and the merkle offset field belong to the header). `merkle` boxes
 //! are [`ItemKind::Other`] items labelled `merkle`. An XMP `uuid` box is an
@@ -60,9 +60,9 @@
 //!
 //! # Writing
 //!
-//! `Updates::set_jumbf` writes a `manifest` box: it replaces the existing
+//! `Updates::set_c2pa` writes a `manifest` box: it replaces the existing
 //! `manifest` (or `original`) box in place, or is inserted after `ftyp`. Any
-//! `update` box is dropped, as when a file is re-signed. `remove_jumbf` drops every
+//! `update` box is dropped, as when a file is re-signed. `remove_c2pa` drops every
 //! C2PA box. XMP follows the same placement rules, and is always written as the
 //! `uuid` box.
 //!
@@ -77,7 +77,7 @@
 //! final size and filled in with `Structure::patch_exact` once the media has been
 //! hashed during the write.
 //!
-//! `set_jumbf(store).as_update()` is the same as `set_jumbf` unless the new store begins
+//! `set_c2pa(store).as_update()` is the same as `set_c2pa` unless the new store begins
 //! with the manifests already in the file, byte for byte. Then those stay as they
 //! are (a `manifest` box becomes `original`; only its purpose changes) and the
 //! rest is written as the `update` box, added at the end of the file or replacing
@@ -296,7 +296,7 @@ impl ContainerHandler for BmffHandler {
 
     fn compose(&self, kind: ItemKind, data: &[u8]) -> Result<Vec<u8>> {
         let op = match kind {
-            ItemKind::Jumbf => new_c2pa(data)?,
+            ItemKind::C2pa => new_c2pa(data)?,
             ItemKind::Xmp => new_xmp(data)?,
             _ => return Err(Error::UnsupportedFormat),
         };
@@ -562,7 +562,7 @@ impl BoxItem {
             BoxItem::C2pa(MERKLE) => {
                 ItemInfo::new(ItemKind::Other, Encoding::Unknown).label(MERKLE)
             }
-            BoxItem::C2pa(label) => ItemInfo::jumbf().label(label),
+            BoxItem::C2pa(label) => ItemInfo::c2pa().label(label),
             BoxItem::Xmp => ItemInfo::xmp(),
         }
     }
@@ -577,7 +577,7 @@ impl BoxItem {
             item.label().and_then(|l| purpose_label(l.as_bytes())),
             item.kind(),
         ) {
-            (Some(label), ItemKind::Jumbf | ItemKind::Other) => Some(BoxItem::C2pa(label)),
+            (Some(label), ItemKind::C2pa | ItemKind::Other) => Some(BoxItem::C2pa(label)),
             (None, ItemKind::Xmp) => Some(BoxItem::Xmp),
             _ => None,
         }
@@ -777,18 +777,10 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<St
             }
         }
         if let Some(item) = c.item {
-            let mut info = item.info();
             if let BoxItem::C2pa(label) = item {
                 counts.add(label);
-                if label != MERKLE {
-                    let payload = at + c.header_len as u64;
-                    let ty =
-                        crate::jumbf::superbox_type_at(io, payload, h.size - c.header_len as u64)
-                            .await?;
-                    info = info.jumbf_type(ty);
-                }
             }
-            b.item_of_segments(info, &[id])?;
+            b.item_of_segments(item.info(), &[id])?;
         }
         at += h.size;
     }
@@ -1362,10 +1354,10 @@ async fn plan<'a>(
     // so that store is left as it is (as the original) and only what follows it is
     // written, as the update. Anything else is written as a whole.
     let frozen = src
-        .items_labelled(ItemKind::Jumbf, MANIFEST)
+        .items_labelled(ItemKind::C2pa, MANIFEST)
         .next()
-        .or_else(|| src.items_labelled(ItemKind::Jumbf, ORIGINAL).next());
-    let mut addition: Option<Vec<u8>> = match (updates.jumbf(), updates.is_jumbf_update(), frozen) {
+        .or_else(|| src.items_labelled(ItemKind::C2pa, ORIGINAL).next());
+    let mut addition: Option<Vec<u8>> = match (updates.c2pa(), updates.is_c2pa_update(), frozen) {
         (MetadataUpdate::Set(full), true, Some(e)) => {
             let existing = read_item(src, io, e).await?;
             crate::jumbf::addition_to(&existing, full)?
@@ -1380,7 +1372,7 @@ async fn plan<'a>(
             "an update manifest cannot change merkle boxes".into(),
         ));
     }
-    if matches!(updates.jumbf(), MetadataUpdate::Set(_))
+    if matches!(updates.c2pa(), MetadataUpdate::Set(_))
         && !update_mode
         && merkle_kept
         && labels.contains(&Some(MERKLE))
@@ -1400,7 +1392,7 @@ async fn plan<'a>(
     let total = src.total_size();
     let mut map = OffsetMap::default();
     let mut ops: Vec<Op<'a>> = Vec::with_capacity(segs.len() + 2);
-    let mut store = MetadataSlot::new(updates.jumbf());
+    let mut store = MetadataSlot::new(updates.c2pa());
     let mut xmp = MetadataSlot::new(updates.xmp());
     let mut ftyp_seen = false;
 
@@ -1439,7 +1431,7 @@ async fn plan<'a>(
                 _ => note(&mut map, total, end, 0, old_len)?,
             },
             // An update box does not survive a new manifest.
-            Some(UPDATE) => match updates.jumbf() {
+            Some(UPDATE) => match updates.c2pa() {
                 MetadataUpdate::Keep => ops.push(Op::Copy(id)),
                 _ => note(&mut map, total, end, 0, old_len)?,
             },
@@ -1705,7 +1697,7 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
-    use crate::TransferEncoding;
+    use crate::{testing::c2pa_store, TransferEncoding};
 
     fn boxed(ty: &[u8; 4], body: &[u8]) -> Vec<u8> {
         let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
@@ -1757,9 +1749,9 @@ mod tests {
         let covered: u64 = s.regions().map(|r| r.range.len()).sum();
         assert_eq!(covered, data.len() as u64);
 
-        let e = s.items_labelled(ItemKind::Jumbf, MANIFEST).next().unwrap();
+        let e = s.items_labelled(ItemKind::C2pa, MANIFEST).next().unwrap();
         assert_eq!(s.read_item(&mut Cursor::new(&data), e).unwrap(), b"STORE");
-        assert!(s.items_labelled(ItemKind::Jumbf, UPDATE).next().is_none());
+        assert!(s.items_labelled(ItemKind::C2pa, UPDATE).next().is_none());
     }
 
     #[test]
@@ -1954,21 +1946,7 @@ mod tests {
     }
 
     fn rewrite(src: &[u8], u: &Updates) -> Result<Vec<u8>> {
-        let s = parse(&mut Cursor::new(src))?;
-        let mut out = Cursor::new(Vec::new());
-        let dest = container_api::handler(&s).write(
-            &s,
-            &mut Cursor::new(src),
-            &mut out,
-            u,
-            &mut NullSink,
-        )?;
-        let out = out.into_inner();
-        // The structure returned is the structure of what was written.
-        let again = parse(&mut Cursor::new(&out))?;
-        assert_eq!(dest.segments(), again.segments());
-        assert_eq!(dest.total_size(), out.len() as u64);
-        Ok(out)
+        Ok(crate::testing::rewrite(handler(), src, u)?.0)
     }
 
     fn find(bytes: &[u8], path: &str) -> (u64, u64, u32) {
@@ -2000,11 +1978,11 @@ mod tests {
     #[test]
     fn conforms() {
         let c = Conformance::new(handler())
-            .jumbf(Some(b"STORE".to_vec()))
+            .c2pa(Some(crate::testing::c2pa_store_of_len(64)))
             .updates("merkle", Updates::new().set_merkle(vec![vec![0u8; 8]; 2]))
             .updates(
                 "manifest and no merkle",
-                Updates::new().set_jumbf(b"STORE".to_vec()).remove_merkle(),
+                Updates::new().set_c2pa(b"STORE".to_vec()).remove_merkle(),
             );
         c.check("plain", &media_file(&[], &[], None).0);
         c.check(
@@ -2022,10 +2000,10 @@ mod tests {
     #[test]
     fn manifest_is_inserted_after_ftyp_and_offsets_follow() {
         let (f, e0) = media_file(&[], &[], None);
-        let out = rewrite(&f, &Updates::new().set_jumbf(b"STORE".to_vec())).unwrap();
+        let out = rewrite(&f, &Updates::new().set_c2pa(b"STORE".to_vec())).unwrap();
         let s = parse(&mut Cursor::new(&out)).unwrap();
         assert_eq!(s.segments()[1].name(), Name::FourCC(UUID));
-        let e = s.items_labelled(ItemKind::Jumbf, MANIFEST).next().unwrap();
+        let e = s.items_labelled(ItemKind::C2pa, MANIFEST).next().unwrap();
         assert_eq!(s.read_item(&mut Cursor::new(&out), e).unwrap(), b"STORE");
         let added = (out.len() - f.len()) as u32;
         assert_eq!(added, 8 + 16 + 4 + 9 + 8 + 5);
@@ -2036,33 +2014,33 @@ mod tests {
     #[test]
     fn replacing_in_place_tracks_size_changes() {
         let (f, e0) = media_file(&[], &[], None);
-        let one = rewrite(&f, &Updates::new().set_jumbf(b"STORE".to_vec())).unwrap();
+        let one = rewrite(&f, &Updates::new().set_c2pa(b"STORE".to_vec())).unwrap();
 
         // Smaller: offsets shrink with it, position is kept.
-        let smaller = rewrite(&one, &Updates::new().set_jumbf(b"ST".to_vec())).unwrap();
+        let smaller = rewrite(&one, &Updates::new().set_c2pa(b"ST".to_vec())).unwrap();
         assert_eq!(smaller.len(), one.len() - 3);
         assert_eq!(stco_entry(&smaller), e0 + 47);
         assert!(media_at(&smaller, stco_entry(&smaller)));
 
         // Same size: only the payload differs and nothing is rewritten.
-        let same = rewrite(&one, &Updates::new().set_jumbf(b"STORX".to_vec())).unwrap();
+        let same = rewrite(&one, &Updates::new().set_c2pa(b"STORX".to_vec())).unwrap();
         assert_eq!(same.len(), one.len());
         assert_eq!(stco_entry(&same), stco_entry(&one));
         let diff: Vec<_> = (0..one.len()).filter(|&i| one[i] != same[i]).collect();
         assert_eq!(diff.len(), 1);
 
         // Removing restores the original file.
-        assert_eq!(rewrite(&one, &Updates::new().remove_jumbf()).unwrap(), f);
+        assert_eq!(rewrite(&one, &Updates::new().remove_c2pa()).unwrap(), f);
     }
 
     #[test]
     fn re_signing_drops_the_update_box() {
         let (f, e0) = media_file(&[c2pa_box(ORIGINAL, b"A")], &[c2pa_box(UPDATE, b"U")], None);
-        let out = rewrite(&f, &Updates::new().set_jumbf(b"NEW".to_vec())).unwrap();
+        let out = rewrite(&f, &Updates::new().set_c2pa(b"NEW".to_vec())).unwrap();
         let s = parse(&mut Cursor::new(&out)).unwrap();
-        assert_eq!(s.items_labelled(ItemKind::Jumbf, UPDATE).count(), 0);
-        assert_eq!(s.items_labelled(ItemKind::Jumbf, ORIGINAL).count(), 0);
-        assert_eq!(s.items_labelled(ItemKind::Jumbf, MANIFEST).count(), 1);
+        assert_eq!(s.items_labelled(ItemKind::C2pa, UPDATE).count(), 0);
+        assert_eq!(s.items_labelled(ItemKind::C2pa, ORIGINAL).count(), 0);
+        assert_eq!(s.items_labelled(ItemKind::C2pa, MANIFEST).count(), 1);
         // "NEW" is two bytes longer than "A" in a box of the same shape.
         assert_eq!(stco_entry(&out), e0 + 2);
         assert!(media_at(&out, stco_entry(&out)));
@@ -2070,27 +2048,26 @@ mod tests {
 
     #[test]
     fn a_new_manifest_needs_a_decision_about_merkle_boxes() {
-        let (m1, m2) = (jman("m1", b"1"), jman("m2", b"2"));
-        let first = jstore(std::slice::from_ref(&m1));
+        let (m1, m2) = (b"m1: 1".to_vec(), b"m2: 2".to_vec());
+        let first = c2pa_store(&[&m1]);
         let (f, _) = media_file(
             &[c2pa_box(MANIFEST, &first)],
             &[c2pa_box(MERKLE, b"D")],
             None,
         );
         assert_eq!(rewrite(&f, &Updates::new()).unwrap(), f);
-        assert!(rewrite(&f, &Updates::new().set_jumbf(b"B".to_vec())).is_err());
-        let removed =
-            rewrite(&f, &Updates::new().set_jumbf(b"B".to_vec()).remove_merkle()).unwrap();
+        assert!(rewrite(&f, &Updates::new().set_c2pa(b"B".to_vec())).is_err());
+        let removed = rewrite(&f, &Updates::new().set_c2pa(b"B".to_vec()).remove_merkle()).unwrap();
         let s = parse(&mut Cursor::new(&removed)).unwrap();
         assert_eq!(s.items_labelled(ItemKind::Other, MERKLE).count(), 0);
 
         // An update manifest leaves the merkle boxes alone, and cannot change them.
-        let extended = jstore(&[m1, m2]);
-        let keep = rewrite(&f, &Updates::new().set_jumbf(extended.clone()).as_update()).unwrap();
+        let extended = c2pa_store(&[&m1, &m2]);
+        let keep = rewrite(&f, &Updates::new().set_c2pa(extended.clone()).as_update()).unwrap();
         let s = parse(&mut Cursor::new(&keep)).unwrap();
         assert_eq!(merkle_payloads(&s, &keep), vec![b"D".to_vec()]);
         let u = Updates::new()
-            .set_jumbf(extended)
+            .set_c2pa(extended)
             .as_update()
             .remove_merkle();
         assert!(rewrite(&f, &u).is_err());
@@ -2207,7 +2184,7 @@ mod tests {
     fn merkle_and_manifest_together_keep_offsets_right() {
         let (f, e0) = media_file(&[], &[], None);
         let u = Updates::new()
-            .set_jumbf(b"STORE".to_vec())
+            .set_c2pa(b"STORE".to_vec())
             .set_merkle(vec![vec![7u8; 6]; 2]);
         let out = rewrite(&f, &u).unwrap();
         let s = parse(&mut Cursor::new(&out)).unwrap();
@@ -2237,7 +2214,7 @@ mod tests {
         // Nothing after it: the header is left as it was.
         let kept = rewrite(&f, &Updates::new()).unwrap();
         assert_eq!(kept, f);
-        let manifest_first = rewrite(&f, &Updates::new().set_jumbf(b"STORE".to_vec())).unwrap();
+        let manifest_first = rewrite(&f, &Updates::new().set_c2pa(b"STORE".to_vec())).unwrap();
         let at = ftyp().len() + manifest_first.len() - f.len();
         assert_eq!(be32(&manifest_first, at as u64), 0);
     }
@@ -2279,7 +2256,7 @@ mod tests {
     fn offset_tables_are_a_relocation_step_not_a_copy() {
         let (f, _) = media_file(&[], &[], None);
         let s = parse(&mut Cursor::new(&f)).unwrap();
-        let u = Updates::new().set_jumbf(b"STORE".to_vec());
+        let u = Updates::new().set_c2pa(b"STORE".to_vec());
         let plan = s.write_plan(&mut Cursor::new(&f), &u).unwrap();
         crate::plan::validate(&plan, f.len() as u64).unwrap();
         let tables: Vec<_> = plan
@@ -2316,7 +2293,7 @@ mod tests {
         let both = rewrite(
             &f,
             &Updates::new()
-                .set_jumbf(b"S".to_vec())
+                .set_c2pa(b"S".to_vec())
                 .set_xmp(b"<x/>".to_vec()),
         )
         .unwrap();
@@ -2327,7 +2304,7 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(s.segments()[1].kind(), SegmentKind::Metadata);
-        assert_eq!(held(1).kind(), ItemKind::Jumbf);
+        assert_eq!(held(1).kind(), ItemKind::C2pa);
         assert_eq!(held(2).kind(), ItemKind::Xmp);
         assert!(media_at(&both, stco_entry(&both)));
     }
@@ -2335,7 +2312,7 @@ mod tests {
     #[test]
     fn no_ftyp_means_nowhere_to_insert() {
         let f = file(&[boxed(b"free", b"")]);
-        assert!(rewrite(&f, &Updates::new().set_jumbf(b"S".to_vec())).is_err());
+        assert!(rewrite(&f, &Updates::new().set_c2pa(b"S".to_vec())).is_err());
         assert_eq!(rewrite(&f, &Updates::new()).unwrap(), f);
     }
 
@@ -2343,7 +2320,7 @@ mod tests {
     fn offsets_that_cannot_move_are_errors() {
         // 32-bit chunk offset that would pass 4 GiB.
         let (f, _) = media_file(&[], &[], Some(0xffff_fff8));
-        assert!(rewrite(&f, &Updates::new().set_jumbf(b"S".to_vec())).is_err());
+        assert!(rewrite(&f, &Updates::new().set_c2pa(b"S".to_vec())).is_err());
 
         // A table claiming more entries than its box holds.
         let mut body = 0xffff_ffffu32.to_be_bytes().to_vec();
@@ -2353,34 +2330,13 @@ mod tests {
             moov_with(&full(b"stco", 0, 0, &body)),
             boxed(b"mdat", b"MEDIA"),
         ]);
-        assert!(rewrite(&f, &Updates::new().set_jumbf(b"S".to_vec())).is_err());
-    }
-
-    fn jstore(children: &[Vec<u8>]) -> Vec<u8> {
-        let mut d = vec![7u8; 16];
-        d.push(3);
-        d.extend_from_slice(b"c2pa\0");
-        let mut body = boxed(b"jumd", &d);
-        for c in children {
-            body.extend_from_slice(c);
-        }
-        boxed(b"jumb", &body)
-    }
-
-    fn jman(label: &str, data: &[u8]) -> Vec<u8> {
-        let mut d = vec![1u8; 16];
-        d.push(3);
-        d.extend_from_slice(label.as_bytes());
-        d.push(0);
-        let mut body = boxed(b"jumd", &d);
-        body.extend_from_slice(&boxed(b"json", data));
-        boxed(b"jumb", &body)
+        assert!(rewrite(&f, &Updates::new().set_c2pa(b"S".to_vec())).is_err());
     }
 
     fn payload_of(bytes: &[u8], label: &str) -> Option<Vec<u8>> {
         let s = parse(&mut Cursor::new(bytes)).unwrap();
         let found = s
-            .items_labelled(ItemKind::Jumbf, label)
+            .items_labelled(ItemKind::C2pa, label)
             .next()
             .map(|e| s.read_item(&mut Cursor::new(bytes), e).unwrap());
         found
@@ -2388,14 +2344,12 @@ mod tests {
 
     #[test]
     fn an_update_keeps_the_manifest_as_original_and_adds_an_update_box() {
-        let (m1, m2) = (jman("m1", b"1"), jman("m2", b"2"));
-        let first = jstore(std::slice::from_ref(&m1));
+        let (m1, m2) = (b"m1: 1".to_vec(), b"m2: 2".to_vec());
+        let first = c2pa_store(&[&m1]);
         let (f, e0) = media_file(&[c2pa_box(MANIFEST, &first)], &[], None);
         let out = rewrite(
             &f,
-            &Updates::new()
-                .set_jumbf(jstore(&[m1, m2.clone()]))
-                .as_update(),
+            &Updates::new().set_c2pa(c2pa_store(&[&m1, &m2])).as_update(),
         )
         .unwrap();
 
@@ -2403,7 +2357,7 @@ mod tests {
         let mut expect = f.clone();
         let at = expect.windows(9).position(|w| w == b"manifest\0").unwrap();
         expect[at..at + 8].copy_from_slice(b"original");
-        expect.extend_from_slice(&c2pa_box(UPDATE, &jstore(&[m2])));
+        expect.extend_from_slice(&c2pa_box(UPDATE, &c2pa_store(&[&m2])));
         assert_eq!(out, expect);
 
         assert_eq!(payload_of(&out, ORIGINAL).unwrap(), first);
@@ -2413,25 +2367,19 @@ mod tests {
 
     #[test]
     fn later_updates_replace_the_update_store() {
-        let (m1, m2, m3) = (jman("m1", b"1"), jman("m2", b"2"), jman("m3", b"3"));
+        let (m1, m2, m3) = (b"m1: 1".to_vec(), b"m2: 2".to_vec(), b"m3: 3".to_vec());
         for before_moov in [false, true] {
-            let update = c2pa_box(UPDATE, &jstore(std::slice::from_ref(&m2)));
-            let original = c2pa_box(ORIGINAL, &jstore(std::slice::from_ref(&m1)));
+            let update = c2pa_box(UPDATE, &c2pa_store(&[&m2]));
+            let original = c2pa_box(ORIGINAL, &c2pa_store(&[&m1]));
             let (f, _) = if before_moov {
                 media_file(&[original, update], &[], None)
             } else {
                 media_file(&[original], &[update], None)
             };
-            let full = jstore(&[m1.clone(), m2.clone(), m3.clone()]);
-            let out = rewrite(&f, &Updates::new().set_jumbf(full).as_update()).unwrap();
-            assert_eq!(
-                payload_of(&out, UPDATE).unwrap(),
-                jstore(&[m2.clone(), m3.clone()])
-            );
-            assert_eq!(
-                payload_of(&out, ORIGINAL).unwrap(),
-                jstore(std::slice::from_ref(&m1))
-            );
+            let full = c2pa_store(&[&m1, &m2, &m3]);
+            let out = rewrite(&f, &Updates::new().set_c2pa(full).as_update()).unwrap();
+            assert_eq!(payload_of(&out, UPDATE).unwrap(), c2pa_store(&[&m2, &m3]));
+            assert_eq!(payload_of(&out, ORIGINAL).unwrap(), c2pa_store(&[&m1]));
             // An update box ahead of the media moves it; the offsets follow.
             assert!(
                 media_at(&out, stco_entry(&out)),
@@ -2439,12 +2387,12 @@ mod tests {
             );
 
             // A manifest being signed replaces its placeholder in the update store.
-            let m3b = jman("m3", b"three, signed");
-            let full = jstore(&[m1.clone(), m2.clone(), m3b.clone()]);
-            let again = rewrite(&out, &Updates::new().set_jumbf(full).as_update()).unwrap();
+            let m3b = b"m3: three, signed".to_vec();
+            let full = c2pa_store(&[&m1, &m2, &m3b]);
+            let again = rewrite(&out, &Updates::new().set_c2pa(full).as_update()).unwrap();
             assert_eq!(
                 payload_of(&again, UPDATE).unwrap(),
-                jstore(&[m2.clone(), m3b])
+                c2pa_store(&[&m2, &m3b])
             );
             assert!(media_at(&again, stco_entry(&again)));
         }
@@ -2452,79 +2400,46 @@ mod tests {
 
     #[test]
     fn an_update_that_is_not_an_extension_is_written_as_a_whole() {
-        let (m1, m2, m3) = (jman("m1", b"1"), jman("m2", b"2"), jman("m3", b"3"));
+        let (m1, m2, m3) = (b"m1: 1".to_vec(), b"m2: 2".to_vec(), b"m3: 3".to_vec());
 
         // Nothing to update.
         let (clean, _) = media_file(&[], &[], None);
-        let full = jstore(std::slice::from_ref(&m1));
-        let out = rewrite(&clean, &Updates::new().set_jumbf(full.clone()).as_update()).unwrap();
+        let full = c2pa_store(&[&m1]);
+        let out = rewrite(&clean, &Updates::new().set_c2pa(full.clone()).as_update()).unwrap();
         assert_eq!(payload_of(&out, MANIFEST).unwrap(), full);
 
         // The existing manifests changed (redaction): the whole store is written,
         // and the old update store is gone.
         let (f, _) = media_file(
             &[
-                c2pa_box(ORIGINAL, &jstore(std::slice::from_ref(&m1))),
-                c2pa_box(UPDATE, &jstore(std::slice::from_ref(&m2))),
+                c2pa_box(ORIGINAL, &c2pa_store(&[&m1])),
+                c2pa_box(UPDATE, &c2pa_store(&[&m2])),
             ],
             &[],
             None,
         );
-        let edited = jstore(&[jman("m1", b"redacted"), m2, m3]);
-        let out = rewrite(&f, &Updates::new().set_jumbf(edited.clone()).as_update()).unwrap();
+        let edited = c2pa_store(&[b"m1: redacted", &m2, &m3]);
+        let out = rewrite(&f, &Updates::new().set_c2pa(edited.clone()).as_update()).unwrap();
         assert_eq!(payload_of(&out, MANIFEST).unwrap(), edited);
         assert!(payload_of(&out, ORIGINAL).is_none());
         assert!(payload_of(&out, UPDATE).is_none());
         assert!(media_at(&out, stco_entry(&out)));
 
         // Set after update clears the hint.
-        let (f, _) = media_file(
-            &[c2pa_box(MANIFEST, &jstore(std::slice::from_ref(&m1)))],
-            &[],
-            None,
-        );
-        let extended = jstore(&[m1.clone(), jman("m9", b"9")]);
-        let plain = Updates::new().set_jumbf(extended.clone());
+        let (f, _) = media_file(&[c2pa_box(MANIFEST, &c2pa_store(&[&m1]))], &[], None);
+        let extended = c2pa_store(&[&m1, b"m9: 9"]);
+        let plain = Updates::new().set_c2pa(extended.clone());
         let out = rewrite(&f, &plain).unwrap();
         assert!(payload_of(&out, ORIGINAL).is_none());
         assert_eq!(payload_of(&out, MANIFEST).unwrap(), extended);
         // Without the hint a pure extension is a standard manifest, not an update;
-        // a later set_jumbf also clears it.
+        // a later set_c2pa also clears it.
         let cleared = Updates::new()
-            .set_jumbf(extended.clone())
+            .set_c2pa(extended.clone())
             .as_update()
-            .set_jumbf(extended.clone());
+            .set_c2pa(extended.clone());
         let out = rewrite(&f, &cleared).unwrap();
         assert!(payload_of(&out, ORIGINAL).is_none());
-    }
-
-    #[test]
-    fn a_placeholder_is_filled_in_place_at_exactly_its_size() {
-        let placeholder = vec![0u8; 40];
-        let (f, e0) = media_file(&[c2pa_box(MANIFEST, &placeholder)], &[], None);
-        let s = parse(&mut Cursor::new(&f)).unwrap();
-        let e = s.items_labelled(ItemKind::Jumbf, MANIFEST).next().unwrap();
-        let range = e.extents().next().unwrap().range();
-
-        let signed: Vec<u8> = (1..=40u8).collect();
-        let mut cur = Cursor::new(f.clone());
-        s.patch_exact(&mut cur, e, &signed).unwrap();
-        let out = cur.into_inner();
-
-        // Only the payload changed: same length, same offsets, same everything else.
-        assert_eq!(out.len(), f.len());
-        let (a, b) = (range.offset() as usize, range.end() as usize);
-        assert_eq!(&out[a..b], &signed[..]);
-        assert_eq!(&out[..a], &f[..a]);
-        assert_eq!(&out[b..], &f[b..]);
-        assert_eq!(stco_entry(&out), e0);
-
-        // A different size is an error and leaves the file alone.
-        for bad in [&signed[..39], &[signed.clone(), vec![0]].concat()[..]] {
-            let mut cur = Cursor::new(f.clone());
-            assert!(s.patch_exact(&mut cur, e, bad).is_err());
-            assert_eq!(cur.into_inner(), f);
-        }
     }
 
     const EXIF_ITEM: &[u8] = b"\0\0\0\x06Exif\0\0II*\0\x08\0\0\0";
@@ -2623,7 +2538,7 @@ mod tests {
             let s = parse(&mut Cursor::new(&f)).unwrap();
             let (s, f) = if write {
                 // The media type is carried through a write that moves the item.
-                let out = rewrite(&f, &Updates::new().set_jumbf(b"STORE".to_vec())).unwrap();
+                let out = rewrite(&f, &Updates::new().set_c2pa(b"STORE".to_vec())).unwrap();
                 (parse(&mut Cursor::new(&out)).unwrap(), out)
             } else {
                 (s, f)
@@ -2671,7 +2586,7 @@ mod tests {
                 &s,
                 &mut Cursor::new(&f),
                 &mut out,
-                &Updates::new().set_jumbf(b"STORE".to_vec()),
+                &Updates::new().set_c2pa(b"STORE".to_vec()),
                 &mut NullSink,
             )
             .unwrap();
@@ -2993,7 +2908,7 @@ mod tests {
         for updates in [
             Updates::new().set_xmp(b"<new/>".to_vec()),
             Updates::new().remove_xmp(),
-            Updates::new().set_jumbf(b"STORE".to_vec()),
+            Updates::new().set_c2pa(b"STORE".to_vec()),
         ] {
             let out = rewrite(&f, &updates).unwrap();
             let s = parse(&mut Cursor::new(&out)).unwrap();
@@ -3060,7 +2975,7 @@ mod tests {
         };
         let media = (build(0).len() - 5) as u32;
         let f = build(media);
-        let out = rewrite(&f, &Updates::new().set_jumbf(b"STORE".to_vec())).unwrap();
+        let out = rewrite(&f, &Updates::new().set_c2pa(b"STORE".to_vec())).unwrap();
         let (off, _, hl) = find(&out, "/meta/iloc");
         let v = be32(&out, off + hl as u64 + 4 + 10);
         assert_eq!(v, media + 50);
@@ -3091,7 +3006,7 @@ mod tests {
         let base = FRAGMENT_BASE;
         let f = fragmented();
 
-        let out = rewrite(&f, &Updates::new().set_jumbf(b"STORE".to_vec())).unwrap();
+        let out = rewrite(&f, &Updates::new().set_c2pa(b"STORE".to_vec())).unwrap();
         let moof_at = find(&out, "/moof").0;
         assert_eq!(moof_at, base + 50);
         let (off, _, hl) = find(&out, "/moof/traf/tfhd");

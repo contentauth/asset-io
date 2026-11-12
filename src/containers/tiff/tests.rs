@@ -8,9 +8,8 @@ use std::{
 
 use crate::{
     containers::tiff::{layout, ByteOrder, C2PA_TAG, XMP_TAG},
-    execute::Action,
     task::{Progress, Task},
-    ByteRange, Error, HandlerRegistry, ItemKind, NullSink, Structure, Updates,
+    ByteRange, Error, HandlerRegistry, ItemKind, Structure, Updates,
 };
 
 #[derive(Clone, Copy)]
@@ -195,32 +194,7 @@ fn shape(s: &Structure) -> String {
     )
 }
 fn rewrite(bytes: &[u8], updates: &Updates) -> (Vec<u8>, Structure) {
-    let source = parse(bytes);
-    let planned = source.plan(&mut Cursor::new(bytes), updates).unwrap();
-    let plan = drive(source.write_plan_task(updates), bytes);
-    crate::plan::validate(&plan, bytes.len() as u64).unwrap();
-    let mut out = Cursor::new(Vec::new());
-    let written = source
-        .write(&mut Cursor::new(bytes), &mut out, updates, &mut NullSink)
-        .unwrap();
-    let output = out.into_inner();
-    let reparsed = parse(&output);
-    for other in [&planned, plan.structure(), &written] {
-        assert_eq!(shape(other), shape(&reparsed));
-    }
-    let mut stepping = plan.start().with_buffer_len(4096);
-    let mut stepped = Vec::new();
-    loop {
-        match stepping.step(&mut NullSink).unwrap() {
-            Action::Read { offset, buf } => {
-                buf.copy_from_slice(&bytes[offset as usize..offset as usize + buf.len()])
-            }
-            Action::Write(buf) => stepped.extend_from_slice(buf),
-            Action::Done => break,
-        }
-    }
-    assert_eq!(stepped, output);
-    (output, written)
+    crate::testing::rewrite(crate::containers::tiff::handler(), bytes, updates).unwrap()
 }
 
 #[test]
@@ -249,10 +223,10 @@ fn both_byte_orders_and_widths_read_write_and_conform() {
                 &bytes,
                 &Updates::new()
                     .set_xmp(b"<xmp>metadata</xmp>".to_vec())
-                    .set_jumbf(vec![0x5a; 100]),
+                    .set_c2pa(vec![0x5a; 100]),
             );
             assert_eq!(
-                metadata(&state, &signed, ItemKind::Jumbf),
+                metadata(&state, &signed, ItemKind::C2pa),
                 Some(vec![0x5a; 100])
             );
             assert_eq!(
@@ -284,11 +258,11 @@ fn both_byte_orders_and_widths_read_write_and_conform() {
                 }
             }
             let (removed, state) = rewrite(&signed, &Updates::remove_all());
-            assert!(metadata(&state, &removed, ItemKind::Jumbf).is_none());
+            assert!(metadata(&state, &removed, ItemKind::C2pa).is_none());
             assert!(metadata(&state, &removed, ItemKind::Xmp).is_none());
             assert_eq!(layout(&state).unwrap().pages().count(), pages);
             crate::testing::Conformance::new(crate::containers::tiff::handler())
-                .jumbf(Some(vec![0; 128]))
+                .c2pa(Some(crate::testing::c2pa_store_of_len(128)))
                 .check("synthetic TIFF", &bytes);
         }
     }
@@ -303,7 +277,7 @@ fn inline_metadata_and_same_size_placeholder_patching() {
                 &bytes,
                 &Updates::new()
                     .set_xmp(vec![b'X'; length])
-                    .set_jumbf(vec![0; length]),
+                    .set_c2pa(vec![0; length]),
             );
             let range = layout(&state)
                 .unwrap()
@@ -311,11 +285,10 @@ fn inline_metadata_and_same_size_placeholder_patching() {
                 .unwrap()
                 .value_range()
                 .unwrap();
-            let (patched, updated) =
-                rewrite(&signed, &Updates::new().set_jumbf(vec![0x5a; length]));
+            let (patched, updated) = rewrite(&signed, &Updates::new().set_c2pa(vec![0x5a; length]));
             assert_eq!(patched.len(), signed.len());
             assert_eq!(
-                metadata(&updated, &patched, ItemKind::Jumbf),
+                metadata(&updated, &patched, ItemKind::C2pa),
                 Some(vec![0x5a; length])
             );
             let mut expected = signed.clone();
@@ -323,21 +296,21 @@ fn inline_metadata_and_same_size_placeholder_patching() {
             assert_eq!(patched, expected);
             let (moved, updated) = rewrite(&patched, &Updates::new().set_xmp(vec![b'Y'; 200]));
             assert_eq!(
-                metadata(&updated, &moved, ItemKind::Jumbf),
+                metadata(&updated, &moved, ItemKind::C2pa),
                 Some(vec![0x5a; length])
             );
             assert_eq!(
                 metadata(&updated, &moved, ItemKind::Xmp),
                 Some(vec![b'Y'; 200])
             );
-            let item = updated.item(ItemKind::Jumbf).unwrap().unwrap();
+            let item = updated.item(ItemKind::C2pa).unwrap().unwrap();
             let mut cursor = Cursor::new(moved);
             updated
                 .patch_exact(&mut cursor, item, &vec![0x33; length])
                 .unwrap();
             let reparsed = parse(cursor.get_ref());
             assert_eq!(
-                metadata(&reparsed, cursor.get_ref(), ItemKind::Jumbf),
+                metadata(&reparsed, cursor.get_ref(), ItemKind::C2pa),
                 Some(vec![0x33; length])
             );
         }
@@ -356,18 +329,18 @@ fn legacy_first_ifd_manifest_in_multipage_images_is_migrated_and_removable() {
             ],
         );
         assert_eq!(
-            metadata(&parse(&bytes), &bytes, ItemKind::Jumbf),
+            metadata(&parse(&bytes), &bytes, ItemKind::C2pa),
             Some(vec![0x31; 30])
         );
-        let (output, state) = rewrite(&bytes, &Updates::new().set_jumbf(vec![0x32; 45]));
+        let (output, state) = rewrite(&bytes, &Updates::new().set_c2pa(vec![0x32; 45]));
         let map = layout(&state).unwrap();
         assert_eq!(map.pages().count(), 3);
         assert!(map.pages().next().unwrap().entry(C2PA_TAG).is_none());
         assert_eq!(map.pages().last().unwrap().entries().count(), 1);
-        let (output, state) = rewrite(&output, &Updates::new().remove_jumbf());
-        assert!(metadata(&state, &output, ItemKind::Jumbf).is_none());
-        let (output, state) = rewrite(&bytes, &Updates::new().remove_jumbf());
-        assert!(metadata(&state, &output, ItemKind::Jumbf).is_none());
+        let (output, state) = rewrite(&output, &Updates::new().remove_c2pa());
+        assert!(metadata(&state, &output, ItemKind::C2pa).is_none());
+        let (output, state) = rewrite(&bytes, &Updates::new().remove_c2pa());
+        assert!(metadata(&state, &output, ItemKind::C2pa).is_none());
     }
 }
 
@@ -417,7 +390,7 @@ fn dng_subifds_exif_gps_and_bigtable_offsets_are_preserved() {
         let source = parse(&bytes);
         assert_eq!(source.media_type(), "image/x-adobe-dng");
         assert_eq!(layout(&source).unwrap().directories().count(), 2);
-        let (output, state) = rewrite(&bytes, &Updates::new().set_jumbf(vec![0x5a; 100]));
+        let (output, state) = rewrite(&bytes, &Updates::new().set_c2pa(vec![0x5a; 100]));
         assert_eq!(&output[bigtable..bigtable + 9], b"BIGTABLE!");
         assert_eq!(&output[child..bytes.len()], &bytes[child..]);
         assert_eq!(layout(&state).unwrap().directories().count(), 2);
@@ -457,7 +430,7 @@ fn registry_formats_and_composed_metadata_match_upstream() {
             registry
                 .handler(format)
                 .unwrap()
-                .compose(ItemKind::Jumbf, b"STORE")
+                .compose(ItemKind::C2pa, b"STORE")
                 .unwrap(),
             b"STORE"
         );
@@ -669,27 +642,27 @@ fn c2pa_rs_multipage_fixture_preserves_media_and_manifest_lifecycle() {
     assert!(count > 1);
     let (signed, _) = rewrite(
         bytes,
-        &Updates::new().set_jumbf(b"some manifest data".to_vec()),
+        &Updates::new().set_c2pa(b"some manifest data".to_vec()),
     );
     let (with_xmp, state) = rewrite(
         &signed,
         &Updates::new().set_xmp(b"<xmp>new metadata</xmp>".to_vec()),
     );
     assert_eq!(
-        metadata(&state, &with_xmp, ItemKind::Jumbf),
+        metadata(&state, &with_xmp, ItemKind::C2pa),
         Some(b"some manifest data".to_vec())
     );
     assert_eq!(layout(&state).unwrap().pages().count(), count + 1);
-    let (replaced, state) = rewrite(&with_xmp, &Updates::new().set_jumbf(b"short".to_vec()));
+    let (replaced, state) = rewrite(&with_xmp, &Updates::new().set_c2pa(b"short".to_vec()));
     assert_eq!(
-        metadata(&state, &replaced, ItemKind::Jumbf),
+        metadata(&state, &replaced, ItemKind::C2pa),
         Some(b"short".to_vec())
     );
-    let (removed, state) = rewrite(&replaced, &Updates::new().remove_jumbf());
+    let (removed, state) = rewrite(&replaced, &Updates::new().remove_c2pa());
     assert_eq!(layout(&state).unwrap().pages().count(), count);
-    assert!(metadata(&state, &removed, ItemKind::Jumbf).is_none());
+    assert!(metadata(&state, &removed, ItemKind::C2pa).is_none());
     crate::testing::Conformance::new(crate::containers::tiff::handler())
-        .jumbf(Some(vec![0; 128]))
+        .c2pa(Some(crate::testing::c2pa_store_of_len(128)))
         .mutations(false)
         .check("c2pa-rs MultiPage.tif", bytes);
 }
@@ -765,7 +738,7 @@ fn classic_tiff_refuses_64bit_ifd_offsets_while_bigtiff_plans_them() {
         let structure = crate::containers::tiff::handler()
             .parse(&mut source)
             .unwrap();
-        let updates = Updates::new().set_jumbf(vec![0; 100]);
+        let updates = Updates::new().set_c2pa(vec![0; 100]);
         let planned = structure.write_plan(&mut source, &updates);
         if f.big {
             let plan = planned.unwrap();
@@ -793,7 +766,7 @@ fn c2pa_data_hash_exclusions_are_the_store_and_its_count_field() {
     for f in FORMATS {
         let bytes = fixture(f, 1, &[]);
         for length in [1, f.width(), f.width() + 1, 100] {
-            let updates = Updates::new().set_jumbf(vec![0x5a; length]);
+            let updates = Updates::new().set_c2pa(vec![0x5a; length]);
             let planned = parse(&bytes)
                 .plan(&mut Cursor::new(&bytes), &updates)
                 .unwrap();
@@ -815,7 +788,7 @@ fn c2pa_data_hash_exclusions_are_the_store_and_its_count_field() {
                 vec![count, value]
             };
             for s in [&planned, &written, &reparsed] {
-                let item = s.require_item(ItemKind::Jumbf).unwrap();
+                let item = s.require_item(ItemKind::C2pa).unwrap();
                 assert_eq!(
                     s.c2pa_data_hash_exclusions(item).unwrap(),
                     expected,
@@ -836,7 +809,7 @@ fn c2pa_data_hash_exclusions_are_the_store_and_its_count_field() {
         let map = layout(&structure).unwrap();
         let first = map.pages().next().unwrap().entry(C2PA_TAG).unwrap();
         assert!(map.pages().last().unwrap().entry(C2PA_TAG).is_none());
-        let item = structure.require_item(ItemKind::Jumbf).unwrap();
+        let item = structure.require_item(ItemKind::C2pa).unwrap();
         assert_eq!(
             structure.c2pa_data_hash_exclusions(item).unwrap(),
             [first.count_range(), first.value_range().unwrap()]

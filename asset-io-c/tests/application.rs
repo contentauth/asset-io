@@ -16,6 +16,7 @@ use std::{
     ptr,
 };
 
+use asset_io::testing::{c2pa_store, jumbf};
 use asset_io_c::*;
 
 struct Handle<T>(*mut T);
@@ -69,16 +70,6 @@ fn inspect(a: *mut AssetIoAsset) -> serde_json::Value {
     let b = owned(asset_io_structure_json(s.0));
     serde_json::from_slice(&bytes(b.0)).unwrap()
 }
-fn jumbf(ty: u8) -> Vec<u8> {
-    let mut b = Vec::new();
-    b.extend(33u32.to_be_bytes());
-    b.extend(b"jumb");
-    b.extend(25u32.to_be_bytes());
-    b.extend(b"jumd");
-    b.extend([ty; 16]);
-    b.push(0);
-    b
-}
 fn fixtures() -> Vec<&'static [u8]> {
     vec![
         #[cfg(feature = "jpeg")]
@@ -116,7 +107,7 @@ fn roundtrip_and_geometry() {
             asset_io_updates_metadata(u.0, 1, 1, b"<xmp/>".as_ptr(), 6),
             0
         );
-        let store = jumbf(1);
+        let store = c2pa_store(&[]);
         assert_eq!(
             asset_io_updates_metadata(u.0, 2, 1, store.as_ptr(), store.len()),
             0
@@ -145,10 +136,13 @@ fn roundtrip_and_geometry() {
             assert!(!e["extents"].as_array().unwrap().is_empty());
             assert!(e["relations"].as_array().unwrap().is_empty());
             assert!(e["transfer"]["type"].is_string());
-            if e["kind"] == "jumbf" {
+            if e["kind"] == "c2pa" {
                 assert_eq!(e["encoding"], "jumbf");
-                let ty = owned(asset_io_item_jumbf_type(b.0, i));
-                assert_eq!(bytes(ty.0), vec![1; 16]);
+                // Only containers that carry JUMBF of any type record it.
+                let ty = asset_io_item_jumbf_type(b.0, i);
+                if !ty.is_null() {
+                    assert_eq!(bytes(owned(ty).0), asset_io::jumbf::C2PA_STORE_TYPE);
+                }
             } else {
                 assert_eq!((&e["kind"], &e["encoding"]), (&"xmp".into(), &"xml".into()));
             }
@@ -192,7 +186,6 @@ fn errors_handles_features_and_lifetimes() {
     assert_eq!(asset_io_updates_metadata(p, 1, 99, ptr::null(), 0), -1);
     assert_eq!(asset_io_updates_metadata(p, 1, 1, ptr::null(), 1), -1);
     assert_eq!(asset_io_updates_as_update(p), -1);
-    assert_eq!(asset_io_updates_remove_jumbf_type(p, ptr::null(), 0), -1);
     assert_eq!(asset_io_free(p.cast()), 0);
     assert_eq!(asset_io_free(p.cast()), -1);
     assert_eq!(asset_io_updates_remove_all(p), -1);
@@ -230,7 +223,7 @@ fn sidecars_can_be_replaced_and_removed_through_the_c_api() {
     let metadata = owned(asset_io_metadata_bytes(asset.0, 2));
     assert_eq!(bytes(metadata.0), input);
     let updates = owned(asset_io_updates_new());
-    let replacement = jumbf(1);
+    let replacement = c2pa_store(&[]);
     assert_eq!(
         asset_io_updates_metadata(updates.0, 2, 1, replacement.as_ptr(), replacement.len()),
         0
@@ -443,27 +436,49 @@ fn enabled_container_fixtures_parse() {
 
 #[test]
 #[cfg(feature = "jpeg")]
-fn typed_jumbf_scoping() {
+fn other_jumbf_is_kept() {
     let r = registry();
-    let a = parse(&r, b"\xff\xd8\xff\xd9");
-    let u = owned(asset_io_updates_new());
-    let first = jumbf(1);
-    asset_io_updates_metadata(u.0, 2, 1, first.as_ptr(), first.len());
-    let b = owned(asset_io_write_memory(a.0, u.0));
-    let a = parse(&r, &bytes(b.0));
-    let second = jumbf(2);
-    asset_io_updates_metadata(u.0, 2, 1, second.as_ptr(), second.len());
-    let b = owned(asset_io_write_memory(a.0, u.0));
-    let a = parse(&r, &bytes(b.0));
-    assert_eq!(inspect(a.0)["items"].as_array().unwrap().len(), 2);
+    // A JPEG holding JUMBF of another type in one JPEG XT APP11 segment.
+    let other = jumbf([2; 16], &[]);
+    let mut app11 = b"JP".to_vec();
+    app11.extend(7u16.to_be_bytes());
+    app11.extend(1u32.to_be_bytes());
+    app11.extend(&other);
+    let mut jpeg = b"\xff\xd8\xff\xeb".to_vec();
+    jpeg.extend(u16::try_from(app11.len() + 2).unwrap().to_be_bytes());
+    jpeg.extend(app11);
+    jpeg.extend(b"\xff\xd9");
+    let a = parse(&r, &jpeg);
     assert!(asset_io_metadata_bytes(a.0, 2).is_null());
-    assert!(error().starts_with("Ambiguous:"));
-    let ty = [1u8; 16];
-    assert_eq!(asset_io_updates_remove_jumbf_type(u.0, ty.as_ptr(), 16), 0);
+    assert!(error().starts_with("NotFound:"));
+
+    let u = owned(asset_io_updates_new());
+    let store = c2pa_store(&[]);
+    asset_io_updates_metadata(u.0, 2, 1, store.as_ptr(), store.len());
     let b = owned(asset_io_write_memory(a.0, u.0));
     let a = parse(&r, &bytes(b.0));
-    let store = owned(asset_io_metadata_bytes(a.0, 2));
-    assert_eq!(bytes(store.0), second);
+    let mut kinds: Vec<_> = inspect(a.0)["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap().to_owned())
+        .collect();
+    kinds.sort();
+    assert_eq!(kinds, ["c2pa", "other"]);
+    assert_eq!(bytes(owned(asset_io_metadata_bytes(a.0, 2)).0), store);
+
+    let u = owned(asset_io_updates_new());
+    asset_io_updates_metadata(u.0, 2, 2, ptr::null(), 0);
+    let b = owned(asset_io_write_memory(a.0, u.0));
+    let a = parse(&r, &bytes(b.0));
+    let items = inspect(a.0)["items"].as_array().unwrap().clone();
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        (&items[0]["kind"], &items[0]["encoding"]),
+        (&"other".into(), &"jumbf".into())
+    );
+    assert_eq!(bytes(owned(asset_io_item_jumbf_type(a.0, 0)).0), [2; 16]);
+    assert_eq!(bytes(owned(asset_io_item_bytes(a.0, 0, 0)).0), other);
 }
 
 #[cfg(feature = "svg")]
@@ -479,7 +494,7 @@ fn item_bytes_are_stored_or_content() {
         input.len(),
     ));
     let u = owned(asset_io_updates_new());
-    let store = jumbf(1);
+    let store = c2pa_store(&[]);
     assert_eq!(
         asset_io_updates_metadata(u.0, 2, 1, store.as_ptr(), store.len()),
         0
@@ -493,7 +508,7 @@ fn item_bytes_are_stored_or_content() {
         written.len(),
     ));
     let items = inspect(b.0)["items"].as_array().unwrap().clone();
-    let i = items.iter().position(|e| e["kind"] == "jumbf").unwrap();
+    let i = items.iter().position(|e| e["kind"] == "c2pa").unwrap();
     assert_eq!(items[i]["transfer"], serde_json::json!({"type": "base64"}));
     let stored = owned(asset_io_item_bytes(b.0, i, 0));
     let content = owned(asset_io_item_bytes(b.0, i, 1));

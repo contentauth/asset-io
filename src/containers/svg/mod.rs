@@ -22,7 +22,7 @@
 //! - a `<c2pa:manifest>` element is a [`Metadata`](SegmentKind::Metadata) segment: the
 //!   open tag is its header, the base64 text its payload and the close tag its
 //!   trailer, so the payload is the range a C2PA hash excludes. A non-empty payload
-//!   is an [`ItemKind::Jumbf`] item;
+//!   is an [`ItemKind::C2pa`] item;
 //! - the whole xpacket is a [`Metadata`](SegmentKind::Metadata) segment and an
 //!   [`ItemKind::Xmp`] item;
 //! - everything between is [`Other`](SegmentKind::Other) text. A gap is cut where the
@@ -36,7 +36,7 @@
 //!
 //! The manifest is stored as base64, so its item has the
 //! [`Base64`](TransferEncoding::Base64) transfer encoding, which
-//! [`Structure::read_content`](crate::Structure::read_content) undoes. [`Structure::store`](crate::Structure::store) does that for you.
+//! [`Structure::read_content`](crate::Structure::read_content) undoes. [`Structure::c2pa_store`](crate::Structure::c2pa_store) does that for you.
 //!
 //! The document is parsed in one pass through a buffered reader (up to 256 MiB).
 //! The reader retains its input window and current XML event, rather than a copy of
@@ -57,8 +57,7 @@ use crate::{
         BoxFuture, ContainerHandler, Existing, FormatSpec, Io, ItemInfo, MetadataSlot,
         MetadataUpdate, PlanBuilder, StructureBuilder, WritePlan, MAX_SEGMENT_SIZE,
     },
-    jumbf::superbox_type,
-    transfer::{base64_decode, base64_encode},
+    transfer::base64_encode,
     ByteRange, Error, ItemKind, Name, Result, Role, Segment, SegmentId, SegmentKind, Structure,
     TransferEncoding, Updates,
 };
@@ -73,9 +72,6 @@ const NS_DECL: &[u8] = b" xmlns:c2pa=\"http://c2pa.org/manifest\"";
 
 /// The name of the text that ends with the start tag of `<metadata>`.
 const METADATA_OPEN: Name = Name::Id(1);
-
-/// How many characters of base64 hold the 32 bytes that give a JUMBF its type.
-const TYPE_CHARS: usize = 44;
 
 /// The SVG container handler.
 #[derive(Debug, Clone, Copy, Default)]
@@ -128,7 +124,7 @@ impl ContainerHandler for SvgHandler {
 
     fn compose(&self, kind: ItemKind, data: &[u8]) -> Result<Vec<u8>> {
         match kind {
-            ItemKind::Jumbf => {
+            ItemKind::C2pa => {
                 let text = base64_encode(data);
                 let mut out = Vec::with_capacity(text.len() + 40);
                 out.extend_from_slice(MANIFEST_OPEN);
@@ -175,7 +171,6 @@ struct Element {
     header: u64,
     payload: u64,
     trailer: u64,
-    jumbf_type: Option<[u8; 16]>,
 }
 
 impl Element {
@@ -242,7 +237,7 @@ async fn scan(io: Io) -> Result<Scan> {
     let mut root_end = None;
     let mut metadata_end = None;
     let mut manifests: Vec<Element> = Vec::new();
-    let mut open: Option<(u64, u64, Option<Vec<u8>>)> = None;
+    let mut open: Option<(u64, u64)> = None;
     let mut xmps = Vec::new();
     // Where an xpacket began and how deep, and how shallow the document has been
     // since. Until it ends we do not know whether it is an item. Whether or not it is
@@ -259,26 +254,6 @@ async fn scan(io: Io) -> Result<Scan> {
             .map_err(xml_error)?;
         let ns = ns_of(&bound);
         let after = reader.buffer_position();
-        if let Some((_, _, head)) = open.as_mut() {
-            if head.as_ref().is_some_and(|head| head.len() < TYPE_CHARS) {
-                match &event {
-                    Event::Text(text) => {
-                        if let Some(head) = head {
-                            let remaining = TYPE_CHARS - head.len();
-                            head.extend(
-                                text.as_ref()
-                                    .iter()
-                                    .copied()
-                                    .filter(|c| !c.is_ascii_whitespace())
-                                    .take(remaining),
-                            );
-                        }
-                    }
-                    Event::End(_) if depth == 3 => {}
-                    _ => *head = None,
-                }
-            }
-        }
         match event {
             Event::Start(e) => {
                 let first_root = depth == 0 && root_end.is_none();
@@ -300,7 +275,7 @@ async fn scan(io: Io) -> Result<Scan> {
                     metadata_end = Some(after);
                 }
                 if kind == Kind::Manifest {
-                    open = Some((before, after, Some(Vec::with_capacity(TYPE_CHARS))));
+                    open = Some((before, after));
                 }
                 if let Some(slot) = path.get_mut(depth) {
                     *slot = kind;
@@ -322,7 +297,6 @@ async fn scan(io: Io) -> Result<Scan> {
                         header: after - before,
                         payload: 0,
                         trailer: 0,
-                        jumbf_type: None,
                     });
                 }
             }
@@ -332,15 +306,12 @@ async fn scan(io: Io) -> Result<Scan> {
                     .ok_or_else(|| xml_error("an end tag with nothing open"))?;
                 low = low.min(depth);
                 if depth == 2 {
-                    if let Some((start, header_end, head)) = open.take() {
+                    if let Some((start, header_end)) = open.take() {
                         manifests.push(Element {
                             start,
                             header: header_end - start,
                             payload: before - header_end,
                             trailer: after - before,
-                            jumbf_type: head
-                                .and_then(|head| base64_decode(&head).ok())
-                                .and_then(|data| superbox_type(&data)),
                         });
                     }
                 }
@@ -456,7 +427,6 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, io: Io) -> Result<Struct
             header: 0,
             payload: e - s,
             trailer: 0,
-            jumbf_type: None,
         },
     }));
     spans.sort_by_key(|s| s.el.start);
@@ -490,12 +460,7 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, io: Io) -> Result<Struct
             let id = b.push_span(SegmentKind::Metadata, Name::None, h, p, t)?;
             // An empty element holds no manifest.
             if p > 0 {
-                b.item_of_segments(
-                    ItemInfo::jumbf()
-                        .jumbf_type(s.el.jumbf_type)
-                        .transfer(TransferEncoding::Base64),
-                    &[id],
-                )?;
+                b.item_of_segments(ItemInfo::c2pa().transfer(TransferEncoding::Base64), &[id])?;
             }
         }
         at = s.el.end();
@@ -590,12 +555,7 @@ fn put_manifest<'a>(b: &mut PlanBuilder<'_, 'a>, jumbf: &[u8]) -> Result<()> {
         base64_encode(jumbf),
         MANIFEST_CLOSE,
     )?;
-    b.item(
-        ItemInfo::jumbf()
-            .jumbf_type(superbox_type(jumbf))
-            .transfer(TransferEncoding::Base64),
-        &[id],
-    )
+    b.item(ItemInfo::c2pa().transfer(TransferEncoding::Base64), &[id])
 }
 
 fn put_xmp<'a>(b: &mut PlanBuilder<'_, 'a>, packet: &'a [u8]) -> Result<()> {
@@ -610,7 +570,7 @@ fn held(src: &Structure, id: SegmentId, seg: &Segment) -> Option<ItemKind> {
     if src.items_in(id).any(|e| e.kind() == ItemKind::Xmp) {
         Some(ItemKind::Xmp)
     } else if seg.kind() == SegmentKind::Metadata {
-        Some(ItemKind::Jumbf)
+        Some(ItemKind::C2pa)
     } else {
         None
     }
@@ -637,8 +597,8 @@ async fn plan<'a>(src: &Structure, io: &mut Io, updates: &'a Updates) -> Result<
     if let MetadataUpdate::Set(d) = updates.xmp() {
         check_packet(d)?;
     }
-    let sets_manifest = matches!(updates.jumbf(), MetadataUpdate::Set(_));
-    if let MetadataUpdate::Set(d) = updates.jumbf() {
+    let sets_manifest = matches!(updates.c2pa(), MetadataUpdate::Set(_));
+    if let MetadataUpdate::Set(d) = updates.c2pa() {
         if d.is_empty() {
             return Err(Error::InvalidFormat("SVG: JUMBF is empty".into()));
         }
@@ -663,7 +623,7 @@ async fn plan<'a>(src: &Structure, io: &mut Io, updates: &'a Updates) -> Result<
     }
 
     let mut xmp = MetadataSlot::new(updates.xmp());
-    let mut jumbf = MetadataSlot::new(updates.jumbf());
+    let mut jumbf = MetadataSlot::new(updates.c2pa());
     let mut b = PlanBuilder::new(src);
     let mut run: Vec<Piece<'a>> = Vec::new();
 
@@ -841,24 +801,13 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
-    use crate::{container_api, testing::Conformance, NullSink};
+    use crate::testing::{c2pa_store_of_len, Conformance};
 
     const NS: &str = "http://www.w3.org/2000/svg";
     const PACKET: &str = "<?xpacket begin=\"\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\
         <x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF \
         xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"/></x:xmpmeta>\
         <?xpacket end=\"w\"?>";
-
-    /// A JUMBF of `n` bytes that has a description box, so it has a type.
-    fn jumbf(n: usize) -> Vec<u8> {
-        let mut v: Vec<u8> = (0..n).map(|i| (i * 7 % 251) as u8).collect();
-        v[0..4].copy_from_slice(&(n as u32).to_be_bytes());
-        v[4..8].copy_from_slice(b"jumb");
-        v[8..12].copy_from_slice(&((n - 8) as u32).to_be_bytes());
-        v[12..16].copy_from_slice(b"jumd");
-        v[16..32].copy_from_slice(&[0xc2; 16]);
-        v
-    }
 
     fn b64(data: &[u8]) -> String {
         String::from_utf8(base64_encode(data)).unwrap()
@@ -879,44 +828,14 @@ mod tests {
     }
 
     fn rewrite(svg: &str, u: &Updates) -> Result<String> {
-        let s = parse(&mut Cursor::new(svg.as_bytes()))?;
-        let mut out = Vec::new();
-        s.write(&mut Cursor::new(svg.as_bytes()), &mut out, u, &mut NullSink)?;
+        let (out, _) = crate::testing::rewrite(handler(), svg.as_bytes(), u)?;
         Ok(String::from_utf8(out).unwrap())
     }
 
     fn store(svg: &str) -> Option<Vec<u8>> {
-        parsed(svg).store(&mut Cursor::new(svg.as_bytes())).unwrap()
-    }
-
-    #[test]
-    fn a_manifest_that_is_not_base64_has_no_type() {
-        let svg = with_manifest("this is not base64 at all");
-        let s = parsed(&svg);
-        let item = s.require_item(ItemKind::Jumbf).unwrap();
-        assert_eq!(
-            s.jumbf_type(&mut Cursor::new(svg.as_bytes()), item)
-                .unwrap(),
-            None
-        );
-    }
-
-    #[test]
-    fn a_manifest_type_is_found_across_large_whitespace_runs() {
-        let encoded = b64(&jumbf(64));
-        let text = format!(
-            "{}{}{}",
-            &encoded[..8],
-            " ".repeat(crate::io::DEFAULT_WINDOW + 1),
-            &encoded[8..]
-        );
-        let svg = with_manifest(&text);
-        let s = parsed(&svg);
-
-        assert_eq!(
-            s.require_item(ItemKind::Jumbf).unwrap().jumbf_type(),
-            Some([0xc2; 16])
-        );
+        parsed(svg)
+            .c2pa_store(&mut Cursor::new(svg.as_bytes()))
+            .unwrap()
     }
 
     #[test]
@@ -949,7 +868,7 @@ mod tests {
 
     #[test]
     fn conforms() {
-        let c = Conformance::new(handler()).jumbf(Some(jumbf(200)));
+        let c = Conformance::new(handler()).c2pa(Some(c2pa_store_of_len(200)));
         c.check("plain", plain().as_bytes());
         c.check(
             "prefixed root",
@@ -960,7 +879,10 @@ mod tests {
             format!(r#"<svg xmlns="{NS}"><metadata><title>t</title></metadata><rect/></svg>"#)
                 .as_bytes(),
         );
-        c.check("manifest", with_manifest(&b64(&jumbf(100))).as_bytes());
+        c.check(
+            "manifest",
+            with_manifest(&b64(&c2pa_store_of_len(100))).as_bytes(),
+        );
         c.check(
             "manifest and xmp",
             format!(
@@ -969,7 +891,7 @@ mod tests {
   <c2pa:manifest>{}</c2pa:manifest>
 </metadata><g/></svg>
 "#,
-                b64(&jumbf(64))
+                b64(&c2pa_store_of_len(64))
             )
             .as_bytes(),
         );
@@ -988,7 +910,7 @@ mod tests {
 
     #[test]
     fn a_manifest_is_a_header_a_payload_and_a_trailer() {
-        let j = jumbf(100);
+        let j = c2pa_store_of_len(100);
         let text = b64(&j);
         let svg = with_manifest(&text);
         let s = parsed(&svg);
@@ -1003,8 +925,7 @@ mod tests {
         assert_eq!(at(seg.trailer()), MANIFEST_CLOSE);
 
         // The item is stored as text; its data is what that decodes to.
-        let e = s.require_item(ItemKind::Jumbf).unwrap();
-        assert_eq!(e.jumbf_type(), Some([0xc2; 16]));
+        let e = s.require_item(ItemKind::C2pa).unwrap();
         assert_eq!(
             s.read_item(&mut Cursor::new(svg.as_bytes()), e).unwrap(),
             text.as_bytes()
@@ -1014,28 +935,6 @@ mod tests {
         assert_eq!(
             s.read_content(&mut Cursor::new(svg.as_bytes()), e).unwrap(),
             j
-        );
-        // Without a recorded type, the type is read through the transfer encoding.
-        let mut builder = StructureBuilder::new(handler(), "image/svg+xml", text.len() as u64);
-        builder
-            .push_item(
-                SegmentKind::Metadata,
-                Name::None,
-                0,
-                text.len() as u64,
-                0,
-                container_api::item_info(e).clone().jumbf_type(None),
-            )
-            .unwrap();
-        let untyped = builder.finish().unwrap();
-        assert_eq!(
-            untyped
-                .jumbf_type(
-                    &mut Cursor::new(text.as_bytes()),
-                    untyped.require_item(ItemKind::Jumbf).unwrap(),
-                )
-                .unwrap(),
-            Some([0xc2; 16])
         );
     }
 
@@ -1054,8 +953,8 @@ mod tests {
 
     #[test]
     fn a_new_manifest_is_spliced_in_and_the_root_declares_the_namespace() {
-        let j = jumbf(40);
-        let out = rewrite(&plain(), &Updates::new().set_jumbf(j.clone())).unwrap();
+        let j = c2pa_store_of_len(48);
+        let out = rewrite(&plain(), &Updates::new().set_c2pa(j.clone())).unwrap();
         let want = format!(
             r#"<svg xmlns="{NS}" width="10" height="10" xmlns:c2pa="http://c2pa.org/manifest"><metadata><c2pa:manifest>{}</c2pa:manifest></metadata><rect width="10" height="10"/></svg>"#,
             b64(&j)
@@ -1069,7 +968,7 @@ mod tests {
         let svg = format!(
             r#"<ns0:svg xmlns:ns0="{NS}" xmlns:c2pa="http://c2pa.org/manifest"><ns0:rect/></ns0:svg>"#
         );
-        let out = rewrite(&svg, &Updates::new().set_jumbf(jumbf(40))).unwrap();
+        let out = rewrite(&svg, &Updates::new().set_c2pa(c2pa_store_of_len(48))).unwrap();
         assert!(out.contains("<ns0:metadata><c2pa:manifest>"), "{out}");
         assert!(out.contains("</c2pa:manifest></ns0:metadata>"), "{out}");
         assert_eq!(out.matches("xmlns:c2pa").count(), 1);
@@ -1077,12 +976,12 @@ mod tests {
 
     #[test]
     fn an_existing_manifest_is_replaced_where_it_is_and_removal_leaves_the_rest() {
-        let svg = with_manifest(&b64(&jumbf(100)));
-        let new = jumbf(60);
-        let out = rewrite(&svg, &Updates::new().set_jumbf(new.clone())).unwrap();
+        let svg = with_manifest(&b64(&c2pa_store_of_len(100)));
+        let new = c2pa_store_of_len(60);
+        let out = rewrite(&svg, &Updates::new().set_c2pa(new.clone())).unwrap();
         assert_eq!(out, with_manifest(&b64(&new)));
 
-        let out = rewrite(&svg, &Updates::new().remove_jumbf()).unwrap();
+        let out = rewrite(&svg, &Updates::new().remove_c2pa()).unwrap();
         assert_eq!(
             out,
             format!(
@@ -1124,7 +1023,7 @@ mod tests {
         );
         let s = parsed(&svg);
         assert!(s.items_of(ItemKind::Xmp).next().is_none());
-        let c = Conformance::new(handler()).jumbf(Some(jumbf(64)));
+        let c = Conformance::new(handler()).c2pa(Some(c2pa_store_of_len(64)));
         c.check("unbalanced xpacket", svg.as_bytes());
 
         // A packet that closes more than it opens is the same.
@@ -1180,8 +1079,8 @@ mod tests {
         );
         let s = parsed(&svg);
         assert_eq!(s.items_of(ItemKind::Xmp).count(), 1);
-        assert_eq!(s.items_of(ItemKind::Jumbf).count(), 0);
-        let c = Conformance::new(handler()).jumbf(Some(jumbf(64)));
+        assert_eq!(s.items_of(ItemKind::C2pa).count(), 0);
+        let c = Conformance::new(handler()).c2pa(Some(c2pa_store_of_len(64)));
         c.check("manifest inside a packet", svg.as_bytes());
 
         let svg = format!(
@@ -1206,13 +1105,13 @@ mod tests {
         );
         let s = parsed(&svg);
         assert!(matches!(
-            s.store(&mut Cursor::new(svg.as_bytes())),
+            s.c2pa_store(&mut Cursor::new(svg.as_bytes())),
             Err(Error::Ambiguous { count: 2, .. })
         ));
-        let out = rewrite(&svg, &Updates::new().remove_jumbf()).unwrap();
+        let out = rewrite(&svg, &Updates::new().remove_c2pa()).unwrap();
         assert!(!out.contains("<c2pa:manifest"), "{out}");
         // A new one replaces the first and drops the rest.
-        let out = rewrite(&svg, &Updates::new().set_jumbf(jumbf(40))).unwrap();
+        let out = rewrite(&svg, &Updates::new().set_c2pa(c2pa_store_of_len(48))).unwrap();
         assert_eq!(out.matches("<c2pa:manifest>").count(), 1);
     }
 
@@ -1222,24 +1121,7 @@ mod tests {
             r#"<svg xmlns="{NS}" xmlns:c2pa="http://c2pa.org/manifest"><g><metadata><c2pa:manifest>QUJD</c2pa:manifest></metadata></g></svg>"#
         );
         assert!(store(&svg).is_none());
-        assert!(parsed(&svg).require_item(ItemKind::Jumbf).is_err());
-    }
-
-    #[test]
-    fn a_placeholder_is_filled_in_place() {
-        let placeholder = jumbf(90);
-        let svg = with_manifest(&b64(&placeholder));
-        let s = parsed(&svg);
-        let e = s.require_item(ItemKind::Jumbf).unwrap();
-        let signed = jumbf(90).iter().map(|b| b ^ 0x55).collect::<Vec<_>>();
-        let mut cur = Cursor::new(svg.clone().into_bytes());
-        s.patch_exact(&mut cur, e, &signed).unwrap();
-        let out = String::from_utf8(cur.into_inner()).unwrap();
-        assert_eq!(out, with_manifest(&b64(&signed)));
-
-        // The length that has to match is the stored one.
-        let mut cur = Cursor::new(svg.into_bytes());
-        assert!(s.patch_exact(&mut cur, e, &signed[..80]).is_err());
+        assert!(parsed(&svg).require_item(ItemKind::C2pa).is_err());
     }
 
     #[test]
@@ -1253,30 +1135,21 @@ mod tests {
 
         // XMP that is not an xpacket, and an empty store.
         assert!(rewrite(&plain(), &Updates::new().set_xmp(b"<x:xmpmeta/>".to_vec())).is_err());
-        assert!(rewrite(&plain(), &Updates::new().set_jumbf(Vec::new())).is_err());
+        assert!(rewrite(&plain(), &Updates::new().set_c2pa(Vec::new())).is_err());
 
         // An empty root has nowhere to put metadata, but can be kept.
         let empty = format!(r#"<svg xmlns="{NS}"/>"#);
-        assert!(rewrite(&empty, &Updates::new().set_jumbf(jumbf(40))).is_err());
+        assert!(rewrite(&empty, &Updates::new().set_c2pa(c2pa_store_of_len(48))).is_err());
         assert_eq!(rewrite(&empty, &Updates::new()).unwrap(), empty);
-    }
-
-    #[test]
-    fn compose_is_what_a_write_inserts() {
-        let j = jumbf(40);
-        let element = handler().compose(ItemKind::Jumbf, &j).unwrap();
-        let out = rewrite(&plain(), &Updates::new().set_jumbf(j)).unwrap();
-        assert!(contains(out.as_bytes(), &element));
-        assert!(handler().compose(ItemKind::Xmp, b"<x/>").is_err());
     }
 
     #[test]
     fn a_hash_skips_exactly_the_base64_text() {
         // What a C2PA data hash excludes: the payload of the manifest segment.
-        let j = jumbf(100);
+        let j = c2pa_store_of_len(100);
         let svg = with_manifest(&b64(&j));
         let s = parsed(&svg);
-        let e = s.require_item(ItemKind::Jumbf).unwrap();
+        let e = s.require_item(ItemKind::C2pa).unwrap();
         let r = e.extents().next().unwrap().range();
         let before = &svg.as_bytes()[..r.offset() as usize];
         assert!(before.ends_with(MANIFEST_OPEN));

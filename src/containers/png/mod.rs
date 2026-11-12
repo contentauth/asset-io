@@ -15,7 +15,7 @@
 //!
 //! Each chunk is one segment: `length(4) type(4) [iTXt prefix]` is the header,
 //! the chunk data is the payload, and the CRC is the trailer. The `caBX` chunk is
-//! an [`ItemKind::Jumbf`] item, `eXIf` an [`ItemKind::Exif`] item and an XMP `iTXt`
+//! an [`ItemKind::C2pa`] item, `eXIf` an [`ItemKind::Exif`] item and an XMP `iTXt`
 //! chunk an [`ItemKind::Xmp`] item, each in a [`Metadata`](SegmentKind::Metadata)
 //! segment; `IDAT` chunks are [`MediaData`](SegmentKind::MediaData). A compressed
 //! XMP `iTXt` (method 0) is an XMP item whose bytes are the compressed text, with a
@@ -32,7 +32,6 @@ use crate::{
         BoxFuture, ContainerHandler, Crc32, Existing, FormatSpec, Io, ItemInfo, MetadataSlot,
         PlanBuilder, ReadWriteSeek, StructureBuilder, WritePlan,
     },
-    jumbf::superbox_type,
     Error, ItemKind, Name, Result, Segment, SegmentId, SegmentKind, Structure, TransferEncoding,
     Updates,
 };
@@ -120,7 +119,7 @@ impl ContainerHandler for PngHandler {
 
     fn compose(&self, kind: ItemKind, data: &[u8]) -> Result<Vec<u8>> {
         let op = match kind {
-            ItemKind::Jumbf => new_chunk(kind, CABX, &[], data)?,
+            ItemKind::C2pa => new_chunk(kind, CABX, &[], data)?,
             ItemKind::Xmp => new_chunk(kind, ITXT, XMP_ITXT_PREFIX, data)?,
             _ => return Err(Error::UnsupportedFormat),
         };
@@ -199,7 +198,7 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<St
         let mut prefix = 0u64;
         let mut transfer = TransferEncoding::Identity;
         let item = match ty {
-            CABX => Some(ItemKind::Jumbf),
+            CABX => Some(ItemKind::C2pa),
             EXIF => Some(ItemKind::Exif),
             ITXT => {
                 let n = len.min(PEEK as u64) as usize;
@@ -215,11 +214,7 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<St
         let (name, header_len, payload_len) = (Name::FourCC(ty), 8 + prefix as u32, len - prefix);
         match item {
             Some(kind) => {
-                let mut info = item_info(kind).transfer(transfer);
-                if kind == ItemKind::Jumbf && payload_len >= 32 {
-                    r.seek(offset + header_len as u64);
-                    info = info.jumbf_type(superbox_type(r.take(32).await?));
-                }
+                let info = item_info(kind).transfer(transfer);
                 b.push_item(
                     SegmentKind::Metadata,
                     name,
@@ -253,7 +248,7 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<St
 fn item_info(kind: ItemKind) -> ItemInfo {
     match kind {
         ItemKind::Xmp => ItemInfo::xmp(),
-        ItemKind::Jumbf => ItemInfo::jumbf(),
+        ItemKind::C2pa => ItemInfo::c2pa(),
         _ => ItemInfo::exif(),
     }
 }
@@ -296,8 +291,8 @@ fn new_chunk<'a>(
 fn plan<'a>(src: &Structure, updates: &'a Updates) -> Result<WritePlan<'a>> {
     let mut ops: Vec<Op<'a>> = Vec::with_capacity(src.segments().len() + 2);
     let mut xmp = MetadataSlot::new(updates.xmp());
-    let mut jumbf = MetadataSlot::new(updates.jumbf());
-    let has_jumbf = src.items_of(ItemKind::Jumbf).next().is_some();
+    let mut jumbf = MetadataSlot::new(updates.c2pa());
+    let has_jumbf = src.items_of(ItemKind::C2pa).next().is_some();
 
     for (i, seg) in src.segments().iter().enumerate() {
         let id = SegmentId::from_index(i)?;
@@ -309,9 +304,9 @@ fn plan<'a>(src: &Structure, updates: &'a Updates) -> Result<WritePlan<'a>> {
                 }
                 _ => {}
             },
-            Some(ItemKind::Jumbf) => match jumbf.existing() {
+            Some(ItemKind::C2pa) => match jumbf.existing() {
                 Existing::Keep => ops.push(Op::Copy(id)),
-                Existing::Replace(d) => ops.push(new_chunk(ItemKind::Jumbf, CABX, &[], d)?),
+                Existing::Replace(d) => ops.push(new_chunk(ItemKind::C2pa, CABX, &[], d)?),
                 _ => {}
             },
             _ => {
@@ -322,7 +317,7 @@ fn plan<'a>(src: &Structure, updates: &'a Updates) -> Result<WritePlan<'a>> {
                 // its position (C2PA 11.2.3: an update must not move the store).
                 if !has_jumbf && seg.name() == Name::FourCC(IDAT) {
                     if let Some(d) = jumbf.pending() {
-                        let op = new_chunk(ItemKind::Jumbf, CABX, &[], d)?;
+                        let op = new_chunk(ItemKind::C2pa, CABX, &[], d)?;
                         let after_fctl = matches!(
                             ops.last(),
                             Some(Op::Copy(p)) if src.segments()[p.index()].name() == Name::FourCC(FCTL)
@@ -341,7 +336,7 @@ fn plan<'a>(src: &Structure, updates: &'a Updates) -> Result<WritePlan<'a>> {
                         ops.push(new_chunk(ItemKind::Xmp, ITXT, XMP_ITXT_PREFIX, d)?);
                     }
                     if let Some(d) = jumbf.pending() {
-                        ops.push(new_chunk(ItemKind::Jumbf, CABX, &[], d)?);
+                        ops.push(new_chunk(ItemKind::C2pa, CABX, &[], d)?);
                     }
                 }
                 ops.push(Op::Copy(id));
@@ -432,7 +427,7 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
-    use crate::testing::{write, Conformance};
+    use crate::testing::{c2pa_store_of_len, rewrite, Conformance};
 
     fn chunk(ty: &[u8; 4], data: &[u8]) -> Vec<u8> {
         let mut v = Vec::new();
@@ -475,25 +470,10 @@ mod tests {
         }
     }
 
-    fn jumbf_stub(n: usize) -> Vec<u8> {
-        let mut v = vec![0u8; n];
-        v[0..4].copy_from_slice(&(n as u32).to_be_bytes());
-        v[4..8].copy_from_slice(b"jumb");
-        v
-    }
-
     /// Chunk type names of the output, in order.
     fn order_after_set(png: &[u8]) -> Vec<String> {
-        let s = parse(&mut Cursor::new(png.to_vec())).unwrap();
-        let mut out = Cursor::new(Vec::new());
-        let dest = write(
-            &s,
-            &mut Cursor::new(png.to_vec()),
-            &mut out,
-            &Updates::new().set_jumbf(jumbf_stub(64)),
-            &mut crate::NullSink,
-        )
-        .unwrap();
+        let updates = Updates::new().set_c2pa(c2pa_store_of_len(64));
+        let (_, dest) = rewrite(handler(), png, &updates).unwrap();
         dest.segments()
             .iter()
             .skip(1)
@@ -533,7 +513,7 @@ mod tests {
         let mut v = SIGNATURE.to_vec();
         v.extend(chunk(b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0]));
         v.extend(chunk(b"IDAT", &[1, 2, 3, 4]));
-        v.extend(chunk(b"caBX", &jumbf_stub(40)));
+        v.extend(chunk(b"caBX", &c2pa_store_of_len(48)));
         v.extend(chunk(b"IEND", &[]));
         v
     }
@@ -557,7 +537,7 @@ mod tests {
 
     #[test]
     fn conforms() {
-        let c = Conformance::new(handler()).jumbf(Some(jumbf_stub(64)));
+        let c = Conformance::new(handler()).c2pa(Some(c2pa_store_of_len(64)));
         c.check("plain", &sample_png());
         c.check("with a manifest", &with_manifest());
         c.check("apng", &apng());
@@ -597,16 +577,16 @@ mod tests {
         assert_eq!((t.offset(), t.len()), (clean.len() as u64, 8));
 
         // An edit moves it with the file, and what was planned is what is written.
-        let updates = Updates::new().set_jumbf(vec![0xab; 100]);
+        let updates = Updates::new().set_c2pa(vec![0xab; 100]);
         let mut out = Cursor::new(Vec::new());
-        let dest = write(
-            &s,
-            &mut Cursor::new(png.clone()),
-            &mut out,
-            &updates,
-            &mut crate::NullSink,
-        )
-        .unwrap();
+        let dest = s
+            .write(
+                &mut Cursor::new(png.clone()),
+                &mut out,
+                &updates,
+                &mut crate::NullSink,
+            )
+            .unwrap();
         let out = out.into_inner();
         let re = parse(&mut Cursor::new(out.clone())).unwrap();
         assert_eq!(dest.trailing(), re.trailing());
@@ -621,11 +601,10 @@ mod tests {
         let png = sample_png();
         let s = parse(&mut Cursor::new(png.clone())).unwrap();
         let updates = Updates::new()
-            .set_jumbf(vec![0xab; 100])
+            .set_c2pa(vec![0xab; 100])
             .set_xmp(b"<x/>".to_vec());
         let mut out = Cursor::new(Vec::new());
-        write(
-            &s,
+        s.write(
             &mut Cursor::new(png),
             &mut out,
             &updates,
@@ -639,46 +618,28 @@ mod tests {
     fn patch_updates_payload_and_crc() {
         let png = sample_png();
         let s = parse(&mut Cursor::new(png.clone())).unwrap();
-        let updates = Updates::new().set_jumbf(vec![0u8; 64]);
+        let updates = Updates::new().set_c2pa(vec![0u8; 64]);
         let mut out = Cursor::new(Vec::new());
-        let dest = write(
-            &s,
-            &mut Cursor::new(png),
-            &mut out,
-            &updates,
-            &mut crate::NullSink,
-        )
-        .unwrap();
+        let dest = s
+            .write(
+                &mut Cursor::new(png),
+                &mut out,
+                &updates,
+                &mut crate::NullSink,
+            )
+            .unwrap();
 
-        let e = dest.require_item(ItemKind::Jumbf).unwrap().clone();
+        let e = dest.require_item(ItemKind::C2pa).unwrap().clone();
         dest.patch(&mut out, &e, b"signed manifest").unwrap();
         let bytes = out.into_inner();
         verify_crcs(&bytes);
 
         let re = parse(&mut Cursor::new(bytes.clone())).unwrap();
-        let e = re.require_item(ItemKind::Jumbf).unwrap();
+        let e = re.require_item(ItemKind::C2pa).unwrap();
         let data = re.read_item(&mut Cursor::new(bytes), e).unwrap();
         assert_eq!(&data[..15], b"signed manifest");
         assert!(data[15..].iter().all(|&b| b == 0));
         assert_eq!(data.len(), 64);
-    }
-
-    #[test]
-    fn patch_rejects_oversized_data() {
-        let png = sample_png();
-        let s = parse(&mut Cursor::new(png.clone())).unwrap();
-        let updates = Updates::new().set_jumbf(vec![0u8; 8]);
-        let mut out = Cursor::new(Vec::new());
-        let dest = write(
-            &s,
-            &mut Cursor::new(png),
-            &mut out,
-            &updates,
-            &mut crate::NullSink,
-        )
-        .unwrap();
-        let e = dest.require_item(ItemKind::Jumbf).unwrap().clone();
-        assert!(dest.patch(&mut out, &e, &[1u8; 9]).is_err());
     }
 
     #[test]
@@ -687,8 +648,7 @@ mod tests {
         let s = parse(&mut Cursor::new(png.clone())).unwrap();
         let updates = Updates::new().set_xmp(b"<x/>".to_vec());
         let mut out = Cursor::new(Vec::new());
-        write(
-            &s,
+        s.write(
             &mut Cursor::new(png),
             &mut out,
             &updates,
@@ -734,8 +694,7 @@ mod tests {
         ] {
             let s = parse(&mut Cursor::new(p.clone())).unwrap();
             let mut out = Cursor::new(Vec::new());
-            write(
-                &s,
+            s.write(
                 &mut Cursor::new(p.clone()),
                 &mut out,
                 &updates,

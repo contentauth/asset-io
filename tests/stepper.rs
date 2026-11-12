@@ -20,8 +20,8 @@
 use std::{io::Cursor, path::PathBuf};
 
 use asset_io::{
-    execute::Action, plan::WritePlan, Asset, ByteRange, Chunk, Error, NullSink, Result, Role, Sink,
-    Updates,
+    execute::Action, plan::WritePlan, testing::c2pa_store_of_len, Asset, ByteRange, Chunk, Error,
+    NullSink, Result, Role, Sink, Updates,
 };
 
 /// `bytes` as an asset of `format`.
@@ -105,18 +105,13 @@ fn drive(
 }
 
 fn updates() -> Vec<Updates> {
-    let jumbf = {
-        let mut v = 3000u32.to_be_bytes().to_vec();
-        v.extend(b"jumb");
-        v.extend(vec![7u8; 2992]);
-        v
-    };
+    let jumbf = c2pa_store_of_len(3000);
     let xmp = b"<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"></x:xmpmeta>".to_vec();
     vec![
         Updates::new(),
-        Updates::new().set_jumbf(jumbf.clone()),
-        Updates::new().set_xmp(xmp.clone()).set_jumbf(jumbf),
-        Updates::new().remove_xmp().remove_jumbf(),
+        Updates::new().set_c2pa(jumbf.clone()),
+        Updates::new().set_xmp(xmp.clone()).set_c2pa(jumbf),
+        Updates::new().remove_xmp().remove_c2pa(),
     ]
 }
 

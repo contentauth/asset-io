@@ -79,7 +79,7 @@ fn items_survive_a_write_and_stay_readable() {
         let dest = s
             .write(
                 &mut out,
-                &Updates::new().set_jumbf(vec![0u8; 100]),
+                &Updates::new().set_c2pa(vec![0u8; 100]),
                 &mut NullSink,
             )
             .unwrap();

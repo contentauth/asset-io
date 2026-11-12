@@ -441,7 +441,8 @@ fn jumbf_type_of(
     const STORED_HEAD: usize = 4096;
     if let Some(from) = from {
         return src
-            .items_of(crate::ItemKind::Jumbf)
+            .items()
+            .filter(|item| item.encoding() == crate::Encoding::Jumbf)
             .find(|item| item.extents().next().is_some_and(|x| x.segment() == from))
             .and_then(Item::jumbf_type);
     }

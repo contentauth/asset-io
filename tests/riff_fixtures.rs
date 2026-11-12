@@ -58,12 +58,12 @@ fn real_files_round_trip_and_take_metadata() {
         );
 
         let u = Updates::new()
-            .set_jumbf(vec![0xab; 1001])
+            .set_c2pa(vec![0xab; 1001])
             .set_xmp(b"<x:xmpmeta/>".to_vec());
         let out = write(&bytes, &u).unwrap_or_else(|e| panic!("{path}: {e}"));
         let t = open(&out).unwrap();
         for (kind, want) in [
-            (ItemKind::Jumbf, vec![0xab; 1001]),
+            (ItemKind::C2pa, vec![0xab; 1001]),
             (ItemKind::Xmp, b"<x:xmpmeta/>".to_vec()),
         ] {
             let e = t.require_item(kind).unwrap();
@@ -72,9 +72,9 @@ fn real_files_round_trip_and_take_metadata() {
 
         // Removing what was added gives back the media, whatever else changed
         // (a WebP gains a VP8X chunk when it takes XMP).
-        let back = write(&out, &Updates::new().remove_jumbf().remove_xmp()).unwrap();
+        let back = write(&out, &Updates::new().remove_c2pa().remove_xmp()).unwrap();
         let b = open(&back).unwrap();
-        assert!(b.item(ItemKind::Jumbf).unwrap().is_none(), "{path}");
+        assert!(b.item(ItemKind::C2pa).unwrap().is_none(), "{path}");
         assert!(b.item(ItemKind::Xmp).unwrap().is_none(), "{path}");
     }
     assert!(ran > 0, "no RIFF fixtures found");

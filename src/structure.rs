@@ -28,7 +28,6 @@ use crate::{
     segment::{Name, Role, Segment, SegmentKind, DEFAULT_CHUNK_SIZE, MAX_SEGMENT_SIZE},
     sink::{Chunk, Sink},
     task::block_on,
-    transfer::TransferEncoding,
     walk::Node,
 };
 
@@ -193,9 +192,9 @@ impl Structure {
     ///
     /// A box hash lists any boxes among them (the later images of a Multi-Picture
     /// Format JPEG) as they are, and unnamed bytes at the end as one final box
-    /// named [`AFTER_BOX`](crate::AFTER_BOX) (C2PA 2.4, 18.7.2); see
-    /// [`c2pa_boxes`](Self::c2pa_boxes). A hash of one part of a multi-asset file
-    /// covers that part only and never includes them.
+    /// (C2PA 2.4, 18.7.2); see [`complete_boxes`](Self::complete_boxes). A hash
+    /// of one part of a multi-asset file covers that part only and never
+    /// includes them.
     pub fn trailing(&self) -> Option<ByteRange> {
         let first = self.segments.get(self.boxes)?;
         ByteRange::new(
@@ -499,14 +498,14 @@ impl Structure {
     /// nonempty, disjoint, nonadjacent and within the asset. Works on parsed and
     /// planned structures without reading the source.
     ///
-    /// The item must be a JUMBF item of this structure; the caller selects which
-    /// store it is. This neither interprets the manifest nor computes a hash.
+    /// The item must be a C2PA item of this structure, usually its
+    /// [`c2pa_item`](Self::c2pa_item). This neither interprets the manifest nor computes a hash.
     /// Containers whose C2PA embedding uses another binding (ISO BMFF, PDF) return
     /// [`Error::UnsupportedFeature`].
     pub fn c2pa_data_hash_exclusions(&self, item: &Item) -> Result<Vec<ByteRange>> {
-        if item.kind() != ItemKind::Jumbf || !self.items.iter().any(|e| std::ptr::eq(e, item)) {
+        if item.kind() != ItemKind::C2pa || !self.items.iter().any(|e| std::ptr::eq(e, item)) {
             return Err(Error::InvalidFormat(
-                "C2PA data-hash exclusions require a JUMBF item from this structure".into(),
+                "C2PA data-hash exclusions require a C2PA item from this structure".into(),
             ));
         }
         let mut ranges = self.handler.c2pa_data_hash_exclusions(self, item)?;
@@ -584,65 +583,6 @@ impl Structure {
         Ok(())
     }
 
-    /// The superbox type UUID of a JUMBF item (ISO/IEC 19566-5): the 16-byte
-    /// type in its description box. Callers compare it with the types they care
-    /// about; this crate attaches no meaning to any of them.
-    ///
-    /// Returns `Ok(None)` if the item is not a JUMBF superbox with a
-    /// description box in the first 32 bytes (including boxes using extended
-    /// lengths, which this does not interpret). Reads at most 32 bytes of an item
-    /// stored as is; an item with a [transfer encoding](Item::transfer) is decoded.
-    pub fn jumbf_type<R: Read + Seek>(&self, src: &mut R, item: &Item) -> Result<Option<[u8; 16]>> {
-        block_on(self.total_size, src, |mut io| async move {
-            self.jumbf_type_async(&mut io, item).await
-        })
-    }
-
-    /// [`jumbf_type`](Self::jumbf_type), reading through `io`.
-    pub async fn jumbf_type_async(&self, io: &mut Io, item: &Item) -> Result<Option<[u8; 16]>> {
-        if item.kind() != ItemKind::Jumbf {
-            return Ok(None);
-        }
-        if let Some(t) = item.jumbf_type() {
-            return Ok(Some(t));
-        }
-        if *item.transfer() != TransferEncoding::Identity {
-            // Decode only the head. Stored bytes that do not decode, or whose decoder
-            // is not built in, give no type, as bytes that are not a superbox do.
-            const STORED_HEAD: u64 = 4096;
-            let mut stored = Vec::new();
-            for extent in item.extents() {
-                let left = STORED_HEAD - stored.len() as u64;
-                let r = extent.range();
-                self.read_in(
-                    io,
-                    ByteRange::new(r.offset(), r.len().min(left))?,
-                    &mut stored,
-                )
-                .await?;
-                if stored.len() as u64 >= STORED_HEAD {
-                    break;
-                }
-            }
-            return match item.transfer().decode_prefix(&stored, 32) {
-                Ok(head) => Ok(crate::jumbf::superbox_type(&head)),
-                Err(Error::InvalidFormat(_) | Error::UnsupportedFeature(_)) => Ok(None),
-                Err(e) => Err(e),
-            };
-        }
-        let first = item.extents().next().ok_or(Error::NotFound {
-            what: "item extent",
-        })?;
-        let r = first.range();
-        if r.len() < 32 {
-            return Ok(None);
-        }
-        self.check_readable(r)?;
-        let mut head = [0u8; 32];
-        io.read_at(r.offset(), &mut head).await?;
-        Ok(crate::jumbf::superbox_type(&head))
-    }
-
     /// Append `range` to `out` through `io`, within the same bounds as
     /// [`read_into`](Self::read_into).
     async fn read_in(&self, io: &mut Io, range: ByteRange, out: &mut Vec<u8>) -> Result<()> {
@@ -677,94 +617,55 @@ impl Structure {
             .decode(self.read_item_async(io, item).await?)
     }
 
-    /// The JUMBF store as a reader sees it, or `None` if the asset has none.
-    ///
-    /// Usually that is the one JUMBF item. A file with an `original` store and an
-    /// `update` (ISO BMFF) reads as the two combined, with the update's children
-    /// after the original's. Several unrelated stores are
-    /// [`Error::Ambiguous`]. Merkle boxes are not stores and are never returned.
-    /// To read the C2PA manifest store whatever other JUMBF the asset holds, use
-    /// [`c2pa_store`](Self::c2pa_store).
-    pub fn store<R: Read + Seek>(&self, src: &mut R) -> Result<Option<Vec<u8>>> {
-        use crate::segment::labels::{ORIGINAL, UPDATE};
-        let original = self.items_labelled(ItemKind::Jumbf, ORIGINAL).next();
-        let update = self.items_labelled(ItemKind::Jumbf, UPDATE).next();
-        if let (Some(o), Some(u)) = (original, update) {
-            let o = self.read_content(src, o)?;
-            let u = self.read_content(src, u)?;
-            return crate::jumbf::extend(&o, &u).map(Some);
-        }
-        match self.item(ItemKind::Jumbf)? {
-            Some(e) => self.read_content(src, e).map(Some),
-            None => Ok(None),
-        }
-    }
-
     /// The asset's XMP packet, or `None` if it has none. Containers that store XMP
     /// in several pieces return it reassembled.
     pub fn xmp(&self, src: &mut dyn ReadSeek) -> Result<Option<Vec<u8>>> {
         self.handler.read_xmp(self, src)
     }
 
-    /// The JUMBF item holding the asset's C2PA manifest store: the one whose
-    /// superbox type is [`C2PA_STORE_TYPE`](crate::jumbf::C2PA_STORE_TYPE).
-    /// `None` if there is none; other JUMBF, such as JPEG XT boxes of other types,
-    /// is ignored. Several stores are [`Error::Ambiguous`].
+    /// The C2PA manifest store item, or `None` if the asset has none. Several
+    /// stores are [`Error::Ambiguous`].
     ///
-    /// When a store is kept as an `original` plus an `update` (ISO BMFF), this is
-    /// the `original`; [`c2pa_store`](Self::c2pa_store) reads the two combined. The
-    /// item is what a caller excludes from a hash or patches in place.
-    pub fn c2pa_item<R: Read + Seek>(&self, src: &mut R) -> Result<Option<&Item>> {
-        block_on(self.total_size, src, |mut io| async move {
-            self.c2pa_item_async(&mut io).await
-        })
-    }
-
-    /// [`c2pa_item`](Self::c2pa_item), reading through `io`, for a [`Task`](crate::task::Task) where
-    /// the caller does the reads. There are none when the parser recorded the
-    /// type of each JUMBF item, as the built-in handlers do.
-    pub async fn c2pa_item_async(&self, io: &mut Io) -> Result<Option<&Item>> {
+    /// When the store is kept as an `original` plus an `update` (ISO BMFF), this
+    /// is the `original`; [`c2pa_store`](Self::c2pa_store) reads the two combined.
+    /// The item is what a caller excludes from a hash or patches in place. Needs no
+    /// I/O: the container identified the store while parsing.
+    pub fn c2pa_item(&self) -> Result<Option<&Item>> {
         use crate::segment::labels::UPDATE;
-        let mut found = None;
-        let mut count = 0;
-        for item in self.items_of(ItemKind::Jumbf) {
-            if item.label() == Some(UPDATE) {
-                continue;
-            }
-            if self.jumbf_type_async(io, item).await? == Some(crate::jumbf::C2PA_STORE_TYPE) {
-                count += 1;
-                found.get_or_insert(item);
-            }
-        }
-        if count > 1 {
+        let mut stores = self
+            .items_of(ItemKind::C2pa)
+            .filter(|item| item.label() != Some(UPDATE));
+        let found = stores.next();
+        let more = stores.count();
+        if more > 0 {
             return Err(Error::Ambiguous {
                 what: "C2PA manifest store",
-                count,
+                count: more + 1,
             });
         }
         Ok(found)
     }
 
-    /// The asset's C2PA manifest store as a reader sees it, or `None` if it has
-    /// none: the content of [`c2pa_item`](Self::c2pa_item), with any transfer
-    /// encoding undone, and an `update` appended to its `original` (ISO BMFF).
-    /// Only finds the store; the manifests in it are not interpreted.
+    /// The C2PA manifest store as a reader sees it, or `None` if the asset has
+    /// none: the [`c2pa_item`](Self::c2pa_item) with any transfer encoding undone,
+    /// and an `update` appended to its `original` (ISO BMFF). The store is not
+    /// interpreted.
     pub fn c2pa_store<R: Read + Seek>(&self, src: &mut R) -> Result<Option<Vec<u8>>> {
         block_on(self.total_size, src, |mut io| async move {
             self.c2pa_store_async(&mut io).await
         })
     }
 
-    /// [`c2pa_store`](Self::c2pa_store), reading through `io`, for a [`Task`](crate::task::Task)
-    /// where the caller does the reads.
+    /// [`c2pa_store`](Self::c2pa_store), reading through `io`, for a
+    /// [`Task`](crate::task::Task) where the caller does the reads.
     pub async fn c2pa_store_async(&self, io: &mut Io) -> Result<Option<Vec<u8>>> {
         use crate::segment::labels::{ORIGINAL, UPDATE};
-        let Some(item) = self.c2pa_item_async(io).await? else {
+        let Some(item) = self.c2pa_item()? else {
             return Ok(None);
         };
         let store = self.read_content_async(io, item).await?;
         if item.label() == Some(ORIGINAL) {
-            if let Some(update) = self.items_labelled(ItemKind::Jumbf, UPDATE).next() {
+            if let Some(update) = self.items_labelled(ItemKind::C2pa, UPDATE).next() {
                 let update = self.read_content_async(io, update).await?;
                 return crate::jumbf::extend(&store, &update).map(Some);
             }
@@ -772,34 +673,37 @@ impl Structure {
         Ok(Some(store))
     }
 
-    /// The boxes a C2PA box hash (`c2pa.hash.boxes`) lists for this asset, in file
-    /// order, covering every byte once.
-    ///
-    /// Applies C2PA naming and validation to the generic [`boxes`](Self::boxes)
-    /// view. Boxes past the container's own structure (later images of a
-    /// Multi-Picture Format JPEG) are listed as they are. The segments of the C2PA
-    /// manifest store ([`c2pa_item`](Self::c2pa_item)) are one box named
-    /// [`C2PA_BOX`](crate::C2PA_BOX), which the hash does not cover, and unnamed
-    /// bytes at the end one box named [`AFTER_BOX`](crate::AFTER_BOX).
-    ///
-    /// `src` is the asset; a planned structure's boxes are known before the
-    /// output exists. An element of the
-    /// structure without a box name, or boxes after unnamed data, are
-    /// [`Error::UnsupportedFeature`]: the asset is not box-hashable.
-    ///
-    /// Every returned box has a name. Only finding the store can read `src`;
-    /// [`boxes_with`](Self::boxes_with) groups a known item without reading.
-    pub fn c2pa_boxes<R: Read + Seek>(&self, src: &mut R) -> Result<Vec<BoxInfo>> {
-        block_on(self.total_size, src, |mut io| async move {
-            self.c2pa_boxes_async(&mut io).await
-        })
+    /// The boxes a C2PA box hash (`c2pa.hash.boxes`, C2PA 18.7) lists:
+    /// [`complete_boxes`](Self::complete_boxes) with the C2PA manifest store as one
+    /// box named `C2PA` and bytes after the structure as one named `c2pa.after`.
+    /// Works without a store (to plan one) and on planned structures; reads
+    /// nothing. Fails as `complete_boxes` does, and as
+    /// [`c2pa_item`](Self::c2pa_item) does for several stores.
+    pub fn c2pa_boxes(&self) -> Result<Vec<BoxInfo>> {
+        const C2PA_BOX: &str = "C2PA";
+        const AFTER_BOX: &str = "c2pa.after";
+        self.complete_boxes(self.c2pa_item()?.map(|item| (item, C2PA_BOX)), AFTER_BOX)
     }
 
-    /// [`c2pa_boxes`](Self::c2pa_boxes), reading through `io`, for a
-    /// [`Task`](crate::task::Task) where the caller does the reads.
-    pub async fn c2pa_boxes_async(&self, io: &mut Io) -> Result<Vec<BoxInfo>> {
-        let boxes = match self.c2pa_item_async(io).await? {
-            Some(item) => self.boxes_with(item, crate::C2PA_BOX)?,
+    /// Every byte of the asset as named boxes, in file order, each byte once: the
+    /// generic [`boxes`](Self::boxes) view with no unnamed box left.
+    ///
+    /// With `group`, the segments of that item are one box with that name, as
+    /// [`boxes_with`](Self::boxes_with) gives them. Unnamed bytes past the end of
+    /// the container's own structure (data appended to a file) are one last box
+    /// named `trailing_name`. Boxes past the structure that are named (later
+    /// images of a Multi-Picture Format JPEG) are listed as they are.
+    ///
+    /// An element of the structure without a box name, or a named box after the
+    /// trailing bytes, is [`Error::UnsupportedFeature`]: the asset cannot be
+    /// described entirely by named boxes. Reads nothing.
+    pub fn complete_boxes(
+        &self,
+        group: Option<(&Item, &str)>,
+        trailing_name: &str,
+    ) -> Result<Vec<BoxInfo>> {
+        let boxes = match group {
+            Some((item, name)) => self.boxes_with(item, name)?,
             None => self.boxes()?,
         };
         let structure_end = self
@@ -812,12 +716,12 @@ impl Structure {
         for b in boxes {
             if b.name.is_some() {
                 if after.is_some() {
-                    return Err(unsupported("C2PA box hash: boxes after unnamed data"));
+                    return Err(unsupported("named boxes after unnamed data"));
                 }
                 result.push(b);
             } else {
                 if b.range.offset() < structure_end {
-                    return Err(unsupported("C2PA box hash: an element has no box name"));
+                    return Err(unsupported("an element of the structure has no box name"));
                 }
                 match &mut after {
                     Some(last) => {
@@ -829,7 +733,7 @@ impl Structure {
                     }
                     None => {
                         after = Some(BoxInfo {
-                            name: Some(Cow::Borrowed(crate::AFTER_BOX)),
+                            name: Some(Cow::Owned(trailing_name.to_owned())),
                             ..b
                         });
                     }
@@ -1081,7 +985,7 @@ impl Structure {
     /// Unlike [`patch`](Self::patch), which zero-fills a shorter `data`, a length
     /// mismatch is an error: it means the placeholder was not sized correctly.
     ///
-    /// Writing the store again with `set_jumbf` is not a substitute: that is free
+    /// Writing the store again with `set_c2pa` is not a substitute: that is free
     /// to change the size.
     ///
     /// `data` is the content, not what is stored: an item with a
@@ -1568,7 +1472,7 @@ mod tests {
             assert_eq!(b.range, ByteRange::new(i as u64 * 4, 4).unwrap());
         }
         assert!(matches!(
-            s.c2pa_boxes(&mut std::io::Cursor::new([])),
+            s.complete_boxes(None, "after"),
             Err(Error::UnsupportedFeature(_))
         ));
     }
@@ -1669,14 +1573,14 @@ mod tests {
         assert_eq!(boxes.len(), 3);
         assert!(boxes[1..].iter().all(|b| b.name.is_none()));
         assert!(s.supports_named_boxes());
-        let c2pa = s.c2pa_boxes(&mut std::io::Cursor::new([])).unwrap();
+        let c2pa = s.complete_boxes(None, "after").unwrap();
         assert_eq!(c2pa.len(), 2);
-        assert_eq!(c2pa[1].name.as_deref(), Some(crate::AFTER_BOX));
+        assert_eq!(c2pa[1].name.as_deref(), Some("after"));
         assert_eq!(c2pa[1].range, ByteRange::new(4, 8).unwrap());
     }
 
     #[test]
-    fn only_the_c2pa_view_rejects_boxes_after_unnamed_trailing_data() {
+    fn only_complete_boxes_rejects_boxes_after_unnamed_trailing_data() {
         let mut b = builder(12);
         b.push_span(SegmentKind::Other, Name::FourCC(*b"HEAD"), 0, 4, 0)
             .unwrap();
@@ -1688,7 +1592,7 @@ mod tests {
         let s = b.finish().unwrap();
         assert_eq!(s.boxes().unwrap().len(), 3);
         assert!(matches!(
-            s.c2pa_boxes(&mut std::io::Cursor::new([])),
+            s.complete_boxes(None, "after"),
             Err(Error::UnsupportedFeature(_))
         ));
     }
@@ -1799,9 +1703,9 @@ mod tests {
         assert_eq!(covered, 30);
         let e = s.require_item(ItemKind::Xmp).unwrap();
         assert_eq!(e.len(), 8);
-        assert!(s.item(ItemKind::Jumbf).unwrap().is_none());
+        assert!(s.item(ItemKind::C2pa).unwrap().is_none());
         assert!(matches!(
-            s.require_item(ItemKind::Jumbf),
+            s.require_item(ItemKind::C2pa),
             Err(Error::NotFound { .. })
         ));
     }
@@ -1835,11 +1739,11 @@ mod tests {
         let c = b
             .push_span(SegmentKind::Metadata, Name::None, 0, 4, 0)
             .unwrap();
-        b.item_of_segments(ItemInfo::jumbf(), &[a]).unwrap();
-        b.item_of_segments(ItemInfo::jumbf(), &[c]).unwrap();
+        b.item_of_segments(ItemInfo::c2pa(), &[a]).unwrap();
+        b.item_of_segments(ItemInfo::c2pa(), &[c]).unwrap();
         let s = b.finish().unwrap();
         assert!(matches!(
-            s.item(ItemKind::Jumbf),
+            s.item(ItemKind::C2pa),
             Err(Error::Ambiguous { count: 2, .. })
         ));
     }

@@ -16,7 +16,8 @@
 use std::io::Cursor;
 
 use asset_io::{
-    task::Task, tokio as asset, Asset, Chunk, Error, HandlerRegistry, ItemKind, NullSink, Updates,
+    task::Task, testing::c2pa_store, tokio as asset, Asset, Chunk, Error, HandlerRegistry,
+    ItemKind, NullSink, Updates,
 };
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
@@ -34,22 +35,12 @@ fn inputs() -> [(&'static str, Vec<u8>); 3] {
     ]
 }
 
-fn store() -> Vec<u8> {
-    let mut bytes = 33u32.to_be_bytes().to_vec();
-    bytes.extend_from_slice(b"jumb");
-    bytes.extend_from_slice(&25u32.to_be_bytes());
-    bytes.extend_from_slice(b"jumd");
-    bytes.extend_from_slice(&asset_io::jumbf::C2PA_STORE_TYPE);
-    bytes.push(0);
-    bytes
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn spawned_adapters_match_blocking_reads_writes_and_sink_bytes() {
     for (format, input) in inputs() {
         tokio::spawn(async move {
             let registry = HandlerRegistry::builtin();
-            let updates = Updates::new().set_jumbf(store());
+            let updates = Updates::new().set_c2pa(c2pa_store(&[]));
             let blocking = Asset::open(Cursor::new(input.clone()), Some(format)).unwrap();
             let mut expected = Cursor::new(Vec::new());
             let expected_layout = blocking
@@ -87,11 +78,8 @@ async fn spawned_adapters_match_blocking_reads_writes_and_sink_bytes() {
             } else {
                 asset::parse(&registry, &mut output, None).await.unwrap()
             };
-            let item = asset::c2pa_item(&parsed, &mut output)
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(item.kind(), ItemKind::Jumbf);
+            let item = parsed.c2pa_item().unwrap().unwrap();
+            assert_eq!(item.kind(), ItemKind::C2pa);
             assert_eq!(
                 asset::read_item(&parsed, &mut output, item).await.unwrap(),
                 parsed
@@ -102,22 +90,22 @@ async fn spawned_adapters_match_blocking_reads_writes_and_sink_bytes() {
                 asset::read_content(&parsed, &mut output, item)
                     .await
                     .unwrap(),
-                store()
+                c2pa_store(&[])
             );
             assert_eq!(
                 asset::c2pa_store(&parsed, &mut output).await.unwrap(),
-                Some(store())
+                Some(c2pa_store(&[]))
             );
             let bytes = asset::run(
                 Task::new(parsed.total_size(), |mut io| async move {
-                    let item = parsed.c2pa_item_async(&mut io).await?.unwrap();
+                    let item = parsed.c2pa_item()?.unwrap();
                     parsed.read_content_async(&mut io, item).await
                 }),
                 &mut output,
             )
             .await
             .unwrap();
-            assert_eq!(bytes, store());
+            assert_eq!(bytes, c2pa_store(&[]));
 
             let mut written = Cursor::new(Vec::new());
             let layout = asset::write(&structure, &mut src, &mut written, &updates, &mut NullSink)
@@ -171,24 +159,18 @@ async fn adapters_propagate_parse_read_and_sink_errors() {
 
     let mut src = Cursor::new(inputs()[0].1.clone());
     let structure = asset::parse(&registry, &mut src, None).await.unwrap();
-    assert!(asset::c2pa_item(&structure, &mut src)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(structure.c2pa_item().unwrap().is_none());
     assert!(asset::c2pa_store(&structure, &mut src)
         .await
         .unwrap()
         .is_none());
-    let updates = Updates::new().set_jumbf(store());
+    let updates = Updates::new().set_c2pa(c2pa_store(&[]));
     let mut signed = Cursor::new(Vec::new());
     asset::write(&structure, &mut src, &mut signed, &updates, &mut NullSink)
         .await
         .unwrap();
     let parsed = asset::parse(&registry, &mut signed, None).await.unwrap();
-    let item = asset::c2pa_item(&parsed, &mut signed)
-        .await
-        .unwrap()
-        .unwrap();
+    let item = parsed.c2pa_item().unwrap().unwrap();
     let mut empty = Cursor::new(Vec::<u8>::new());
     assert!(matches!(
         asset::read_item(&parsed, &mut empty, item).await,

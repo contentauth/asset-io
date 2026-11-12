@@ -18,7 +18,7 @@ are rejected as cycles, and the same revision and resource limits apply.
 Each metadata stream, including those with an indirect `/Length`, is a segment holding
 the stream's payload as it is in the file, and the item for XMP or the C2PA store. The
 segments between them are other bytes, so the structure tiles the file. Parsing skips the
-payloads; `Structure::xmp()` and `Structure::store()` allocate only when called, and
+payloads; `Structure::xmp()` and `Structure::c2pa_store()` allocate only when called, and
 decode Flate-compressed metadata at that point. A stream with no payload holds nothing to
 expose, so it reads as absent.
 The `pdf` feature enables the `flate` feature (`flate2` with its pure-Rust backend,
@@ -89,7 +89,7 @@ streams require full termination.
 ## Incremental Writing
 
 A write is a `WritePlan`: the original bytes, copied unchanged, then an appended
-revision. `set_xmp`, `remove_xmp`, `set_jumbf`, and `remove_jumbf` update the current
+revision. `set_xmp`, `remove_xmp`, `set_c2pa`, and `remove_c2pa` update the current
 catalog. Newly written metadata streams are uncompressed. A no-change write is a
 byte-for-byte copy. Because the plan is data, the output structure is known before
 anything is written (`Structure::plan`), and it can be run by any driver. A stream the

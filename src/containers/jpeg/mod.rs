@@ -125,6 +125,14 @@ struct Open {
     ty: Option<[u8; 16]>,
 }
 
+impl Open {
+    /// The item: a C2PA store or other JUMBF, by superbox type, with the box
+    /// instance number (En) as its native id.
+    fn info(&self) -> ItemInfo {
+        crate::jumbf::item_info(self.ty).native_id(u64::from(self.en))
+    }
+}
+
 /// Generic UUID boxes use the JPEG XT transport without a repeated box header.
 #[derive(Default)]
 struct UuidBox {
@@ -264,9 +272,9 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<St
         b.item_of_segments(ItemInfo::xmp(), &ids)?;
     }
     if let Some(o) = meta.jumbf_open.take() {
-        b.item_of_segments(ItemInfo::jumbf().jumbf_type(o.ty), &o.ids)?;
+        b.item_of_segments(o.info(), &o.ids)?;
     }
-    for (_, raw) in meta.uuid_boxes {
+    for (en, raw) in meta.uuid_boxes {
         let ids: Vec<_> = raw.parts.into_values().collect();
         let len = ids.iter().try_fold(0u64, |n, &id| {
             Ok::<_, Error>(n + b.segment(id)?.payload().len())
@@ -276,7 +284,10 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<St
                 "JPEG XT UUID box length mismatch".into(),
             ));
         }
-        b.item_of_segments(ItemInfo::new(ItemKind::Other, Encoding::IsoBmff), &ids)?;
+        b.item_of_segments(
+            ItemInfo::new(ItemKind::Other, Encoding::IsoBmff).native_id(u64::from(en)),
+            &ids,
+        )?;
     }
 
     // Another image directly after this one makes a multi-picture file. Later
@@ -566,7 +577,7 @@ async fn scan_image(
             Class::Jumbf { en, z } => {
                 if z <= 1 {
                     if let Some(o) = jumbf_open.take() {
-                        b.item_of_segments(ItemInfo::jumbf().jumbf_type(o.ty), &o.ids)?;
+                        b.item_of_segments(o.info(), &o.ids)?;
                     }
                     *jumbf_open = Some(Open {
                         en,
@@ -580,7 +591,7 @@ async fn scan_image(
             }
             Class::JumbfRaw => {
                 if let Some(o) = jumbf_open.take() {
-                    b.item_of_segments(ItemInfo::jumbf().jumbf_type(o.ty), &o.ids)?;
+                    b.item_of_segments(o.info(), &o.ids)?;
                 }
                 *jumbf_open = Some(Open {
                     en: 0,
@@ -938,8 +949,9 @@ enum Op<'a> {
         offset: u32,
         payload: &'a [u8],
     },
-    /// One JPEG XT APP11 part of a JUMBF.
+    /// One JPEG XT APP11 part of a C2PA store.
     Jumbf {
+        en: u16,
         seq: u32,
         lbox_tbox: [u8; 8],
         payload: &'a [u8],
@@ -1004,10 +1016,23 @@ fn push_new_xmp<'a>(ops: &mut Vec<Op<'a>>, groups: &mut Groups, xmp: &'a [u8]) -
     Ok(())
 }
 
-fn push_new_jumbf<'a>(ops: &mut Vec<Op<'a>>, groups: &mut Groups, jumbf: &'a [u8]) -> Result<()> {
+/// Add the APP11 segments of C2PA store `jumbf`, as JUMBF box instance `en`.
+fn push_new_jumbf<'a>(
+    ops: &mut Vec<Op<'a>>,
+    groups: &mut Groups,
+    jumbf: &'a [u8],
+    en: u16,
+) -> Result<()> {
     if jumbf.len() < 8 || jumbf[4..8] != JUMB[..] {
         return Err(Error::InvalidFormat(
             "JUMBF must begin with a jumb superbox (LBox, TBox)".into(),
+        ));
+    }
+    // JPEG carries JUMBF of any type, and tells a C2PA store by its type.
+    let ty = crate::jumbf::superbox_type(jumbf);
+    if ty != Some(crate::jumbf::C2PA_STORE_TYPE) {
+        return Err(Error::InvalidFormat(
+            "a C2PA store in JPEG must be a JUMBF superbox of the C2PA store type".into(),
         ));
     }
     let mut lbox_tbox = [0u8; 8];
@@ -1019,14 +1044,14 @@ fn push_new_jumbf<'a>(ops: &mut Vec<Op<'a>>, groups: &mut Groups, jumbf: &'a [u8
             limit: u32::MAX as u64,
         })?;
         ops.push(Op::Jumbf {
+            en,
             seq,
             lbox_tbox,
             payload: chunk,
         });
     }
-    let ty = crate::jumbf::superbox_type(jumbf);
     groups.push((
-        ItemInfo::jumbf().jumbf_type(ty),
+        ItemInfo::c2pa().jumbf_type(ty).native_id(u64::from(en)),
         (first..ops.len()).collect(),
     ));
     Ok(())
@@ -1090,36 +1115,51 @@ fn plan_ops<'a>(src: &Structure, updates: &'a Updates) -> Result<(Vec<Op<'a>>, G
     let mut ops: Vec<Op<'a>> = Vec::with_capacity(n + 2);
     let mut groups: Groups = Vec::new();
     let mut xmp = MetadataSlot::new(updates.xmp());
-    let mut jumbf = MetadataSlot::new(updates.jumbf());
+    let mut c2pa = MetadataSlot::new(updates.c2pa());
     let mut inserted = false;
 
-    // What each segment holds, from the items: XMP, JUMBF the update applies to
-    // (targeted), other JUMBF, or anything else.
-    let mut held: Vec<Option<(ItemKind, bool)>> = vec![None; n];
+    // What each segment holds, from the items: XMP, the C2PA store, or anything
+    // else (other JUMBF included), which is kept. A new store takes a box instance
+    // number (En) that no other JPEG XT box (JUMBF or UUID) uses.
+    let mut held: Vec<Option<ItemKind>> = vec![None; n];
+    let mut used_en = Vec::new();
     for item in src.items() {
-        let entry = match item.kind() {
-            ItemKind::Xmp => (ItemKind::Xmp, false),
-            ItemKind::Jumbf => (ItemKind::Jumbf, updates.jumbf_targets(item.jumbf_type())),
+        let kind = item.kind();
+        match kind {
+            ItemKind::Xmp | ItemKind::C2pa => {}
+            _ if matches!(
+                item.encoding(),
+                crate::Encoding::Jumbf | crate::Encoding::IsoBmff
+            ) =>
+            {
+                used_en.extend(item.native_id());
+                continue;
+            }
             _ => continue,
-        };
+        }
         for p in item.extents() {
-            held[p.segment().index()] = Some(entry);
+            held[p.segment().index()] = Some(kind);
         }
     }
+    let en = std::iter::once(XT_EN)
+        .chain(1..=u16::MAX)
+        .find(|en| !used_en.contains(&u64::from(*en)))
+        .ok_or(Error::LimitExceeded {
+            what: "JUMBF box instances",
+            limit: u64::from(u16::MAX),
+        })?;
 
     for (i, seg) in src.segments().iter().enumerate() {
         let id = SegmentId::from_index(i)?;
         match held[i] {
-            Some((ItemKind::Xmp, _)) => match xmp.existing() {
+            Some(ItemKind::Xmp) => match xmp.existing() {
                 Existing::Keep => ops.push(Op::Copy(id)),
                 Existing::Replace(d) => push_new_xmp(&mut ops, &mut groups, d)?,
                 _ => {}
             },
-            // JUMBF the update does not target is kept: other types, and all of it
-            // when nothing is to change.
-            Some((ItemKind::Jumbf, true)) => match jumbf.existing() {
+            Some(ItemKind::C2pa) => match c2pa.existing() {
                 Existing::Keep => ops.push(Op::Copy(id)),
-                Existing::Replace(d) => push_new_jumbf(&mut ops, &mut groups, d)?,
+                Existing::Replace(d) => push_new_jumbf(&mut ops, &mut groups, d, en)?,
                 _ => {}
             },
             Some(_) => ops.push(Op::Copy(id)),
@@ -1129,8 +1169,8 @@ fn plan_ops<'a>(src: &Structure, updates: &'a Updates) -> Result<(Vec<Op<'a>>, G
                     if let Some(d) = xmp.pending() {
                         push_new_xmp(&mut ops, &mut groups, d)?;
                     }
-                    if let Some(d) = jumbf.pending() {
-                        push_new_jumbf(&mut ops, &mut groups, d)?;
+                    if let Some(d) = c2pa.pending() {
+                        push_new_jumbf(&mut ops, &mut groups, d, en)?;
                     }
                 }
                 ops.push(Op::Copy(id));
@@ -1187,6 +1227,7 @@ fn encode_new<'o>(op: &'o Op<'_>, hdr: &mut [u8; MAX_HEADER]) -> Result<(usize, 
             (h, payload)
         }
         Op::Jumbf {
+            en,
             seq,
             lbox_tbox,
             payload,
@@ -1194,7 +1235,7 @@ fn encode_new<'o>(op: &'o Op<'_>, hdr: &mut [u8; MAX_HEADER]) -> Result<(usize, 
             let h = if *seq > 1 { 4 + 16 } else { 4 + 8 };
             put_marker_len(&mut hdr[..], APP11, h as u32, payload.len() as u64)?;
             hdr[4..6].copy_from_slice(&JP);
-            hdr[6..8].copy_from_slice(&XT_EN.to_be_bytes());
+            hdr[6..8].copy_from_slice(&en.to_be_bytes());
             hdr[8..12].copy_from_slice(&seq.to_be_bytes());
             if *seq > 1 {
                 hdr[12..20].copy_from_slice(lbox_tbox);
@@ -1205,12 +1246,12 @@ fn encode_new<'o>(op: &'o Op<'_>, hdr: &mut [u8; MAX_HEADER]) -> Result<(usize, 
     Ok((n, payload))
 }
 
-/// The segments `write` inserts for new XMP or JUMBF, as one byte string.
+/// The segments `write` inserts for new XMP or a C2PA store, as one byte string.
 fn compose(kind: ItemKind, data: &[u8]) -> Result<Vec<u8>> {
     let mut ops = Vec::new();
     let mut groups = Groups::new();
     match kind {
-        ItemKind::Jumbf => push_new_jumbf(&mut ops, &mut groups, data)?,
+        ItemKind::C2pa => push_new_jumbf(&mut ops, &mut groups, data, XT_EN)?,
         ItemKind::Xmp => push_new_xmp(&mut ops, &mut groups, data)?,
         _ => return Err(Error::UnsupportedFormat),
     }
@@ -1232,7 +1273,7 @@ fn compose(kind: ItemKind, data: &[u8]) -> Result<Vec<u8>> {
 /// Several distinct JUMBF boxes is an error.
 #[cfg(test)]
 fn read_jumbf<R: Read + Seek>(s: &Structure, src: &mut R) -> Result<Option<Vec<u8>>> {
-    match s.item(ItemKind::Jumbf)? {
+    match s.item(ItemKind::C2pa)? {
         Some(e) => s.read_item(src, e).map(Some),
         None => Ok(None),
     }
@@ -1315,7 +1356,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        testing::{write, Conformance},
+        testing::{c2pa_store_of_len, jumbf, rewrite, Conformance},
         Chunk, NullSink, Sink,
     };
 
@@ -1337,30 +1378,6 @@ mod tests {
         v.extend_from_slice(&[0x12, 0x34, 0xff, 0x00, 0x56]);
         v.extend_from_slice(&[0xff, EOI]);
         v
-    }
-
-    fn fake_jumbf(n: usize) -> Vec<u8> {
-        let mut v = vec![0u8; n];
-        v[0..4].copy_from_slice(&(n as u32).to_be_bytes());
-        v[4..8].copy_from_slice(b"jumb");
-        for (i, b) in v[8..].iter_mut().enumerate() {
-            *b = ((i * 7) % 255) as u8 + 1;
-        }
-        v
-    }
-
-    fn do_write(jpeg: &[u8], updates: &Updates) -> (Vec<u8>, Structure) {
-        let s = parse(&mut Cursor::new(jpeg.to_vec())).unwrap();
-        let mut out = Cursor::new(Vec::new());
-        let dest = write(
-            &s,
-            &mut Cursor::new(jpeg.to_vec()),
-            &mut out,
-            updates,
-            &mut NullSink,
-        )
-        .unwrap();
-        (out.into_inner(), dest)
     }
 
     #[test]
@@ -1412,7 +1429,7 @@ mod tests {
 
     #[test]
     fn conforms() {
-        let c = Conformance::new(handler()).jumbf(Some(fake_jumbf(70_000)));
+        let c = Conformance::new(handler()).c2pa(Some(c2pa_store_of_len(70_000)));
         c.check("sample", &sample_jpeg());
         c.check("minimal", &[0xff, SOI, 0xff, EOI]);
 
@@ -1455,22 +1472,22 @@ mod tests {
     #[test]
     fn minimal_file_still_gets_metadata() {
         let j = vec![0xff, SOI, 0xff, EOI];
-        let updates = Updates::new().set_jumbf(fake_jumbf(100));
-        let (out, dest) = do_write(&j, &updates);
-        let e = dest.require_item(ItemKind::Jumbf).unwrap();
+        let updates = Updates::new().set_c2pa(c2pa_store_of_len(100));
+        let (out, dest) = rewrite(handler(), &j, &updates).unwrap();
+        let e = dest.require_item(ItemKind::C2pa).unwrap();
         assert_eq!(
             dest.read_item(&mut Cursor::new(out), e).unwrap(),
-            fake_jumbf(100)
+            c2pa_store_of_len(100)
         );
     }
 
     #[test]
     fn single_part_jumbf_round_trip() {
         let j = sample_jpeg();
-        let data = fake_jumbf(1000);
-        let (out, dest) = do_write(&j, &Updates::new().set_jumbf(data.clone()));
+        let data = c2pa_store_of_len(1000);
+        let (out, dest) = rewrite(handler(), &j, &Updates::new().set_c2pa(data.clone())).unwrap();
         let re = parse(&mut Cursor::new(out.clone())).unwrap();
-        let e = re.require_item(ItemKind::Jumbf).unwrap();
+        let e = re.require_item(ItemKind::C2pa).unwrap();
         assert_eq!(e.extent_count(), 1);
         assert_eq!(
             read_jumbf(&re, &mut Cursor::new(out)).unwrap().unwrap(),
@@ -1482,10 +1499,10 @@ mod tests {
     #[test]
     fn multi_segment_jumbf_is_one_item_with_visible_headers() {
         let j = sample_jpeg();
-        let data = fake_jumbf(150_000);
-        let (out, _) = do_write(&j, &Updates::new().set_jumbf(data.clone()));
+        let data = c2pa_store_of_len(150_000);
+        let (out, _) = rewrite(handler(), &j, &Updates::new().set_c2pa(data.clone())).unwrap();
         let re = parse(&mut Cursor::new(out.clone())).unwrap();
-        let e = re.require_item(ItemKind::Jumbf).unwrap();
+        let e = re.require_item(ItemKind::C2pa).unwrap();
         assert_eq!(e.extent_count(), 3);
         assert_eq!(e.len(), 150_000);
         assert_eq!(
@@ -1503,10 +1520,15 @@ mod tests {
     #[test]
     fn two_distinct_jumbf_boxes_are_ambiguous() {
         let j = sample_jpeg();
-        let (out, _) = do_write(&j, &Updates::new().set_jumbf(fake_jumbf(100)));
+        let (out, _) = rewrite(
+            handler(),
+            &j,
+            &Updates::new().set_c2pa(c2pa_store_of_len(100)),
+        )
+        .unwrap();
         // Append a second, unrelated JUMBF APP11 (new box instance, Z = 1).
         let mut second = Vec::new();
-        let body = fake_jumbf(50);
+        let body = c2pa_store_of_len(50);
         let mut data = b"JP".to_vec();
         data.extend_from_slice(&0x9999u16.to_be_bytes());
         data.extend_from_slice(&1u32.to_be_bytes());
@@ -1519,10 +1541,10 @@ mod tests {
         two.extend_from_slice(&out[at..]);
         let s = parse(&mut Cursor::new(two)).unwrap();
         assert!(matches!(
-            s.item(ItemKind::Jumbf),
+            s.item(ItemKind::C2pa),
             Err(Error::Ambiguous { count: 2, .. })
         ));
-        assert_eq!(s.items_of(ItemKind::Jumbf).count(), 2);
+        assert_eq!(s.items_of(ItemKind::C2pa).count(), 2);
     }
 
     /// Progressive-style file: two scans, restart markers in the first, and a
@@ -1543,7 +1565,7 @@ mod tests {
         let mut d = b"JP".to_vec();
         d.extend_from_slice(&0x0211u16.to_be_bytes());
         d.extend_from_slice(&1u32.to_be_bytes());
-        d.extend(fake_jumbf(60));
+        d.extend(c2pa_store_of_len(60));
         j.extend(marker(APP11, &d));
         j.extend_from_slice(&[0xff, EOI]);
         j
@@ -1564,14 +1586,24 @@ mod tests {
         // C2PA 11.2.3: for an update manifest the store must keep its file offset;
         // only its length may change.
         let j = sample_jpeg();
-        let (with, d1) = do_write(&j, &Updates::new().set_jumbf(fake_jumbf(100)));
+        let (with, d1) = rewrite(
+            handler(),
+            &j,
+            &Updates::new().set_c2pa(c2pa_store_of_len(100)),
+        )
+        .unwrap();
         let start = |s: &Structure| {
-            let e = s.require_item(ItemKind::Jumbf).unwrap();
+            let e = s.require_item(ItemKind::C2pa).unwrap();
             let first = e.extents().next().unwrap();
             s.segment(first.segment()).unwrap().range().offset()
         };
         for n in [60usize, 100, 70_000] {
-            let (out, d2) = do_write(&with, &Updates::new().set_jumbf(fake_jumbf(n)));
+            let (out, d2) = rewrite(
+                handler(),
+                &with,
+                &Updates::new().set_c2pa(c2pa_store_of_len(n)),
+            )
+            .unwrap();
             assert_eq!(start(&d2), start(&d1), "offset moved for {n} bytes");
             // Everything before the manifest is byte-identical.
             let at = start(&d1) as usize;
@@ -1595,7 +1627,7 @@ mod tests {
         assert!(!scans[1].subdivides());
 
         // The manifest after the last scan is found.
-        assert_eq!(s.items_of(ItemKind::Jumbf).count(), 1);
+        assert_eq!(s.items_of(ItemKind::C2pa).count(), 1);
 
         // elements() expands the scan and tiles the file.
         let els = elements_of(&s);
@@ -1641,13 +1673,18 @@ mod tests {
         assert_eq!(next, j.len() as u64);
 
         // Round trip preserves structure, including the subdivision flag.
-        let (out, dest) = do_write(&j, &Updates::new());
+        let (out, dest) = rewrite(handler(), &j, &Updates::new()).unwrap();
         assert_eq!(out, j);
         assert_eq!(dest.segments(), s.segments());
 
         // Set replaces the manifest that follows the scans; no second one appears.
-        let (out, dest) = do_write(&j, &Updates::new().set_jumbf(fake_jumbf(200)));
-        assert_eq!(dest.items_of(ItemKind::Jumbf).count(), 1);
+        let (out, dest) = rewrite(
+            handler(),
+            &j,
+            &Updates::new().set_c2pa(c2pa_store_of_len(200)),
+        )
+        .unwrap();
+        assert_eq!(dest.items_of(ItemKind::C2pa).count(), 1);
         let re = parse(&mut Cursor::new(out)).unwrap();
         assert_eq!(re.segments(), dest.segments());
     }
@@ -1695,7 +1732,7 @@ mod tests {
     fn jumbf_segments_must_be_contiguous() {
         // C2PA A.3.1: APP11 segments of one manifest are sequential and contiguous.
         let j = sample_jpeg();
-        let body = fake_jumbf(100);
+        let body = c2pa_store_of_len(100);
         let packet = |z: u32, data: &[u8]| {
             let mut d = b"JP".to_vec();
             d.extend_from_slice(&0x0211u16.to_be_bytes());
@@ -1717,7 +1754,7 @@ mod tests {
         };
 
         let ok = parse(&mut Cursor::new(build(&[]))).unwrap();
-        let e = ok.require_item(ItemKind::Jumbf).unwrap();
+        let e = ok.require_item(ItemKind::C2pa).unwrap();
         assert_eq!(e.extent_count(), 2);
 
         let gap = marker(0xfe, b"comment"); // COM between the packets
@@ -1728,39 +1765,47 @@ mod tests {
     }
 
     #[test]
-    fn jumbf_type_comes_from_the_description_box() {
-        let uuid = [
-            0x63, 0x32, 0x70, 0x61, 0x00, 0x11, 0x00, 0x10, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38,
-            0x9b, 0x71,
-        ];
-        let mut b = Vec::new();
-        b.extend_from_slice(&60u32.to_be_bytes());
-        b.extend_from_slice(b"jumb");
-        b.extend_from_slice(&29u32.to_be_bytes());
-        b.extend_from_slice(b"jumd");
-        b.extend_from_slice(&uuid);
-        b.push(3);
-        b.extend_from_slice(b"c2pa\0");
-        b.resize(60, 0);
+    fn a_c2pa_store_is_told_by_its_superbox_type() {
+        let store = c2pa_store_of_len(100);
+        let (out, dest) =
+            rewrite(handler(), &sample_jpeg(), &Updates::new().set_c2pa(store)).unwrap();
+        let s = parse(&mut Cursor::new(out)).unwrap();
+        for st in [&dest, &s] {
+            let e = st.require_item(ItemKind::C2pa).unwrap();
+            assert_eq!(e.jumbf_type(), Some(crate::jumbf::C2PA_STORE_TYPE));
+            assert_eq!(e.native_id(), Some(u64::from(XT_EN)));
+        }
 
-        let (out, dest) = do_write(&sample_jpeg(), &Updates::new().set_jumbf(b));
-        let e = dest.require_item(ItemKind::Jumbf).unwrap();
-        assert_eq!(
-            dest.jumbf_type(&mut Cursor::new(out), e).unwrap(),
-            Some(uuid)
-        );
+        // JUMBF of another type is other JUMBF, not a store.
+        let other = with_jumbf(&sample_jpeg(), 7, &jumbf([2; 16], &[b"other"]));
+        let s = parse(&mut Cursor::new(other)).unwrap();
+        assert!(s.item(ItemKind::C2pa).unwrap().is_none());
+        let e = s.require_item(ItemKind::Other).unwrap();
+        assert_eq!(e.encoding(), crate::Encoding::Jumbf);
+        assert_eq!(e.jumbf_type(), Some([2; 16]));
+        assert_eq!(e.native_id(), Some(7));
+    }
 
-        // A JUMBF box without a description box has no type.
-        let (out, dest) = do_write(&sample_jpeg(), &Updates::new().set_jumbf(fake_jumbf(100)));
-        let e = dest.require_item(ItemKind::Jumbf).unwrap();
-        assert_eq!(dest.jumbf_type(&mut Cursor::new(out), e).unwrap(), None);
+    #[test]
+    fn a_c2pa_store_must_have_the_c2pa_type() {
+        let j = parse(&mut Cursor::new(sample_jpeg())).unwrap();
+        let mut untyped = vec![0u8; 40];
+        untyped[0..4].copy_from_slice(&40u32.to_be_bytes());
+        untyped[4..8].copy_from_slice(b"jumb");
+        for store in [jumbf([1; 16], &[b"other"]), untyped] {
+            let updates = Updates::new().set_c2pa(store);
+            assert!(matches!(
+                j.write_plan(&mut Cursor::new(sample_jpeg()), &updates),
+                Err(Error::InvalidFormat(_))
+            ));
+        }
     }
 
     #[test]
     fn zero_based_xt_packet_is_recognised() {
         // Some writers (e.g. Designer.jpeg) number the first XT packet Z = 0.
         let j = sample_jpeg();
-        let body = fake_jumbf(100);
+        let body = c2pa_store_of_len(100);
         let mut data = b"JP".to_vec();
         data.extend_from_slice(&0xf400u16.to_be_bytes());
         data.extend_from_slice(&0u32.to_be_bytes());
@@ -1770,157 +1815,143 @@ mod tests {
         with.extend_from_slice(&j[2..]);
 
         let s = parse(&mut Cursor::new(with.clone())).unwrap();
-        assert_eq!(s.items_of(ItemKind::Jumbf).count(), 1);
-        let e = s.require_item(ItemKind::Jumbf).unwrap();
+        assert_eq!(s.items_of(ItemKind::C2pa).count(), 1);
+        let e = s.require_item(ItemKind::C2pa).unwrap();
         assert_eq!(
             s.read_item(&mut Cursor::new(with.clone()), e).unwrap(),
             body
         );
 
         // Set replaces it rather than adding a second manifest.
-        let new = fake_jumbf(200);
-        let (out, dest) = do_write(&with, &Updates::new().set_jumbf(new));
-        assert_eq!(dest.items_of(ItemKind::Jumbf).count(), 1);
+        let new = c2pa_store_of_len(200);
+        let (out, dest) = rewrite(handler(), &with, &Updates::new().set_c2pa(new)).unwrap();
+        assert_eq!(dest.items_of(ItemKind::C2pa).count(), 1);
         assert_eq!(
             parse(&mut Cursor::new(out))
                 .unwrap()
-                .items_of(ItemKind::Jumbf)
+                .items_of(ItemKind::C2pa)
                 .count(),
             1
         );
     }
 
-    /// A JUMBF superbox of type `[ty; 16]` with `n` payload bytes.
-    fn typed_jumbf(ty: u8, n: usize) -> Vec<u8> {
-        let mut desc = vec![ty; 16];
-        desc.extend_from_slice(&[3, b'x', 0]);
-        let mut jumd = ((desc.len() + 8) as u32).to_be_bytes().to_vec();
-        jumd.extend_from_slice(b"jumd");
-        jumd.extend_from_slice(&desc);
-        let mut child = ((n + 8) as u32).to_be_bytes().to_vec();
-        child.extend_from_slice(b"json");
-        child.extend((0..n).map(|i| (i % 251) as u8 + 1));
-        let mut v = ((jumd.len() + child.len() + 8) as u32)
-            .to_be_bytes()
-            .to_vec();
-        v.extend_from_slice(b"jumb");
-        v.extend(jumd);
-        v.extend(child);
-        v
+    /// `jpeg` with `body` in one JPEG XT APP11 segment, box instance `en`, after SOI.
+    fn with_jumbf(jpeg: &[u8], en: u16, body: &[u8]) -> Vec<u8> {
+        let mut data = b"JP".to_vec();
+        data.extend_from_slice(&en.to_be_bytes());
+        data.extend_from_slice(&1u32.to_be_bytes());
+        data.extend_from_slice(body);
+        let mut out = jpeg[..2].to_vec();
+        out.extend(marker(APP11, &data));
+        out.extend_from_slice(&jpeg[2..]);
+        out
     }
 
     fn jumbf_of(out: &[u8], s: &Structure, e: &crate::Item) -> Vec<u8> {
         s.read_item(&mut Cursor::new(out.to_vec()), e).unwrap()
     }
 
-    /// A file holding one JUMBF of type 1 and one of type 2.
-    fn two_stores() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        let (a, b) = (typed_jumbf(1, 300), typed_jumbf(2, 200));
-        let (one, _) = do_write(&sample_jpeg(), &Updates::new().set_jumbf(a.clone()));
-        let (two, _) = do_write(&one, &Updates::new().set_jumbf(b.clone()));
-        (two, a, b)
+    /// A file holding other JUMBF, in the box instance a new store would take by
+    /// default, and a C2PA store; and the two.
+    fn store_and_other() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let other = jumbf([2; 16], &[b"other"]);
+        let store = c2pa_store_of_len(300);
+        let file = with_jumbf(&sample_jpeg(), XT_EN, &other);
+        let (file, _) = rewrite(handler(), &file, &Updates::new().set_c2pa(store.clone())).unwrap();
+        (file, store, other)
+    }
+
+    fn other_jumbf(out: &[u8], s: &Structure) -> Vec<u8> {
+        let e = s.require_item(ItemKind::Other).unwrap();
+        assert_eq!(e.encoding(), crate::Encoding::Jumbf);
+        jumbf_of(out, s, e)
     }
 
     #[test]
-    fn jumbf_of_another_type_is_added_not_replaced() {
-        let (file, a, b) = two_stores();
+    fn a_new_store_takes_a_box_instance_other_jumbf_does_not_use() {
+        let (file, store, other) = store_and_other();
         let s = parse(&mut Cursor::new(file.clone())).unwrap();
-        let found: Vec<_> = s
-            .items_of(ItemKind::Jumbf)
-            .map(|e| (e.jumbf_type(), jumbf_of(&file, &s, e)))
-            .collect();
-        assert_eq!(found, [(Some([1; 16]), a), (Some([2; 16]), b)]);
-        // The single-item accessor refuses to guess between them.
-        assert!(matches!(
-            s.item(ItemKind::Jumbf),
-            Err(Error::Ambiguous { .. })
-        ));
+        let e = s.require_item(ItemKind::C2pa).unwrap();
+        assert_eq!(e.native_id(), Some(1));
+        assert_eq!(jumbf_of(&file, &s, e), store);
+        assert_eq!(other_jumbf(&file, &s), other);
     }
 
     #[test]
-    fn set_replaces_only_its_own_type() {
-        let (file, _, b) = two_stores();
-        let a2 = typed_jumbf(1, 5000);
-        let (out, dest) = do_write(&file, &Updates::new().set_jumbf(a2.clone()));
-        let found: Vec<_> = dest
-            .items_of(ItemKind::Jumbf)
-            .map(|e| (e.jumbf_type(), jumbf_of(&out, &dest, e)))
-            .collect();
-        assert_eq!(found, [(Some([1; 16]), a2), (Some([2; 16]), b)]);
-        // What was written reads back the same.
-        let again = parse(&mut Cursor::new(out)).unwrap();
-        assert_eq!(again.items_of(ItemKind::Jumbf).count(), 2);
+    fn a_new_store_avoids_the_box_instance_of_a_uuid_box() {
+        let mut uuid_box = 32u32.to_be_bytes().to_vec();
+        uuid_box.extend_from_slice(b"uuid");
+        uuid_box.extend_from_slice(&[9; 16]);
+        uuid_box.extend_from_slice(b"payload!");
+        let file = with_jumbf(&sample_jpeg(), XT_EN, &uuid_box);
+        let store = c2pa_store_of_len(100);
+        let (out, _) = rewrite(handler(), &file, &Updates::new().set_c2pa(store.clone())).unwrap();
+        let s = parse(&mut Cursor::new(out.clone())).unwrap();
+        let e = s.require_item(ItemKind::C2pa).unwrap();
+        assert_eq!(e.native_id(), Some(1));
+        assert_eq!(jumbf_of(&out, &s, e), store);
+        let u = s.require_item(ItemKind::Other).unwrap();
+        assert_eq!(u.encoding(), crate::Encoding::IsoBmff);
+        assert_eq!(jumbf_of(&out, &s, u), uuid_box);
     }
 
     #[test]
-    fn remove_of_a_type_keeps_the_others() {
-        let (file, a, b) = two_stores();
-        let (out, dest) = do_write(&file, &Updates::new().remove_jumbf_of([1; 16]));
-        let e = dest.require_item(ItemKind::Jumbf).unwrap();
-        assert_eq!(e.jumbf_type(), Some([2; 16]));
-        assert_eq!(jumbf_of(&out, &dest, e), b);
-
-        let (out, dest) = do_write(&file, &Updates::new().remove_jumbf_of([2; 16]));
-        let e = dest.require_item(ItemKind::Jumbf).unwrap();
-        assert_eq!(jumbf_of(&out, &dest, e), a);
-
-        // A type that is not there changes nothing.
-        let (out, _) = do_write(&file, &Updates::new().remove_jumbf_of([9; 16]));
-        assert_eq!(out, file);
-
-        // Removing without a type removes them all.
-        let (_, dest) = do_write(&file, &Updates::new().remove_jumbf());
-        assert_eq!(dest.items_of(ItemKind::Jumbf).count(), 0);
-        let (out, _) = do_write(&file, &Updates::remove_all());
-        assert_eq!(
-            parse(&mut Cursor::new(out))
-                .unwrap()
-                .items_of(ItemKind::Jumbf)
-                .count(),
-            0
-        );
-    }
-
-    #[test]
-    fn keep_preserves_every_type() {
-        let (file, _, _) = two_stores();
-        let (out, _) = do_write(&file, &Updates::new());
-        assert_eq!(out, file);
-        let (out, _) = do_write(&file, &Updates::new().set_xmp(b"<x/>".to_vec()));
-        let s = parse(&mut Cursor::new(out)).unwrap();
-        assert_eq!(s.items_of(ItemKind::Jumbf).count(), 2);
-    }
-
-    #[test]
-    fn a_set_without_a_readable_type_replaces_all_jumbf() {
-        let (file, _, _) = two_stores();
-        let (_, dest) = do_write(&file, &Updates::new().set_jumbf(fake_jumbf(100)));
-        assert_eq!(dest.items_of(ItemKind::Jumbf).count(), 1);
-        // And unknown-type JUMBF is not touched by an update of one type.
-        let (with_fake, _) = do_write(&sample_jpeg(), &Updates::new().set_jumbf(fake_jumbf(100)));
-        let (out, dest) = do_write(&with_fake, &Updates::new().set_jumbf(typed_jumbf(1, 50)));
-        assert_eq!(dest.items_of(ItemKind::Jumbf).count(), 2);
-        assert_eq!(
-            parse(&mut Cursor::new(out))
-                .unwrap()
-                .items_of(ItemKind::Jumbf)
-                .count(),
-            2
-        );
-    }
-
-    #[test]
-    fn a_large_typed_jumbf_records_its_type_from_the_first_packet() {
-        let big = typed_jumbf(7, 150_000);
-        let (out, dest) = do_write(&sample_jpeg(), &Updates::new().set_jumbf(big.clone()));
+    fn other_jumbf_is_kept_when_the_store_changes() {
+        let (file, _, other) = store_and_other();
+        let store2 = c2pa_store_of_len(5000);
+        let (out, dest) =
+            rewrite(handler(), &file, &Updates::new().set_c2pa(store2.clone())).unwrap();
         let s = parse(&mut Cursor::new(out.clone())).unwrap();
         for st in [&dest, &s] {
-            let e = st.require_item(ItemKind::Jumbf).unwrap();
+            let e = st.require_item(ItemKind::C2pa).unwrap();
+            assert_eq!(jumbf_of(&out, st, e), store2);
+            assert_eq!(other_jumbf(&out, st), other);
+        }
+
+        for updates in [Updates::new().remove_c2pa(), Updates::remove_all()] {
+            let (out, _) = rewrite(handler(), &file, &updates).unwrap();
+            let s = parse(&mut Cursor::new(out.clone())).unwrap();
+            assert!(s.item(ItemKind::C2pa).unwrap().is_none());
+            assert_eq!(other_jumbf(&out, &s), other);
+        }
+
+        let (out, _) = rewrite(handler(), &file, &Updates::new()).unwrap();
+        assert_eq!(out, file);
+    }
+
+    #[test]
+    fn two_c2pa_stores_are_ambiguous_and_a_set_replaces_both() {
+        let one = with_jumbf(&sample_jpeg(), 5, &c2pa_store_of_len(60));
+        let two = with_jumbf(&one, 6, &c2pa_store_of_len(70));
+        let s = parse(&mut Cursor::new(two.clone())).unwrap();
+        assert_eq!(s.items_of(ItemKind::C2pa).count(), 2);
+        assert!(matches!(s.c2pa_item(), Err(Error::Ambiguous { .. })));
+        let (_, dest) = rewrite(
+            handler(),
+            &two,
+            &Updates::new().set_c2pa(c2pa_store_of_len(80)),
+        )
+        .unwrap();
+        assert_eq!(dest.items_of(ItemKind::C2pa).count(), 1);
+    }
+
+    #[test]
+    fn a_large_store_records_its_type_from_the_first_packet() {
+        let big = c2pa_store_of_len(150_000);
+        let (out, dest) = rewrite(
+            handler(),
+            &sample_jpeg(),
+            &Updates::new().set_c2pa(big.clone()),
+        )
+        .unwrap();
+        let s = parse(&mut Cursor::new(out.clone())).unwrap();
+        for st in [&dest, &s] {
+            let e = st.require_item(ItemKind::C2pa).unwrap();
             assert!(e.extent_count() > 1);
-            assert_eq!(e.jumbf_type(), Some([7; 16]));
+            assert_eq!(e.jumbf_type(), Some(crate::jumbf::C2PA_STORE_TYPE));
         }
         assert_eq!(
-            jumbf_of(&out, &s, s.require_item(ItemKind::Jumbf).unwrap()),
+            jumbf_of(&out, &s, s.require_item(ItemKind::C2pa).unwrap()),
             big
         );
     }
@@ -1930,9 +1961,8 @@ mod tests {
         let j = sample_jpeg();
         let s = parse(&mut Cursor::new(j.clone())).unwrap();
         for bad in [vec![], vec![0u8; 7], vec![0u8; 100]] {
-            let updates = Updates::new().set_jumbf(bad);
-            let r = write(
-                &s,
+            let updates = Updates::new().set_c2pa(bad);
+            let r = s.write(
                 &mut Cursor::new(j.clone()),
                 &mut Cursor::new(Vec::new()),
                 &updates,
@@ -1960,10 +1990,12 @@ mod tests {
 
         let j = sample_jpeg();
         let s = parse(&mut Cursor::new(j.clone())).unwrap();
-        let updates = Updates::new().set_jumbf(fake_jumbf(150_000));
+        let updates = Updates::new().set_c2pa(c2pa_store_of_len(150_000));
         let mut sink = Hash(Sha256::new());
         let mut out = Cursor::new(Vec::new());
-        let dest = write(&s, &mut Cursor::new(j), &mut out, &updates, &mut sink).unwrap();
+        let dest = s
+            .write(&mut Cursor::new(j), &mut out, &updates, &mut sink)
+            .unwrap();
         let bytes = out.into_inner();
         let streamed = sink.0.finalize().to_vec();
 
@@ -1984,7 +2016,7 @@ mod tests {
         }
 
         // Route 3: hash everything outside the item's extents.
-        let e = dest.require_item(ItemKind::Jumbf).unwrap();
+        let e = dest.require_item(ItemKind::C2pa).unwrap();
         assert_eq!(e.extent_count(), 3);
         let mut outside = Sha256::new();
         let mut pos = 0usize;
@@ -2002,23 +2034,21 @@ mod tests {
     #[test]
     fn patch_multi_part_changes_only_payloads() {
         let j = sample_jpeg();
-        let mut placeholder = vec![0u8; 150_000];
-        placeholder[0..4].copy_from_slice(&150_000u32.to_be_bytes());
-        placeholder[4..8].copy_from_slice(b"jumb");
+        let placeholder = c2pa_store_of_len(150_000);
         let s = parse(&mut Cursor::new(j.clone())).unwrap();
         let mut out = Cursor::new(Vec::new());
-        let dest = write(
-            &s,
-            &mut Cursor::new(j),
-            &mut out,
-            &Updates::new().set_jumbf(placeholder),
-            &mut NullSink,
-        )
-        .unwrap();
+        let dest = s
+            .write(
+                &mut Cursor::new(j),
+                &mut out,
+                &Updates::new().set_c2pa(placeholder),
+                &mut NullSink,
+            )
+            .unwrap();
         let before = out.get_ref().clone();
 
-        let e = dest.require_item(ItemKind::Jumbf).unwrap().clone();
-        let signed = fake_jumbf(140_000);
+        let e = dest.require_item(ItemKind::C2pa).unwrap().clone();
+        let signed = c2pa_store_of_len(140_000);
         dest.patch(&mut out, &e, &signed).unwrap();
         let after = out.into_inner();
 
@@ -2046,7 +2076,7 @@ mod tests {
         let j = sample_jpeg();
 
         let small = b"<x:xmpmeta/>".to_vec();
-        let (out, _) = do_write(&j, &Updates::new().set_xmp(small.clone()));
+        let (out, _) = rewrite(handler(), &j, &Updates::new().set_xmp(small.clone())).unwrap();
         let re = parse(&mut Cursor::new(out.clone())).unwrap();
         assert_eq!(
             read_xmp(&re, &mut Cursor::new(out)).unwrap().unwrap(),
@@ -2054,7 +2084,7 @@ mod tests {
         );
 
         let big = vec![b'x'; 70_000];
-        let (out, dest) = do_write(&j, &Updates::new().set_xmp(big.clone()));
+        let (out, dest) = rewrite(handler(), &j, &Updates::new().set_xmp(big.clone())).unwrap();
         let re = parse(&mut Cursor::new(out.clone())).unwrap();
         let e = re.require_item(ItemKind::Xmp).unwrap();
         assert_eq!(e.extent_count(), 3); // stub + two extended chunks
@@ -2067,7 +2097,7 @@ mod tests {
         );
 
         // Keeping extended XMP copies it unchanged.
-        let (kept, _) = do_write(&out, &Updates::new());
+        let (kept, _) = rewrite(handler(), &out, &Updates::new()).unwrap();
         assert_eq!(kept, out);
     }
 
@@ -2076,7 +2106,7 @@ mod tests {
         // Declared total far larger than the data present must be refused.
         let j = sample_jpeg();
         let big = vec![b'x'; 70_000];
-        let (mut out, _) = do_write(&j, &Updates::new().set_xmp(big));
+        let (mut out, _) = rewrite(handler(), &j, &Updates::new().set_xmp(big)).unwrap();
         // Corrupt the declared total of every extended chunk to 90 MB.
         let re = parse(&mut Cursor::new(out.clone())).unwrap();
         let e = re.require_item(ItemKind::Xmp).unwrap();
@@ -2280,9 +2310,9 @@ mod tests {
             let second = second_image();
             let f = mpf_file(&second, b"tail", 0, little);
             let updates = Updates::new()
-                .set_jumbf(fake_jumbf(200))
+                .set_c2pa(c2pa_store_of_len(200))
                 .set_xmp(b"<x:xmpmeta/>".to_vec());
-            let (out, dest) = do_write(&f, &updates);
+            let (out, dest) = rewrite(handler(), &f, &updates).unwrap();
             assert!(out.len() > f.len());
 
             let re = parse(&mut Cursor::new(out.clone())).unwrap();
@@ -2304,9 +2334,9 @@ mod tests {
             assert_eq!(planned.subassets(), re.subassets());
 
             // The edited file is its own fixed point, and removal restores the index.
-            let (again, _) = do_write(&out, &Updates::new());
+            let (again, _) = rewrite(handler(), &out, &Updates::new()).unwrap();
             assert_eq!(again, out);
-            let (back, _) = do_write(&out, &Updates::remove_all());
+            let (back, _) = rewrite(handler(), &out, &Updates::remove_all()).unwrap();
             assert_index_matches_structure(&back);
             assert_eq!(back.len(), f.len());
         }
@@ -2315,10 +2345,15 @@ mod tests {
     #[test]
     fn metadata_goes_in_the_primary_image_only() {
         let f = mpf_file(&second_image(), b"", 0, false);
-        let (out, _) = do_write(&f, &Updates::new().set_jumbf(fake_jumbf(64)));
+        let (out, _) = rewrite(
+            handler(),
+            &f,
+            &Updates::new().set_c2pa(c2pa_store_of_len(64)),
+        )
+        .unwrap();
         let re = parse(&mut Cursor::new(out)).unwrap();
         let primary = re.subassets()[0].segments();
-        let e = re.require_item(ItemKind::Jumbf).unwrap();
+        let e = re.require_item(ItemKind::C2pa).unwrap();
         assert!(e.extents().all(|p| primary.contains(&p.segment().index())));
     }
 
@@ -2337,14 +2372,14 @@ mod tests {
         // The number-of-entries field of tag 0xB002 is at block offset 8 + 2 + 24 + 4.
         let at = s.segment(id).unwrap().payload().offset() as usize + 8 + 2 + 24 + 4;
         f[at..at + 4].copy_from_slice(&16u32.to_be_bytes());
-        let (kept, _) = do_write(&f, &Updates::new());
+        let (kept, _) = rewrite(handler(), &f, &Updates::new()).unwrap();
         assert_eq!(kept, f);
         let s = parse(&mut Cursor::new(f.clone())).unwrap();
         let err = s
             .write(
                 &mut Cursor::new(f.clone()),
                 &mut Cursor::new(Vec::new()),
-                &Updates::new().set_jumbf(fake_jumbf(64)),
+                &Updates::new().set_c2pa(c2pa_store_of_len(64)),
                 &mut NullSink,
             )
             .unwrap_err();
@@ -2373,19 +2408,6 @@ mod tests {
             assert_eq!(h.finalize()[..], Sha256::digest(bytes)[..]);
         }
         assert_eq!(whole.finalize()[..], Sha256::digest(&f)[..]);
-    }
-
-    fn try_write(f: &[u8], updates: &Updates) -> Result<(Vec<u8>, Structure)> {
-        let s = parse(&mut Cursor::new(f.to_vec()))?;
-        let mut out = Cursor::new(Vec::new());
-        let dest = write(
-            &s,
-            &mut Cursor::new(f.to_vec()),
-            &mut out,
-            updates,
-            &mut NullSink,
-        )?;
-        Ok((out.into_inner(), dest))
     }
 
     /// Where the MPF block (the bytes after `MPF\0`) starts in the file, and a copy.
@@ -2418,7 +2440,7 @@ mod tests {
             let s = parse(&mut Cursor::new(f.clone())).unwrap();
             assert_eq!(s.subassets().len(), 1);
             assert_eq!(s.trailing().map(|r| r.len()), Some(t.len() as u64));
-            let (out, _) = do_write(&f, &Updates::new());
+            let (out, _) = rewrite(handler(), &f, &Updates::new()).unwrap();
             assert_eq!(out, f);
 
             // After the last image of a multi-picture file: a part of its own.
@@ -2430,7 +2452,12 @@ mod tests {
             assert_eq!(subs[1].range().len(), second.len() as u64);
             assert_eq!(subs[2].media_type(), None);
             assert_eq!(&f[subs[2].range().offset() as usize..], t);
-            let (out, _) = do_write(&f, &Updates::new().set_jumbf(fake_jumbf(64)));
+            let (out, _) = rewrite(
+                handler(),
+                &f,
+                &Updates::new().set_c2pa(c2pa_store_of_len(64)),
+            )
+            .unwrap();
             assert_index_matches_structure(&out);
         }
     }
@@ -2461,14 +2488,19 @@ mod tests {
             );
 
             // An edit moves it with the file, and what was planned is what is written.
-            let (out, dest) = do_write(&f, &Updates::new().set_jumbf(fake_jumbf(200)));
+            let (out, dest) = rewrite(
+                handler(),
+                &f,
+                &Updates::new().set_c2pa(c2pa_store_of_len(200)),
+            )
+            .unwrap();
             let re = parse(&mut Cursor::new(out.clone())).unwrap();
             assert_eq!(dest.trailing(), re.trailing());
             let r = re.trailing().unwrap();
             assert_eq!(&out[r.offset() as usize..], &f[first_end as usize..]);
 
             // Removing the metadata puts it back where it was.
-            let (back, _) = do_write(&out, &Updates::remove_all());
+            let (back, _) = rewrite(handler(), &out, &Updates::remove_all()).unwrap();
             assert_eq!(back.len(), f.len());
         }
     }
@@ -2479,16 +2511,16 @@ mod tests {
         let f = mpf_file(&second[..second.len() - 2], b"", 0, false);
         let s = parse(&mut Cursor::new(f.clone())).unwrap();
         assert_eq!(s.subassets().len(), 1);
-        let (out, _) = do_write(&f, &Updates::new());
+        let (out, _) = rewrite(handler(), &f, &Updates::new()).unwrap();
         assert_eq!(out, f);
     }
 
     #[test]
     fn an_index_that_disagrees_with_the_file_is_refused_on_edit_only() {
-        let edit = Updates::new().set_jumbf(fake_jumbf(64));
+        let edit = Updates::new().set_c2pa(c2pa_store_of_len(64));
         let good = mpf_file(&second_image(), b"", 0, false);
         let (base, _) = mpf_block(&good);
-        assert!(try_write(&good, &edit).is_ok());
+        assert!(rewrite(handler(), &good, &edit).is_ok());
         // Entries start at block offset 50, 16 bytes each: attributes, size, offset.
         for (what, at) in [
             ("offset of the first image", 58),
@@ -2498,16 +2530,16 @@ mod tests {
             let mut f = good.clone();
             f[base + at + 3] ^= 1;
             // Copying unchanged never consults the index.
-            let (kept, _) = do_write(&f, &Updates::new());
+            let (kept, _) = rewrite(handler(), &f, &Updates::new()).unwrap();
             assert_eq!(kept, f, "{what}");
-            let err = try_write(&f, &edit).unwrap_err();
+            let err = rewrite(handler(), &f, &edit).unwrap_err();
             assert!(matches!(err, Error::InvalidFormat(_)), "{what}: {err:?}");
         }
     }
 
     #[test]
     fn a_first_image_size_recorded_short_is_accepted_and_corrected() {
-        let edit = Updates::new().set_jumbf(fake_jumbf(64));
+        let edit = Updates::new().set_c2pa(c2pa_store_of_len(64));
         let good = mpf_file(&second_image(), b"", 0, false);
         let (base, block) = mpf_block(&good);
         let first_len = parse(&mut Cursor::new(good.clone())).unwrap().subassets()[0]
@@ -2525,16 +2557,16 @@ mod tests {
         for short in [1u32, 307, first_len as u32 - 1] {
             let mut f = good.clone();
             set_size(&mut f, first_len as u32 - short.min(first_len as u32 - 1));
-            let (kept, _) = do_write(&f, &Updates::new());
+            let (kept, _) = rewrite(handler(), &f, &Updates::new()).unwrap();
             assert_eq!(kept, f, "copying never consults the index");
-            let (out, _) = do_write(&f, &edit);
+            let (out, _) = rewrite(handler(), &f, &edit).unwrap();
             assert_index_matches_structure(&out);
         }
 
         // Claiming more than the image is refused.
         let mut f = good.clone();
         set_size(&mut f, first_len as u32 + 1);
-        let err = try_write(&f, &edit).unwrap_err();
+        let err = rewrite(handler(), &f, &edit).unwrap_err();
         assert!(matches!(err, Error::InvalidFormat(_)), "{err:?}");
         assert!(err.to_string().contains("size of image 0"), "{err}");
     }
@@ -2617,9 +2649,14 @@ mod tests {
         dup.extend_from_slice(&f[a..b]);
         dup.extend_from_slice(&f[b..]);
 
-        let (kept, _) = do_write(&dup, &Updates::new());
+        let (kept, _) = rewrite(handler(), &dup, &Updates::new()).unwrap();
         assert_eq!(kept, dup);
-        let err = try_write(&dup, &Updates::new().set_jumbf(fake_jumbf(64))).unwrap_err();
+        let err = rewrite(
+            handler(),
+            &dup,
+            &Updates::new().set_c2pa(c2pa_store_of_len(64)),
+        )
+        .unwrap_err();
         assert!(
             matches!(
                 err,
@@ -2636,7 +2673,7 @@ mod tests {
     /// fail or panic, and an edit that is accepted leaves an index that matches.
     #[test]
     fn a_mutated_mpf_block_is_refused_or_stays_consistent() {
-        let edit = Updates::new().set_jumbf(fake_jumbf(64));
+        let edit = Updates::new().set_c2pa(c2pa_store_of_len(64));
         for little in [false, true] {
             let good = mpf_file(&second_image(), b"tail", 0, little);
             let (base, block) = mpf_block(&good);
@@ -2654,9 +2691,9 @@ mod tests {
                 ] {
                     let mut f = good.clone();
                     f[base + pos] = v;
-                    let (kept, _) = do_write(&f, &Updates::new());
+                    let (kept, _) = rewrite(handler(), &f, &Updates::new()).unwrap();
                     assert_eq!(kept, f);
-                    if let Ok((out, dest)) = try_write(&f, &edit) {
+                    if let Ok((out, dest)) = rewrite(handler(), &f, &edit) {
                         accepted += 1;
                         let re = parse(&mut Cursor::new(out.clone())).unwrap();
                         assert_eq!(re.subassets(), dest.subassets());

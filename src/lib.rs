@@ -152,7 +152,7 @@
 //! let asset = Asset::open(std::fs::File::open("image.jpg")?, None)?;
 //!
 //! // Read a metadata item, which may have extents in several segments.
-//! if let Some(jumbf) = asset.item(ItemKind::Jumbf)? {
+//! if let Some(jumbf) = asset.item(ItemKind::C2pa)? {
 //!     let bytes = asset.read_item(jumbf)?;
 //!     println!("JUMBF: {} bytes", bytes.len());
 //! }
@@ -162,7 +162,7 @@
 //! let mut out = std::fs::File::create("out.jpg")?;
 //! let updates = Updates::new()
 //!     .set_xmp(b"<x:xmpmeta/>".to_vec())
-//!     .remove_jumbf();
+//!     .remove_c2pa();
 //! asset.write(&mut out, &updates, &mut NullSink)?;
 //! # Ok(())
 //! # }
@@ -217,7 +217,7 @@ pub use item::{Encoding, Extent, Item, ItemCategory, ItemKind, Relation, Relatio
 pub use mapped::MappedFile;
 pub use range::ByteRange;
 pub use registry::HandlerRegistry;
-pub use segment::{labels, Name, Role, Segment, SegmentKind, AFTER_BOX, C2PA_BOX};
+pub use segment::{labels, Name, Role, Segment, SegmentKind};
 pub use sink::{Chunk, NullSink, Sink};
 pub use structure::{BoxInfo, Region, SegmentId, Structure, SubAsset};
 pub use thumbnail::Thumbnail;

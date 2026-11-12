@@ -17,30 +17,13 @@
 use std::{io::Cursor, sync::Arc};
 
 use asset_io::{
-    jumbf::C2PA_STORE_TYPE, Asset, Chunk, Error, HandlerRegistry, ItemKind, NullSink, Structure,
+    testing::c2pa_store, Asset, Chunk, Error, HandlerRegistry, ItemKind, NullSink, Structure,
     Updates,
 };
 
 const JPEG: &[u8] = &[0xff, 0xd8, 0xff, 0xd9];
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\0IEND\xae\x42\x60\x82";
 const SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#;
-
-fn boxed(ty: &[u8; 4], body: &[u8]) -> Vec<u8> {
-    let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
-    v.extend_from_slice(ty);
-    v.extend_from_slice(body);
-    v
-}
-
-/// A C2PA manifest store holding one `json` child.
-fn c2pa_store(child: &[u8]) -> Vec<u8> {
-    let mut d = C2PA_STORE_TYPE.to_vec();
-    d.push(3);
-    d.extend_from_slice(b"c2pa\0");
-    let mut body = boxed(b"jumd", &d);
-    body.extend_from_slice(&boxed(b"json", child));
-    boxed(b"jumb", &body)
-}
 
 #[test]
 fn reads_match_the_structure_api_and_geometry_is_available_directly() {
@@ -106,8 +89,8 @@ fn reads_match_the_structure_api_and_geometry_is_available_directly() {
 #[test]
 fn a_placeholder_is_found_and_filled_in_the_written_output() {
     for (format, input) in [("jpg", JPEG), ("png", PNG), ("svg", SVG)] {
-        let placeholder = c2pa_store(&[0; 64]);
-        let signed = c2pa_store(&[7; 64]);
+        let placeholder = c2pa_store(&[&[0; 64]]);
+        let signed = c2pa_store(&[&[7; 64]]);
         assert_eq!(placeholder.len(), signed.len());
 
         let asset = Asset::open(Cursor::new(input), Some(format)).unwrap();
@@ -115,7 +98,7 @@ fn a_placeholder_is_found_and_filled_in_the_written_output() {
         let written = asset
             .write(
                 &mut out,
-                &Updates::new().set_jumbf(placeholder.clone()),
+                &Updates::new().set_c2pa(placeholder.clone()),
                 &mut NullSink,
             )
             .unwrap();
@@ -146,7 +129,7 @@ fn borrowed_and_owned_sources_behave_the_same() {
     {
         let mut borrowed = Asset::open(&mut file, None).unwrap();
         assert_eq!(borrowed.container_id(), "jpeg");
-        assert_eq!(borrowed.store().unwrap(), None);
+        assert_eq!(borrowed.c2pa_store().unwrap(), None);
         borrowed.source_mut().set_position(0);
     }
     // The borrow has ended; the caller still owns the stream.
@@ -208,11 +191,11 @@ fn calling_back_into_the_asset_from_a_sink_is_an_error_not_a_panic() {
     let asset = Asset::open(Cursor::new(JPEG), None).unwrap();
     let mut inner = None;
     let result = asset.read(&mut |_: Chunk<'_>| {
-        inner.get_or_insert_with(|| asset.store().map(|_| ()));
+        inner.get_or_insert_with(|| asset.c2pa_store().map(|_| ()));
         Ok(())
     });
     result.unwrap();
     assert!(matches!(inner, Some(Err(Error::Io(_)))));
     // The outer call has finished, so the asset is usable again.
-    assert_eq!(asset.store().unwrap(), None);
+    assert_eq!(asset.c2pa_store().unwrap(), None);
 }

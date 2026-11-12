@@ -153,12 +153,12 @@ fn sidecars_work_through_the_feature_selected_registry() {
     )
     .unwrap();
     assert_eq!(asset.container_id(), asset_io::containers::c2pa::ID);
-    assert_eq!(asset.store().unwrap().unwrap(), bytes);
+    assert_eq!(asset.c2pa_store().unwrap().unwrap(), bytes);
     assert_eq!(
         registry
             .handler("c2pa")
             .unwrap()
-            .compose(asset_io::ItemKind::Jumbf, b"replacement")
+            .compose(asset_io::ItemKind::C2pa, b"replacement")
             .unwrap(),
         b"replacement"
     );
@@ -166,7 +166,7 @@ fn sidecars_work_through_the_feature_selected_registry() {
     let result = asset
         .write(
             &mut output,
-            &asset_io::Updates::new().remove_jumbf(),
+            &asset_io::Updates::new().remove_c2pa(),
             &mut asset_io::NullSink,
         )
         .unwrap();

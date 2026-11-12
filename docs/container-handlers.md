@@ -41,8 +41,8 @@ Every handler, and every change to the core, is weighed against these, in order:
      one streaming pass with bounded buffers.
    - Borrow new data (`Cow`, slices) rather than copying it, as the GIF handler
      does with sub-block payloads.
-   - Record what later operations need, such as JUMBF types or C2PA box
-     boundaries, while parsing, so they don't reread the asset.
+   - Record what later operations need, such as which item is the C2PA store or
+     C2PA box boundaries, while parsing, so they don't reread the asset.
 3. **Small code, few dependencies.**
    - The core requires only `thiserror`.
    - Prefer a few lines of format-specific code to a general-purpose crate.
@@ -63,7 +63,7 @@ Author and advanced driver types are not exported at the crate root:
 | `asset_io::task` | `Task`, `Progress`, `ReadRequest`, `block_on` |
 | `asset_io::execute` | `Execution`, `Action` for caller-driven writes |
 | `asset_io::containers` | Feature-gated built-in handler factories and typed options |
-| `asset_io::testing` | `Conformance` checks |
+| `asset_io::testing` | `Conformance` checks, `rewrite`, and C2PA store and JUMBF test data |
 
 ## Dependency and registration
 
@@ -88,13 +88,17 @@ a recognizable signature. Without one, callers must name the format.
 
 - **Segments** tile the entire stream: ordered, gapless and non-overlapping, each
   with header, payload and trailer ranges.
-- **Items** describe logical content (XMP, JUMBF, EXIF, embedded files) through
+- **Items** describe logical content (XMP, EXIF, C2PA stores, embedded files) through
   one or more extents, possibly across segments.
 - Use `SegmentKind` for a segment's dominant purpose. Writers decide what a
   segment holds from `Structure::items_in(id)`, never from its kind.
-- Preserve native identifiers and relations. Record each JUMBF item's superbox
-  type with `ItemInfo::jumbf().jumbf_type(..)` so clients can find the C2PA store
-  without reading it.
+- Preserve native identifiers and relations. Declare the C2PA manifest store as
+  `ItemInfo::c2pa()` while parsing, so clients find it without reading. Where the
+  format reserves an element for the store (PNG `caBX`, the BMFF C2PA box), that
+  element is the store and nothing need be read. Where it carries JUMBF of any
+  type (JPEG APP11, JPEG XL `jumb`), use `jumbf::item_info(jumbf::superbox_type(..))`,
+  which gives a C2PA item for the store's type and an `Other` JUMBF item, with its
+  type recorded, for anything else. Keep other JUMBF when writing the store.
 - Expose what the format's specifications define. Placing portable content such as
   C2PA manifests is container knowledge; interpreting it is not.
 - Treat input as hostile; see [Design priorities](#design-priorities).
@@ -137,7 +141,7 @@ bytes or supply new ones. Planning may read the source but never writes. A
 read-only handler keeps the default.
 
 Use a `MetadataSlot` per metadata kind to decide whether each existing XMP or
-JUMBF item is kept, replaced or dropped, and what remains to insert. Then
+C2PA item is kept, replaced or dropped, and what remains to insert. Then
 describe the output in order with `PlanBuilder`:
 
 - `copy_segment(id)` keeps a source segment.
@@ -199,10 +203,10 @@ Each has a default; override only where the format differs:
 |------|---------|---------------|
 | `c2pa_data_hash_exclusions` | Every segment carrying the store | Padding stays hashed (RIFF), only part is excluded (SVG), or the format binds differently (`UnsupportedFeature`) |
 
-`Structure::c2pa_boxes` consumes the generic box view, using `boxes_with` to group
-the manifest store under `C2PA`. Only this adapter applies C2PA box-hash constraints
-and lists unnamed trailing bytes as `c2pa.after`. For caller-driven I/O, use
-`Structure::c2pa_boxes_async`.
+`Structure::complete_boxes` consumes the generic box view, using `boxes_with` to
+group an item (such as the manifest store) under a caller-chosen name, and lists
+unnamed trailing bytes under another; `c2pa_boxes` uses the C2PA names. Handlers
+only name their own boxes.
 
 Planned structures must give the same answers as the written output, so clients
 can compute hash geometry before writing. When a reference implementation such as
@@ -218,9 +222,16 @@ asset_io::testing::Conformance::new(handler).check("sample", &sample_bytes);
 
 They verify the promises every handler makes: segments tile the stream, a no-op
 write is byte-identical, planning, writing and stepping agree, the sink sees every
-byte once and in order, metadata set and remove round-trip, and damaged input
-never panics. `plan::validate` checks a plan without I/O. A handler's own tests
-then cover only what is particular to its format.
+byte once and in order, metadata set and remove round-trip, a C2PA placeholder is
+filled in place without changing a hashed byte, `compose` gives what a write
+inserts, and damaged input never panics. Give `Conformance::c2pa` a store from
+`testing::c2pa_store_of_len` so the placeholder checks have something to sign.
+`plan::validate` checks a plan without I/O.
+
+A handler's own tests then cover only what is particular to its format.
+`testing::rewrite(handler, bytes, &updates)` writes a sample every way the
+conformance checks do and returns the output and its structure, and
+`testing::c2pa_store`, `c2pa_store_of_len` and `jumbf` build test data.
 
 Public enums and structs are `#[non_exhaustive]`; handle unknown variants.
 

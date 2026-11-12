@@ -318,6 +318,78 @@ impl<'a> WritePlan<'a> {
         self.structure
     }
 
+    /// Where each step starts in the output, plus the end of the last one.
+    fn step_offsets(&self) -> Vec<u64> {
+        let mut offsets = Vec::with_capacity(self.steps.len() + 1);
+        let mut at = 0u64;
+        offsets.push(at);
+        for step in &self.steps {
+            at = at.saturating_add(step.len());
+            offsets.push(at);
+        }
+        offsets
+    }
+
+    /// The steps that produce any byte of `range` of the output, in order.
+    fn steps_over<'p>(
+        &'p self,
+        offsets: &'p [u64],
+        range: ByteRange,
+    ) -> impl Iterator<Item = &'p Step<'a>> + 'p {
+        // The first step ending after the range starts.
+        let first = offsets[1..].partition_point(|&end| end <= range.offset());
+        self.steps[first..]
+            .iter()
+            .zip(&offsets[first..])
+            .take_while(move |(_, &start)| start < range.end())
+            .filter(|(step, _)| !step.is_empty())
+            .map(|(step, _)| step)
+    }
+
+    /// Whether any byte of `range` of the output is written by a
+    /// [`Step::Relocate`]: a table of file offsets that the write rewrites, so its
+    /// output differs from its source.
+    pub fn is_relocated(&self, range: ByteRange) -> bool {
+        let offsets = self.step_offsets();
+        let relocated = self
+            .steps_over(&offsets, range)
+            .any(|step| matches!(step, Step::Relocate { .. }));
+        relocated
+    }
+
+    /// The items of `kind` in the output whose bytes the plan writes from data it
+    /// was given ([`Step::Put`]) rather than copying from the source: the items an
+    /// [`Updates`](crate::Updates) value set or replaced. Items the write keeps are
+    /// copied and not listed. Reads nothing.
+    pub fn written_items(&self, kind: crate::ItemKind) -> impl Iterator<Item = &crate::Item> + '_ {
+        let offsets = self.step_offsets();
+        self.structure.items_of(kind).filter(move |item| {
+            let mut extents = item.extents().peekable();
+            extents.peek().is_some()
+                && extents.all(|extent| {
+                    self.steps_over(&offsets, extent.range())
+                        .all(|step| matches!(step, Step::Put { .. }))
+                })
+        })
+    }
+
+    /// The output as a reader, without writing it: reads return the bytes
+    /// [`execute`](Self::execute) would write, taking source bytes from `src` (the
+    /// stream the plan was made from) and rewriting relocated offsets. Only the
+    /// requested bytes are read; nothing is buffered beyond one offset-table entry.
+    ///
+    /// For inspecting a planned output, such as walking its structure or reading
+    /// an item, before committing to the write.
+    pub fn reader<R: Read + Seek>(&self, src: R) -> PlanReader<'_, 'a, R> {
+        PlanReader {
+            offsets: self.step_offsets(),
+            plan: self,
+            src,
+            position: 0,
+            entry: Vec::new(),
+        }
+    }
+
     /// Start carrying the plan out, step by step, with the I/O left to the caller;
     /// see [`Execution`].
     pub fn start(&self) -> Execution<'_, 'a> {
@@ -361,18 +433,108 @@ impl<'a> WritePlan<'a> {
     }
 }
 
+/// A planned output read without writing it; see [`WritePlan::reader`].
+#[derive(Debug)]
+pub struct PlanReader<'p, 'a, R> {
+    plan: &'p WritePlan<'a>,
+    offsets: Vec<u64>,
+    src: R,
+    position: u64,
+    entry: Vec<u8>,
+}
+
+impl<R> PlanReader<'_, '_, R> {
+    /// The source stream, giving it back.
+    pub fn into_inner(self) -> R {
+        self.src
+    }
+}
+
+impl<R: Read + Seek> Read for PlanReader<'_, '_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let index = self.offsets[1..].partition_point(|&end| end <= self.position);
+        let Some(step) = self.plan.steps.get(index) else {
+            return Ok(0);
+        };
+        let relative = self.position - self.offsets[index];
+        let len = (buf.len() as u64).min(step.len() - relative) as usize;
+        let n = match step {
+            Step::Copy { src, .. } => {
+                self.src.seek(SeekFrom::Start(src.offset() + relative))?;
+                self.src.read(&mut buf[..len])?
+            }
+            Step::Put { data, .. } => {
+                let start = relative as usize;
+                buf[..len].copy_from_slice(&data[start..start + len]);
+                len
+            }
+            Step::Relocate { src, rule, .. } => {
+                // Rewrite the whole entry holding `relative`, then hand out its bytes.
+                let stride = u64::from(rule.stride());
+                let entry_start = relative - relative % stride;
+                self.entry.resize(stride as usize, 0);
+                self.src.seek(SeekFrom::Start(src.offset() + entry_start))?;
+                self.src.read_exact(&mut self.entry)?;
+                rule.apply(&mut self.entry).map_err(std::io::Error::other)?;
+                let at = (relative - entry_start) as usize;
+                let n = len.min(self.entry.len() - at);
+                buf[..n].copy_from_slice(&self.entry[at..at + n]);
+                n
+            }
+        };
+        self.position += n as u64;
+        Ok(n)
+    }
+}
+
+impl<R> Seek for PlanReader<'_, '_, R> {
+    fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+        let base = match from {
+            SeekFrom::Start(offset) => Some(offset),
+            SeekFrom::Current(delta) => self.position.checked_add_signed(delta),
+            SeekFrom::End(delta) => self.plan.structure.total_size().checked_add_signed(delta),
+        };
+        self.position = base.ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid planned seek")
+        })?;
+        Ok(self.position)
+    }
+}
+
 impl Structure {
     /// The plan for writing this asset with `updates`; see [`WritePlan`]. `src` must
     /// be the stream this structure was parsed from. The container's handler builds
     /// it, and reports [`Error::UnsupportedFormat`] if it describes its writes some
     /// other way.
+    ///
+    /// An XMP or C2PA value that `updates` sets must appear in the plan's output;
+    /// if the handler cannot place it the plan is [`Error::UnsupportedItem`].
     pub fn write_plan<'a>(
         &self,
         src: &mut dyn crate::handler::ReadSeek,
         updates: &'a crate::Updates,
     ) -> Result<WritePlan<'a>> {
-        self.handler().write_plan(self, src, updates)
+        let plan = self.handler().write_plan(self, src, updates)?;
+        check_updates_placed(&plan, updates)?;
+        Ok(plan)
     }
+}
+
+/// [`Error::UnsupportedItem`] for a value `updates` sets that the plan does not
+/// write, so no handler can silently drop one.
+pub(crate) fn check_updates_placed(plan: &WritePlan<'_>, updates: &crate::Updates) -> Result<()> {
+    use crate::{updates::MetadataUpdate, ItemKind};
+    for (kind, update) in [
+        (ItemKind::Xmp, updates.xmp()),
+        (ItemKind::C2pa, updates.c2pa()),
+    ] {
+        if matches!(update, MetadataUpdate::Set(data) if !data.is_empty())
+            && plan.written_items(kind).next().is_none()
+        {
+            return Err(Error::UnsupportedItem(kind));
+        }
+    }
+    Ok(())
 }
 
 impl Structure {
@@ -384,8 +546,10 @@ impl Structure {
         &'f self,
         updates: &'a crate::Updates,
     ) -> Task<'f, WritePlan<'a>> {
-        Task::new(self.total_size(), move |io| {
-            self.handler().write_plan_async(self, io, updates)
+        Task::new(self.total_size(), move |io| async move {
+            let plan = self.handler().write_plan_async(self, io, updates).await?;
+            check_updates_placed(&plan, updates)?;
+            Ok(plan)
         })
     }
 }

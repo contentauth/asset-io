@@ -123,7 +123,7 @@ pub trait ContainerHandler: std::fmt::Debug + Send + Sync {
 
     /// The container-defined box name of `element`, or `None` if it is not a
     /// named box. Called by [`Structure::box_name`] for inspection and other
-    /// consumers of the container structure, including [`Structure::c2pa_boxes`].
+    /// consumers of the container structure, including [`Structure::complete_boxes`].
     /// The default covers four character codes, numeric ids and hexadecimal
     /// one-byte marker codes. Override it for names with other text (JPEG marker
     /// symbols) or names that need parsed context (RIFF form and list types).
@@ -258,6 +258,7 @@ pub trait ContainerHandler: std::fmt::Debug + Send + Sync {
         sink: &mut dyn Sink,
     ) -> Result<Structure> {
         let plan = self.write_plan(src_structure, src, updates)?;
+        crate::plan::check_updates_placed(&plan, updates)?;
         plan.execute(src, out, sink)?;
         Ok(plan.into_structure())
     }

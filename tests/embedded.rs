@@ -9,6 +9,7 @@ use std::io::{Cursor, Read, Seek, SeekFrom};
 use asset_io::{
     container_api,
     container_api::{ItemInfo, StructureBuilder},
+    testing::c2pa_store,
     Asset, ByteRange, Encoding, Error, HandlerRegistry, ItemKind, Name, NullSink, ScanLimits,
     SegmentId, SegmentKind, Structure, TransferEncoding, Updates,
 };
@@ -120,7 +121,7 @@ fn discovers_uri_image_and_reads_raw_boxes_through_multi_extent_items() {
     let child = assets[0].structure.as_ref().unwrap();
     assert_eq!(child.media_type(), "image/jpeg");
     // Apple's APP11 UUID boxes are plain ISO BMFF boxes, not JUMBF.
-    assert_eq!(child.items_of(ItemKind::Jumbf).count(), 0);
+    assert_eq!(child.items_of(ItemKind::C2pa).count(), 0);
     let items: Vec<_> = child.items_of(ItemKind::Other).collect();
     assert_eq!(items.len(), 3);
     for (item, expected) in items.iter().zip(expected) {
@@ -182,7 +183,7 @@ fn embedded_items_and_contents_survive_metadata_relocation() {
         let dest = root
             .write(
                 &mut out,
-                &Updates::new().set_jumbf(vec![0; 100]),
+                &Updates::new().set_c2pa(vec![0; 100]),
                 &mut NullSink,
             )
             .unwrap();
@@ -299,33 +300,24 @@ fn other_items<S: Read + Seek>(asset: &Asset<S>) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// A JUMBF superbox of type `ty`, as a C2PA store would be.
-fn superbox(ty: [u8; 16]) -> Vec<u8> {
-    let mut jumd = ty.to_vec();
-    jumd.push(0);
-    boxed(b"jumb", &boxed(b"jumd", &jumd))
-}
-
 #[test]
 fn uuid_boxes_are_not_jumbf_and_survive_jumbf_updates() {
     let (jpeg, expected) = jpeg();
-    let store = superbox([7; 16]);
+    let store = c2pa_store(&[]);
     let root = Asset::open(Cursor::new(&jpeg), None).unwrap();
-    assert!(root.item(ItemKind::Jumbf).unwrap().is_none());
+    assert!(root.item(ItemKind::C2pa).unwrap().is_none());
     let mut with_store = Vec::new();
     root.write(
         &mut with_store,
-        &Updates::new().set_jumbf(store.clone()),
+        &Updates::new().set_c2pa(store.clone()),
         &mut NullSink,
     )
     .unwrap();
     for (input, updates, stores) in [
-        (&jpeg, Updates::new().set_jumbf(store.clone()), 1),
-        (&jpeg, Updates::new().remove_jumbf(), 0),
-        (&with_store, Updates::new().set_jumbf(store.clone()), 1),
-        (&with_store, Updates::new().remove_jumbf(), 0),
-        (&with_store, Updates::new().remove_jumbf_of([7; 16]), 0),
-        (&with_store, Updates::new().remove_jumbf_of([8; 16]), 1),
+        (&jpeg, Updates::new().set_c2pa(store.clone()), 1),
+        (&jpeg, Updates::new().remove_c2pa(), 0),
+        (&with_store, Updates::new().set_c2pa(store.clone()), 1),
+        (&with_store, Updates::new().remove_c2pa(), 0),
     ] {
         let src = Asset::open(Cursor::new(input), None).unwrap();
         let mut bytes = Vec::new();
@@ -334,7 +326,7 @@ fn uuid_boxes_are_not_jumbf_and_survive_jumbf_updates() {
         let reparsed = Asset::open(Cursor::new(&bytes), None).unwrap();
         for asset in [&written, &reparsed] {
             assert_eq!(other_items(asset), expected);
-            assert_eq!(asset.items_of(ItemKind::Jumbf).count(), stores);
+            assert_eq!(asset.items_of(ItemKind::C2pa).count(), stores);
         }
         // Byte for byte: every UUID packet is still in the output.
         for (i, seg) in src.segments().iter().enumerate() {

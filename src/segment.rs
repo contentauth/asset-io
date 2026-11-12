@@ -35,16 +35,6 @@ pub mod labels {
     pub const MERKLE: &str = "merkle";
 }
 
-/// The name a box-based hash gives the bytes beyond the end of a container's own
-/// structure, listed as its last box (C2PA 18.7.2). See
-/// [`Structure::trailing`](crate::Structure::trailing).
-pub const AFTER_BOX: &str = "c2pa.after";
-
-/// The name a box-based hash gives the C2PA manifest store, whatever the
-/// container calls the element(s) holding it. See
-/// [`Structure::c2pa_boxes`](crate::Structure::c2pa_boxes).
-pub const C2PA_BOX: &str = "C2PA";
-
 /// Chunk size for streaming large segments (64KB)
 pub const DEFAULT_CHUNK_SIZE: usize = 65536;
 

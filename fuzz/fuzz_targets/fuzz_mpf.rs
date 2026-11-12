@@ -62,9 +62,7 @@ fuzz_target!(|data: &[u8]| {
 
     let cases = [
         Updates::new(),
-        Updates::new().set_jumbf(vec![
-            0, 0, 0, 16, b'j', b'u', b'm', b'b', 1, 2, 3, 4, 5, 6, 7, 8,
-        ]),
+        Updates::new().set_c2pa(asset_io::testing::c2pa_store(&[b"manifest"])),
         Updates::new().set_xmp(b"<x:xmpmeta/>".to_vec()),
         Updates::remove_all(),
     ];

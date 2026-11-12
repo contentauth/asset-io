@@ -9,8 +9,9 @@ Read, inspect and update media-file metadata through one Rust API.
 `asset-io` gives image, audio, video and document formats a common model of
 segments and metadata items. With it you can:
 
-- Find and read XMP, JUMBF (including C2PA manifest stores), EXIF and embedded files.
-- Replace or remove XMP and JUMBF without decoding or re-encoding media.
+- Find and read XMP, EXIF, C2PA manifest stores, other JUMBF and embedded files.
+- Replace or remove XMP and C2PA manifest stores without decoding or re-encoding
+  media.
 - Stream updates in one pass with bounded buffers, copying unchanged media.
 - Hash while reading or writing, using a `Sink` that sees every byte tagged.
 - Compute C2PA hash geometry (box lists and data-hash exclusions), even before writing.
@@ -53,7 +54,7 @@ fn main() -> asset_io::Result<()> {
     }
 
     let xmp = fs::read("new.xmp")?;
-    let updates = Updates::new().set_xmp(xmp).remove_jumbf();
+    let updates = Updates::new().set_xmp(xmp).remove_c2pa();
     let mut output = OpenOptions::new()
         .read(true)
         .write(true)
@@ -73,7 +74,7 @@ The main types:
 - **`Asset`**: a parsed file with its blocking stream. Start here.
 - **`Structure`**: segments, items and byte ranges, without owning the bytes.
   Use it for async I/O, write planning and hash geometry.
-- **`Updates`**: XMP and JUMBF changes. `write` returns the output's structure;
+- **`Updates`**: XMP and C2PA manifest store changes. `write` returns the output's structure;
   `plan` computes it without writing.
 - **`HandlerRegistry`**: built-in and custom handlers. Libraries should accept a
   registry and call `Asset::open_with`, so their callers control format support.

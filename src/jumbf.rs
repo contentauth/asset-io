@@ -16,11 +16,13 @@
 //! Just enough to split a superbox's children: boxes are `LBox TBox [XLBox]`, and a
 //! superbox (`jumb`) starts with a description box (`jumd`, whose first 16 bytes
 //! are the superbox type) followed by its children. Apart from naming the C2PA
-//! manifest store's type, so a store can be found, this module attaches no
-//! meaning to any type or label.
+//! manifest store's type, so a container that carries JUMBF of any type can tell
+//! a store from other JUMBF ([`item_info`]), this module attaches no meaning to
+//! any type or label.
 //!
 //! [`addition_to`] and [`extend`] convert between a store and the original-plus-update
-//! pair ISO BMFF keeps; [`Structure::store`](crate::Structure::store) uses them.
+//! pair ISO BMFF keeps; [`Structure::c2pa_store`](crate::Structure::c2pa_store) uses
+//! them.
 
 use std::ops::Range;
 
@@ -48,6 +50,19 @@ pub fn superbox_type(b: &[u8]) -> Option<[u8; 16]> {
     let mut uuid = [0u8; 16];
     uuid.copy_from_slice(&b[16..32]);
     Some(uuid)
+}
+
+/// The item a container that carries JUMBF of any type (JPEG APP11, JPEG XL
+/// `jumb`) declares for a superbox of type `jumbf_type`: a
+/// [C2PA store](crate::ItemKind::C2pa) for [`C2PA_STORE_TYPE`], otherwise
+/// [other](crate::ItemKind::Other) JUMBF. The type is recorded either way.
+pub fn item_info(jumbf_type: Option<[u8; 16]>) -> crate::item::ItemInfo {
+    let info = if jumbf_type == Some(C2PA_STORE_TYPE) {
+        crate::item::ItemInfo::c2pa()
+    } else {
+        crate::item::ItemInfo::new(crate::ItemKind::Other, crate::Encoding::Jumbf)
+    };
+    info.jumbf_type(jumbf_type)
 }
 
 /// [`superbox_type`] of the `len` stored bytes at `offset`, reading at most 32 of

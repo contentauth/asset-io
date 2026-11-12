@@ -23,12 +23,12 @@
 //! hash can skip exactly a store.
 //!
 //! The XMP metadata stream is an [`ItemKind::Xmp`] item and
-//! the C2PA store an [`ItemKind::Jumbf`] item, each in its own
+//! the C2PA store an [`ItemKind::C2pa`] item, each in its own
 //! [`Metadata`](crate::SegmentKind::Metadata) segment. A Flate-compressed store is an
 //! item whose bytes are the encoded ones, with a
 //! [`Zlib`](crate::TransferEncoding::Zlib) transfer encoding;
 //! [`Structure::xmp`](crate::Structure::xmp),
-//! [`Structure::store`](crate::Structure::store) and
+//! [`Structure::c2pa_store`](crate::Structure::c2pa_store) and
 //! [`Structure::read_content`](crate::Structure::read_content) decode them. See
 //! below for the rules and the limits.
 #![doc = include_str!("README.md")]
@@ -164,7 +164,7 @@ impl ContainerHandler for PdfHandler {
 fn item_info(kind: ItemKind) -> ItemInfo {
     match kind {
         ItemKind::Xmp => ItemInfo::xmp(),
-        _ => ItemInfo::jumbf(),
+        _ => ItemInfo::c2pa(),
     }
 }
 
@@ -896,7 +896,7 @@ impl<'io> Parser<'io> {
                     }
                     _ => active = None,
                 }
-                if ranges.iter().any(|(_, kind, _)| *kind == ItemKind::Jumbf) {
+                if ranges.iter().any(|(_, kind, _)| *kind == ItemKind::C2pa) {
                     return Err(invalid("multiple document-level C2PA manifests"));
                 }
                 if let Some(subtype) = spec.remove(b"Subtype".as_slice()) {
@@ -916,8 +916,8 @@ impl<'io> Parser<'io> {
                     (Some(value), None) | (None, Some(value)) => value,
                     (None, None) => return Err(invalid("missing C2PA embedded file")),
                 };
-                let (range, decode) = self.stream(stream, ItemKind::Jumbf).await?;
-                ranges.push((range, ItemKind::Jumbf, decode));
+                let (range, decode) = self.stream(stream, ItemKind::C2pa).await?;
+                ranges.push((range, ItemKind::C2pa, decode));
             }
             associated = values;
         }
@@ -1053,7 +1053,7 @@ fn plan<'a>(src: &Structure, source_len: u64, updates: &'a Updates) -> Result<Wr
     let segments = src.segments();
     let mut b = PlanBuilder::new(src);
     let noop = matches!(updates.xmp(), MetadataUpdate::Keep)
-        && matches!(updates.jumbf(), MetadataUpdate::Keep);
+        && matches!(updates.c2pa(), MetadataUpdate::Keep);
     if noop {
         for i in 0..segments.len() {
             b.copy_segment(SegmentId::from_index(i)?)?;
@@ -1075,7 +1075,7 @@ fn plan<'a>(src: &Structure, source_len: u64, updates: &'a Updates) -> Result<Wr
             if kind == ItemKind::Xmp {
                 updates.xmp()
             } else {
-                updates.jumbf()
+                updates.c2pa()
             },
             MetadataUpdate::Keep
         )
@@ -1088,7 +1088,7 @@ fn plan<'a>(src: &Structure, source_len: u64, updates: &'a Updates) -> Result<Wr
             continue;
         }
         match src.items_in(id).next().map(|e| e.kind()) {
-            Some(kind @ (ItemKind::Xmp | ItemKind::Jumbf)) if keeps(kind) => {
+            Some(kind @ (ItemKind::Xmp | ItemKind::C2pa)) if keeps(kind) => {
                 flush(&mut b, &mut run)?;
                 b.copy_segment(id)?;
             }
@@ -1102,7 +1102,7 @@ fn plan<'a>(src: &Structure, source_len: u64, updates: &'a Updates) -> Result<Wr
                 let data = match if kind == ItemKind::Xmp {
                     updates.xmp()
                 } else {
-                    updates.jumbf()
+                    updates.c2pa()
                 } {
                     MetadataUpdate::Set(data) => data.as_slice(),
                     _ => return Err(invalid("write plan payload missing")),

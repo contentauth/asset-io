@@ -23,7 +23,7 @@
 
 use std::io::Cursor;
 
-use asset_io::{Asset, ByteRange, Error, ItemKind, NullSink, Updates};
+use asset_io::{testing::c2pa_store_of_len, Asset, ByteRange, Error, ItemKind, NullSink, Updates};
 
 fn open<'a>(format: &str, bytes: &'a [u8]) -> Asset<Cursor<&'a [u8]>> {
     Asset::open(Cursor::new(bytes), Some(format)).unwrap()
@@ -31,17 +31,6 @@ fn open<'a>(format: &str, bytes: &'a [u8]) -> Asset<Cursor<&'a [u8]>> {
 
 /// A GIF89a with a 1x1 screen and nothing else.
 const GIF: &[u8] = b"GIF89a\x01\0\x01\0\0\0\0\x3b";
-
-fn store(len: usize) -> Vec<u8> {
-    let mut bytes = (len as u32).to_be_bytes().to_vec();
-    bytes.extend_from_slice(b"jumb");
-    bytes.extend_from_slice(&25u32.to_be_bytes());
-    bytes.extend_from_slice(b"jumd");
-    bytes.extend_from_slice(&[7; 16]);
-    bytes.push(0);
-    bytes.resize(len, 0);
-    bytes
-}
 
 #[test]
 fn handler_exclusions_match_planned_written_and_parsed_geometry() {
@@ -57,20 +46,20 @@ fn handler_exclusions_match_planned_written_and_parsed_geometry() {
             br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#.to_vec(),
         ),
     ] {
-        for len in [33, 34, 160_001] {
+        for len in [47, 48, 160_001] {
             let asset = open(format, &input);
-            let updates = Updates::new().set_jumbf(store(len));
+            let updates = Updates::new().set_c2pa(c2pa_store_of_len(len));
             let planned = asset.plan(&updates).unwrap();
             let mut output = Cursor::new(Vec::new());
             let written = asset.write(&mut output, &updates, &mut NullSink).unwrap();
             let parsed = open(format, output.get_ref());
-            let item = planned.require_item(ItemKind::Jumbf).unwrap();
+            let item = planned.require_item(ItemKind::C2pa).unwrap();
             let expected = planned.c2pa_data_hash_exclusions(item).unwrap();
             assert!(!expected.is_empty());
             for candidate in [&written, parsed.structure()] {
                 assert_eq!(
                     candidate
-                        .c2pa_data_hash_exclusions(candidate.require_item(ItemKind::Jumbf).unwrap())
+                        .c2pa_data_hash_exclusions(candidate.require_item(ItemKind::C2pa).unwrap())
                         .unwrap(),
                     expected,
                     "{format}, {len}"
@@ -117,18 +106,18 @@ fn handler_exclusions_match_planned_written_and_parsed_geometry() {
 
 #[test]
 fn containers_with_other_bindings_refuse_rather_than_guess() {
-    let sidecar = store(33);
+    let sidecar = c2pa_store_of_len(47);
     let asset = open("c2pa", &sidecar);
-    let item = asset.require_item(ItemKind::Jumbf).unwrap();
+    let item = asset.require_item(ItemKind::C2pa).unwrap();
     assert!(matches!(
         asset.c2pa_data_hash_exclusions(item),
         Err(Error::UnsupportedFeature(_))
     ));
 
     let planned = open("mp4", b"\0\0\0\x18ftypisom\0\0\0\0isommp42")
-        .plan(&Updates::new().set_jumbf(store(33)))
+        .plan(&Updates::new().set_c2pa(c2pa_store_of_len(47)))
         .unwrap();
-    let item = planned.require_item(ItemKind::Jumbf).unwrap();
+    let item = planned.require_item(ItemKind::C2pa).unwrap();
     assert!(matches!(
         planned.c2pa_data_hash_exclusions(item),
         Err(Error::UnsupportedFeature(_))
@@ -152,7 +141,7 @@ fn each_container_reports_named_box_support() {
             false,
         ),
         ("mp4", b"\0\0\0\x18ftypisom\0\0\0\0isommp42".to_vec(), true),
-        ("c2pa", store(33), false),
+        ("c2pa", c2pa_store_of_len(47), false),
         #[cfg(feature = "pdf")]
         (
             "pdf",
@@ -176,7 +165,6 @@ fn each_container_reports_named_box_support() {
 
 #[test]
 fn c2pa_boxes_tile_the_asset_with_one_store_box() {
-    use asset_io::{AFTER_BOX, C2PA_BOX};
     for (format, input) in [
         ("jpg", vec![0xff, 0xd8, 0xff, 0xd9]),
         (
@@ -186,11 +174,10 @@ fn c2pa_boxes_tile_the_asset_with_one_store_box() {
         ("wav", b"RIFF\x04\0\0\0WAVE".to_vec()),
         ("gif", GIF.to_vec()),
     ] {
-        for len in [33, 160_001] {
+        for len in [47, 160_001] {
             let asset = open(format, &input);
-            let mut c2pa = store(len);
-            c2pa[16..32].copy_from_slice(&asset_io::jumbf::C2PA_STORE_TYPE);
-            let updates = Updates::new().set_jumbf(c2pa);
+            let c2pa = c2pa_store_of_len(len);
+            let updates = Updates::new().set_c2pa(c2pa);
             let planned = asset.plan(&updates).unwrap();
             let mut bytes = Vec::new();
             asset.write(&mut bytes, &updates, &mut NullSink).unwrap();
@@ -204,11 +191,7 @@ fn c2pa_boxes_tile_the_asset_with_one_store_box() {
                 "{format}"
             );
             let boxes = parsed.c2pa_boxes().unwrap();
-            assert_eq!(
-                planned.c2pa_boxes(&mut Cursor::new([])).unwrap(),
-                boxes,
-                "{format}"
-            );
+            assert_eq!(planned.c2pa_boxes().unwrap(), boxes, "{format}");
             let mut end = 0;
             for b in &boxes {
                 assert_eq!(b.range.offset(), end, "{format}: boxes are contiguous");
@@ -217,11 +200,11 @@ fn c2pa_boxes_tile_the_asset_with_one_store_box() {
             assert_eq!(end, parsed.total_size());
             let store_boxes: Vec<_> = boxes
                 .iter()
-                .filter(|b| b.name.as_deref() == Some(C2PA_BOX))
+                .filter(|b| b.name.as_deref() == Some("C2PA"))
                 .collect();
             assert_eq!(store_boxes.len(), 1, "{format}, {len}");
             // The store box covers whatever its data-hash exclusion does.
-            let item = parsed.require_item(ItemKind::Jumbf).unwrap();
+            let item = parsed.require_item(ItemKind::C2pa).unwrap();
             let grouped = parsed.boxes_with(item, "selected").unwrap();
             let selected: Vec<_> = grouped
                 .iter()
@@ -231,7 +214,7 @@ fn c2pa_boxes_tile_the_asset_with_one_store_box() {
             assert_eq!(selected[0].range, store_boxes[0].range);
             assert_eq!(
                 planned
-                    .boxes_with(planned.require_item(ItemKind::Jumbf).unwrap(), "selected")
+                    .boxes_with(planned.require_item(ItemKind::C2pa).unwrap(), "selected")
                     .unwrap(),
                 grouped,
                 "{format}"
@@ -255,7 +238,7 @@ fn c2pa_boxes_tile_the_asset_with_one_store_box() {
             let last = boxes.last().unwrap();
             assert_eq!(
                 (last.name.as_deref(), last.range.len()),
-                (Some(AFTER_BOX), 8),
+                (Some("c2pa.after"), 8),
                 "{format}"
             );
         }
@@ -286,12 +269,11 @@ fn named(boxes: &[asset_io::BoxInfo]) -> Named {
 /// Write `input` with a C2PA store, then return the planned boxes (read in the
 /// source, before the output exists) and the boxes of the written output.
 fn planned_and_written(format: &str, input: &[u8]) -> (Named, Named, Vec<u8>) {
-    let mut c2pa = store(40);
-    c2pa[16..32].copy_from_slice(&asset_io::jumbf::C2PA_STORE_TYPE);
-    let updates = Updates::new().set_jumbf(c2pa);
+    let c2pa = c2pa_store_of_len(48);
+    let updates = Updates::new().set_c2pa(c2pa);
     let asset = open(format, input);
     let planned = asset.plan(&updates).unwrap();
-    let planned_boxes = named(&planned.c2pa_boxes(&mut Cursor::new(input)).unwrap());
+    let planned_boxes = named(&planned.c2pa_boxes().unwrap());
     let mut bytes = Vec::new();
     asset.write(&mut bytes, &updates, &mut NullSink).unwrap();
     let written = open(format, &bytes);

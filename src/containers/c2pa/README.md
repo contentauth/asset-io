@@ -4,7 +4,7 @@ Enabled by the `c2pa` feature (also in `all-formats`).
 
 - Accepts `c2pa`, `application/c2pa`, and
   `application/x-c2pa-manifest-store`.
-- A nonempty sidecar is one `Metadata` segment and one `Jumbf` item, both
+- A nonempty sidecar is one `Metadata` segment and one `C2pa` item, both
   covering the entire file. There are no container headers or trailers.
 - An empty sidecar has no segments or items.
 - Parsing with an explicit format accepts opaque bytes, including placeholders,
@@ -12,20 +12,20 @@ Enabled by the `c2pa` feature (also in `all-formats`).
 - Content detection recognizes the usual `jumb` / `jumd` prefix with the C2PA
   manifest-store type UUID. Empty, opaque, or extended-length JUMBF files should
   be parsed explicitly as `c2pa`.
-- Parsing reads only a bounded prefix to identify the JUMBF type; it does not
-  load the store. Reading an item's bytes is subject to the core's read limits.
+- Parsing reads nothing: the whole file is the store. Reading an item's bytes is
+  subject to the core's read limits.
 
 ## Writing
 
-`Updates::new()` copies the sidecar byte-for-byte. `set_jumbf(bytes)` replaces
+`Updates::new()` copies the sidecar byte-for-byte. `set_c2pa(bytes)` replaces
 the entire file, with no added wrapping; `as_update()` does not append another
-store. `remove_jumbf()` and `remove_all()` produce an empty sidecar, as does
+store. `remove_c2pa()` and `remove_all()` produce an empty sidecar, as does
 setting an empty store. Type-scoped removal leaves a different or unknown type
 unchanged.
 
 Sidecars cannot contain a separate XMP packet: setting XMP returns
 `UnsupportedFeature`, while removing absent XMP is a no-op. `compose` supports
-only `ItemKind::Jumbf` and returns the bytes unchanged. In-place patches must
+only `ItemKind::C2pa` and returns the bytes unchanged. In-place patches must
 preserve the exact item length; use a write to resize a sidecar.
 
 The raw read/write model and MIME aliases follow

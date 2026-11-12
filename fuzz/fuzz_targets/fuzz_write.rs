@@ -32,15 +32,16 @@ fuzz_target!(|data: &[u8]| {
         },
     };
 
+    let store = asset_io::testing::c2pa_store(&[b"manifest"]);
     let cases = [
         Updates::new(),
         Updates::new().set_xmp(b"<test>fuzz</test>".to_vec()),
         Updates::new().set_xmp(XPACKET.to_vec()),
-        Updates::new().set_jumbf(b"jumbf".to_vec()),
-        Updates::new().set_jumbf(b"jumbf".to_vec()).as_update(),
+        Updates::new().set_c2pa(store.clone()),
+        Updates::new().set_c2pa(store.clone()).as_update(),
         Updates::new().set_merkle(vec![vec![0u8; 8]; 2]),
-        Updates::new().set_jumbf(b"jumbf".to_vec()).remove_merkle(),
-        Updates::new().remove_jumbf(),
+        Updates::new().set_c2pa(store.clone()).remove_merkle(),
+        Updates::new().remove_c2pa(),
         Updates::new().remove_xmp(),
     ];
     for updates in &cases {
