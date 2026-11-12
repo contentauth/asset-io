@@ -55,6 +55,7 @@ use crate::{
         BoxFuture, ContainerHandler, FormatSpec, Io, ItemInfo, MetadataUpdate, PlanBuilder,
         StructureBuilder, WritePlan, MAX_SEGMENT_SIZE,
     },
+    labels,
     transfer::inflate,
     ByteRange, Error, Item, ItemKind, Name, Result, Role, SegmentId, SegmentKind, Structure,
     TransferEncoding, Updates,
@@ -138,7 +139,11 @@ impl ContainerHandler for PdfHandler {
         io: Io,
         updates: &'a Updates,
     ) -> BoxFuture<'f, Result<WritePlan<'a>>> {
-        Box::pin(async move { plan(src_structure, io.len(), updates) })
+        Box::pin(async move {
+            let mut io = io;
+            let delta = c2pa_delta(src_structure, &mut io, updates).await?;
+            plan(src_structure, io.len(), updates, delta)
+        })
     }
 
     fn check_patch(&self, structure: &Structure, item: &Item, len: usize) -> Result<()> {
@@ -276,6 +281,11 @@ struct Parser<'io> {
     nodes: usize,
     objects: usize,
     xrefs: Vec<Xrefs>,
+    /// The `Root` each revision's trailer names, parallel to `xrefs` (newest first).
+    roots: Vec<Option<Reference>>,
+    /// How many of the newest revisions to look past: objects are found as the
+    /// document was at the revision `skip` back.
+    skip: usize,
     decoding_left: usize,
     resolving: BTreeSet<Reference>,
     object_stream: Option<ObjectStream>,
@@ -292,6 +302,8 @@ impl<'io> Parser<'io> {
             nodes: 0,
             objects: 0,
             xrefs: Vec::new(),
+            roots: Vec::new(),
+            skip: 0,
             decoding_left: MAX_DECODE_WORK,
             resolving: BTreeSet::new(),
             object_stream: None,
@@ -549,15 +561,18 @@ impl<'io> Parser<'io> {
                     "PDF hybrid cross-reference streams",
                 ));
             }
+            let mut this_root = None;
             if let Some(value) = trailer.remove(b"Root".as_slice()) {
                 let Value::Reference(reference) = value else {
                     return Err(invalid("Root must be indirect"));
                 };
+                this_root = Some(reference);
                 if root.is_none() {
                     root = Some(reference);
                 }
             }
             self.xrefs.push(section);
+            self.roots.push(this_root);
             match trailer.remove(b"Prev".as_slice()) {
                 None => return root.ok_or_else(|| invalid("missing document Root")),
                 Some(value) => {
@@ -595,7 +610,7 @@ impl<'io> Parser<'io> {
     }
 
     fn entry(&self, id: u32) -> Result<Entry> {
-        for section in &self.xrefs {
+        for section in &self.xrefs[self.skip..] {
             if let Some(entry) = section.entry(id)? {
                 return Ok(entry);
             }
@@ -861,7 +876,6 @@ impl<'io> Parser<'io> {
             return Err(invalid("Root is not a Catalog"));
         }
         let mut ranges = Vec::new();
-        let mut associated = Vec::new();
         let mut active = Some(BTreeSet::new());
         if let Some(value) = catalog.get(b"Metadata".as_slice()).cloned() {
             if !matches!(value, Value::Null) {
@@ -869,64 +883,138 @@ impl<'io> Parser<'io> {
                 ranges.push((range, ItemKind::Xmp, decode));
             }
         }
-        if let Some(value) = catalog.get(b"AF".as_slice()).cloned() {
-            let values = match self.resolve(value.clone()).await? {
-                Value::Array(values) => values,
-                Value::Null => Vec::new(),
-                Value::Dictionary(_) => vec![value],
-                _ => return Err(invalid("invalid Catalog AF")),
-            };
-            for value in &values {
-                let mut spec = self.resolve(value.clone()).await?.dictionary()?;
-                let Some(relationship) = spec.remove(b"AFRelationship".as_slice()) else {
-                    continue;
-                };
-                let relationship = self.resolve(relationship).await?;
-                if !matches!(relationship, Value::Name(_)) {
-                    return Err(invalid("AFRelationship must be a name"));
-                }
-                if !relationship.is_name(b"C2PA_Manifest") {
-                    continue;
-                }
-                match value {
-                    Value::Reference(reference) => {
-                        if let Some(active) = &mut active {
-                            active.insert(*reference);
-                        }
-                    }
-                    _ => active = None,
-                }
-                if ranges.iter().any(|(_, kind, _)| *kind == ItemKind::C2pa) {
-                    return Err(invalid("multiple document-level C2PA manifests"));
-                }
-                if let Some(subtype) = spec.remove(b"Subtype".as_slice()) {
-                    if !subtype.is_name(b"application/c2pa") {
-                        return Err(invalid("C2PA file specification has wrong subtype"));
-                    }
-                }
-                let ef_value = required(&mut spec, b"EF")?;
-                let mut ef = self.resolve(ef_value).await?.dictionary()?;
-                let stream = match (ef.remove(b"F".as_slice()), ef.remove(b"UF".as_slice())) {
-                    (Some(Value::Reference(f)), Some(Value::Reference(uf))) if f == uf => {
-                        Value::Reference(f)
-                    }
-                    (Some(_), Some(_)) => {
-                        return Err(invalid("conflicting embedded file references"))
-                    }
-                    (Some(value), None) | (None, Some(value)) => value,
-                    (None, None) => return Err(invalid("missing C2PA embedded file")),
-                };
-                let (range, decode) = self.stream(stream, ItemKind::C2pa).await?;
-                ranges.push((range, ItemKind::C2pa, decode));
-            }
-            associated = values;
+        let associated = self.associated(&catalog).await?;
+        let stores = self.stores(&associated, &mut active).await?;
+        if stores.len() > 1 {
+            return Err(invalid("multiple document-level C2PA manifests"));
         }
+        ranges.extend(
+            stores
+                .into_iter()
+                .map(|(range, decode)| (range, ItemKind::C2pa, decode)),
+        );
         Ok(CatalogMetadata {
             catalog,
             associated,
             active,
             ranges,
         })
+    }
+
+    /// The catalog's `/AF` entries.
+    async fn associated(&mut self, catalog: &Dictionary) -> Result<Vec<Value>> {
+        let Some(value) = catalog.get(b"AF".as_slice()).cloned() else {
+            return Ok(Vec::new());
+        };
+        Ok(match self.resolve(value.clone()).await? {
+            Value::Array(values) => values,
+            Value::Null => Vec::new(),
+            Value::Dictionary(_) => vec![value],
+            _ => return Err(invalid("invalid Catalog AF")),
+        })
+    }
+
+    /// The C2PA stores among associated files, in order. `active` collects the file
+    /// specifications, or is `None` once one is not an indirect reference.
+    async fn stores(
+        &mut self,
+        values: &[Value],
+        active: &mut Option<BTreeSet<Reference>>,
+    ) -> Result<Vec<(ByteRange, Option<Decode>)>> {
+        let mut stores = Vec::new();
+        for value in values {
+            let mut spec = self.resolve(value.clone()).await?.dictionary()?;
+            let Some(relationship) = spec.remove(b"AFRelationship".as_slice()) else {
+                continue;
+            };
+            let relationship = self.resolve(relationship).await?;
+            if !matches!(relationship, Value::Name(_)) {
+                return Err(invalid("AFRelationship must be a name"));
+            }
+            if !relationship.is_name(b"C2PA_Manifest") {
+                continue;
+            }
+            match value {
+                Value::Reference(reference) => {
+                    if let Some(active) = active {
+                        active.insert(*reference);
+                    }
+                }
+                _ => *active = None,
+            }
+            if let Some(subtype) = spec.remove(b"Subtype".as_slice()) {
+                if !subtype.is_name(b"application/c2pa") {
+                    return Err(invalid("C2PA file specification has wrong subtype"));
+                }
+            }
+            let ef_value = required(&mut spec, b"EF")?;
+            let mut ef = self.resolve(ef_value).await?.dictionary()?;
+            let stream = match (ef.remove(b"F".as_slice()), ef.remove(b"UF".as_slice())) {
+                (Some(Value::Reference(f)), Some(Value::Reference(uf))) if f == uf => {
+                    Value::Reference(f)
+                }
+                (Some(_), Some(_)) => return Err(invalid("conflicting embedded file references")),
+                (Some(value), None) | (None, Some(value)) => value,
+                (None, None) => return Err(invalid("missing C2PA embedded file")),
+            };
+            stores.push(self.stream(stream, ItemKind::C2pa).await?);
+        }
+        Ok(stores)
+    }
+
+    /// The C2PA stores of the revisions before the latest, oldest first, other than
+    /// the one at `active`. C2PA reads the stores of all revisions as one, so these
+    /// come before the latest revision's store.
+    ///
+    /// A revision that adds more than one store has none of them counted, and a
+    /// revision that cannot be read is passed over; neither fails the document.
+    async fn earlier_stores(
+        &mut self,
+        active: Option<u64>,
+    ) -> Result<Vec<(ByteRange, Option<Decode>)>> {
+        let mut found = Vec::new();
+        let mut seen = BTreeSet::new();
+        for index in (1..self.xrefs.len()).rev() {
+            let Some(root) = self.roots[index] else {
+                continue;
+            };
+            self.skip = index;
+            self.object_stream = None;
+            let result = self.revision_stores(root).await;
+            self.skip = 0;
+            self.object_stream = None;
+            let stores = match result {
+                Ok(stores) => stores,
+                Err(Error::InvalidFormat(_) | Error::UnsupportedFeature(_)) => continue,
+                Err(error) => return Err(error),
+            };
+            let mut added = stores
+                .into_iter()
+                .filter(|(range, _)| !seen.contains(&range.offset()));
+            if let (Some(store), None) = (added.next(), added.next()) {
+                seen.insert(store.0.offset());
+                found.push(store);
+            }
+        }
+        found.retain(|(range, _)| Some(range.offset()) != active);
+        Ok(found)
+    }
+
+    /// The C2PA stores the catalog `root` lists, as the document was at the revision
+    /// `skip` back.
+    async fn revision_stores(
+        &mut self,
+        root: Reference,
+    ) -> Result<Vec<(ByteRange, Option<Decode>)>> {
+        let catalog = self.resolve(Value::Reference(root)).await?.dictionary()?;
+        if !catalog
+            .get(b"Type".as_slice())
+            .is_some_and(|value| value.is_name(b"Catalog"))
+        {
+            return Err(invalid("Root is not a Catalog"));
+        }
+        let values = self.associated(&catalog).await?;
+        self.stores(&values, &mut None).await
     }
 }
 
@@ -967,14 +1055,29 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<St
         found.active,
     )
     .await?;
-    let mut ranges = found.ranges;
-    ranges.sort_by_key(|(range, _, _)| range.offset());
+    let mut ranges: Vec<_> = found
+        .ranges
+        .into_iter()
+        .map(|(range, kind, decode)| (range, kind, decode, false))
+        .collect();
+    // A removed store stays removed: earlier ones count only beside a current one,
+    // and an empty stream holds nothing.
+    let current = ranges
+        .iter()
+        .find(|r| r.1 == ItemKind::C2pa && !r.0.is_empty())
+        .map(|r| r.0);
+    if let Some(active) = current {
+        for (range, decode) in parser.earlier_stores(Some(active.offset())).await? {
+            ranges.push((range, ItemKind::C2pa, decode, true));
+        }
+    }
+    ranges.sort_by_key(|(range, _, _, _)| range.offset());
 
     let mut b = StructureBuilder::new(handler, "application/pdf", size);
     b.push_span(SegmentKind::Preamble, Name::None, HEADER_LEN as u32, 0, 0)?;
     let mut end = HEADER_LEN;
     let state = PdfState { edit };
-    for (range, kind, decode) in ranges {
+    for (range, kind, decode, superseded) in ranges {
         // An empty stream holds nothing to expose.
         if range.is_empty() {
             continue;
@@ -986,14 +1089,14 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<St
             b.push_span(SegmentKind::Other, Name::None, 0, range.offset() - end, 0)?;
         }
         let transfer = decode.map_or(TransferEncoding::Identity, Decode::transfer);
-        b.push_item(
-            SegmentKind::Metadata,
-            Name::None,
-            0,
-            range.len(),
-            0,
-            item_info(kind).transfer(transfer),
-        )?;
+        let mut info = item_info(kind).transfer(transfer);
+        // The bytes of an earlier revision are ordinary data to a hash of the file.
+        let mut segment = SegmentKind::Metadata;
+        if superseded {
+            info = info.label(labels::SUPERSEDED);
+            segment = SegmentKind::Other;
+        }
+        b.push_item(segment, Name::None, 0, range.len(), 0, info)?;
         end = range.end();
     }
     if end < size {
@@ -1042,10 +1145,35 @@ fn flush<'a>(b: &mut PlanBuilder<'_, 'a>, run: &mut Vec<Text<'a>>) -> Result<()>
     Ok(())
 }
 
+/// What the new store adds to the store the file already has, if `updates` marks it
+/// as an update and it extends that store. C2PA reads the stores of a PDF's
+/// revisions as one, so the revision then holds only this addition. Otherwise
+/// (`None`) the revision holds the whole store.
+async fn c2pa_delta(src: &Structure, io: &mut Io, updates: &Updates) -> Result<Option<Vec<u8>>> {
+    let MetadataUpdate::Set(full) = updates.c2pa() else {
+        return Ok(None);
+    };
+    if !updates.is_c2pa_update() {
+        return Ok(None);
+    }
+    let Some(existing) = src.c2pa_store_async(io).await? else {
+        return Ok(None);
+    };
+    // Stores that are not JUMBF cannot be told apart by their manifests.
+    Ok(crate::jumbf::addition_to(&existing, full).unwrap_or(None))
+}
+
 /// A write is the whole source, unchanged, then an appended revision. In the output,
 /// a metadata stream the catalog no longer points at is just bytes, so those are
-/// merged into the text around them, as parsing the output sees it.
-fn plan<'a>(src: &Structure, source_len: u64, updates: &'a Updates) -> Result<WritePlan<'a>> {
+/// merged into the text around them, as parsing the output sees it. The exception
+/// is a C2PA store, when the revision gives another: earlier stores are still
+/// read, as `superseded` items.
+fn plan<'a>(
+    src: &Structure,
+    source_len: u64,
+    updates: &'a Updates,
+    delta: Option<Vec<u8>>,
+) -> Result<WritePlan<'a>> {
     if source_len != src.total_size() {
         return Err(invalid("source size changed since parsing"));
     }
@@ -1068,7 +1196,7 @@ fn plan<'a>(src: &Structure, source_len: u64, updates: &'a Updates) -> Result<Wr
     let write::State::Ready(context) = &state.edit else {
         return Err(invalid("missing editable PDF context"));
     };
-    let revision = write::revision(context, src.total_size(), updates)?;
+    let revision = write::revision(context, src.total_size(), updates, delta.as_deref())?;
 
     let keeps = |kind: ItemKind| {
         matches!(
@@ -1080,6 +1208,11 @@ fn plan<'a>(src: &Structure, source_len: u64, updates: &'a Updates) -> Result<Wr
             MetadataUpdate::Keep
         )
     };
+    // With a new store, the earlier ones are read before it. An empty one is nothing.
+    let supersedes = match updates.c2pa() {
+        MetadataUpdate::Set(data) => delta.is_some() || !data.is_empty(),
+        _ => false,
+    };
     let mut run: Vec<Text<'a>> = Vec::new();
     for (i, seg) in segments.iter().enumerate() {
         let id = SegmentId::from_index(i)?;
@@ -1087,8 +1220,16 @@ fn plan<'a>(src: &Structure, source_len: u64, updates: &'a Updates) -> Result<Wr
             b.copy_segment(id)?;
             continue;
         }
-        match src.items_in(id).next().map(|e| e.kind()) {
-            Some(kind @ (ItemKind::Xmp | ItemKind::C2pa)) if keeps(kind) => {
+        match src.items_in(id).next() {
+            Some(item) if item.kind() == ItemKind::C2pa && supersedes => {
+                flush(&mut b, &mut run)?;
+                let earlier = b.shape(SegmentKind::Other, Name::None, 0, seg.range().len(), 0)?;
+                b.copy(earlier, Role::Payload, seg.range());
+                b.item(item.info().clone().label(labels::SUPERSEDED), &[earlier])?;
+            }
+            Some(item)
+                if matches!(item.kind(), ItemKind::Xmp | ItemKind::C2pa) && keeps(item.kind()) =>
+            {
                 flush(&mut b, &mut run)?;
                 b.copy_segment(id)?;
             }
@@ -1099,13 +1240,16 @@ fn plan<'a>(src: &Structure, source_len: u64, updates: &'a Updates) -> Result<Wr
         match piece {
             write::Piece::Syntax(bytes) => run.push(Text::Put(Cow::Owned(bytes))),
             write::Piece::Stream(kind) => {
-                let data = match if kind == ItemKind::Xmp {
-                    updates.xmp()
-                } else {
-                    updates.c2pa()
-                } {
-                    MetadataUpdate::Set(data) => data.as_slice(),
-                    _ => return Err(invalid("write plan payload missing")),
+                let data: Cow<'a, [u8]> = match (kind, &delta) {
+                    (ItemKind::C2pa, Some(delta)) => Cow::Owned(delta.clone()),
+                    _ => match if kind == ItemKind::Xmp {
+                        updates.xmp()
+                    } else {
+                        updates.c2pa()
+                    } {
+                        MetadataUpdate::Set(data) => Cow::Borrowed(data.as_slice()),
+                        _ => return Err(invalid("write plan payload missing")),
+                    },
                 };
                 // An empty stream holds nothing to expose.
                 if !data.is_empty() {
@@ -1118,7 +1262,7 @@ fn plan<'a>(src: &Structure, source_len: u64, updates: &'a Updates) -> Result<Wr
         }
     }
     flush(&mut b, &mut run)?;
-    b.carry_items(|_| true);
+    b.carry_items(|item| !(supersedes && item.kind() == ItemKind::C2pa));
     b.attach(PdfState {
         edit: write::State::Ready(Arc::new(revision.context)),
     });

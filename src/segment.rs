@@ -23,7 +23,8 @@ use crate::{
 /// A container that stores a JUMBF store in more than one place labels the
 /// items so a caller can tell them apart (see [`Item::label`](crate::Item::label)).
 /// ISO BMFF does: a file has a `MANIFEST`, or an `ORIGINAL` store plus an `UPDATE`
-/// that extends it. Merkle proof boxes are labelled `MERKLE`.
+/// that extends it. Merkle proof boxes are labelled `MERKLE`. A PDF keeps the stores
+/// of earlier revisions, labelled `SUPERSEDED`, beside the latest store.
 pub mod labels {
     /// The C2PA manifest store.
     pub const MANIFEST: &str = "manifest";
@@ -33,6 +34,9 @@ pub mod labels {
     pub const UPDATE: &str = "update";
     /// A Merkle tree box.
     pub const MERKLE: &str = "merkle";
+    /// A store of an earlier revision of the file (PDF). The store of the latest
+    /// revision, the active one, has no label; the earlier stores are read before it.
+    pub const SUPERSEDED: &str = "superseded";
 }
 
 /// Chunk size for streaming large segments (64KB)

@@ -291,7 +291,8 @@ impl Updates {
     /// clears it.
     ///
     /// Most containers ignore this. A container that keeps the original store apart
-    /// from later additions (ISO BMFF) uses it: if the new store begins with the
+    /// from later additions (ISO BMFF), or in the store of each revision (PDF), uses
+    /// it: if the new store begins with the
     /// existing store's manifests, byte for byte, it leaves them in place and
     /// stores only the rest as an update. Otherwise (nothing to update, or the
     /// existing manifests changed) it writes the new store as a whole. The hint is

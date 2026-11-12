@@ -215,6 +215,19 @@ pub fn extend(frozen: &[u8], addition: &[u8]) -> Result<Vec<u8>> {
     Ok(superbox(&frozen[f.description], children))
 }
 
+/// The store a reader sees when `later` is the store of a later revision than
+/// `earlier`. A `later` that already holds all of `earlier`'s manifests, byte for
+/// byte, is a whole store and stands alone; otherwise it holds only the manifests
+/// that revision added, and follows `earlier`. If the two cannot be combined (not
+/// JUMBF, or different superbox types), the later store stands alone, as it did
+/// before a reader looked at earlier revisions.
+pub(crate) fn combine_revisions(earlier: &[u8], later: &[u8]) -> Result<Vec<u8>> {
+    if earlier == later || matches!(addition_to(earlier, later), Ok(Some(_))) {
+        return Ok(later.to_vec());
+    }
+    Ok(extend(earlier, later).unwrap_or_else(|_| later.to_vec()))
+}
+
 /// A `jumb` box around `description` and `children`, using an extended length only
 /// when the size needs one.
 fn superbox<'a>(description: &[u8], children: impl Iterator<Item = &'a [u8]> + Clone) -> Vec<u8> {
