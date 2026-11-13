@@ -628,13 +628,15 @@ impl Structure {
     ///
     /// When the store is kept as an `original` plus an `update` (ISO BMFF), this
     /// is the `original`; [`c2pa_store`](Self::c2pa_store) reads the two combined.
-    /// The item is what a caller excludes from a hash or patches in place. Needs no
-    /// I/O: the container identified the store while parsing.
+    /// A PDF that also holds the stores of earlier revisions (labelled
+    /// `superseded`) gives the latest, the active one. The item is what a caller
+    /// excludes from a hash or patches in place. Needs no I/O: the container
+    /// identified the store while parsing.
     pub fn c2pa_item(&self) -> Result<Option<&Item>> {
-        use crate::segment::labels::UPDATE;
+        use crate::segment::labels::{SUPERSEDED, UPDATE};
         let mut stores = self
             .items_of(ItemKind::C2pa)
-            .filter(|item| item.label() != Some(UPDATE));
+            .filter(|item| !matches!(item.label(), Some(UPDATE | SUPERSEDED)));
         let found = stores.next();
         let more = stores.count();
         if more > 0 {
@@ -648,8 +650,8 @@ impl Structure {
 
     /// The C2PA manifest store as a reader sees it, or `None` if the asset has
     /// none: the [`c2pa_item`](Self::c2pa_item) with any transfer encoding undone,
-    /// and an `update` appended to its `original` (ISO BMFF). The store is not
-    /// interpreted.
+    /// an `update` appended to its `original` (ISO BMFF), and the stores of earlier
+    /// revisions read before it (PDF). The store is not interpreted.
     pub fn c2pa_store<R: Read + Seek>(&self, src: &mut R) -> Result<Option<Vec<u8>>> {
         block_on(self.total_size, src, |mut io| async move {
             self.c2pa_store_async(&mut io).await
@@ -659,7 +661,7 @@ impl Structure {
     /// [`c2pa_store`](Self::c2pa_store), reading through `io`, for a
     /// [`Task`](crate::task::Task) where the caller does the reads.
     pub async fn c2pa_store_async(&self, io: &mut Io) -> Result<Option<Vec<u8>>> {
-        use crate::segment::labels::{ORIGINAL, UPDATE};
+        use crate::segment::labels::{ORIGINAL, SUPERSEDED, UPDATE};
         let Some(item) = self.c2pa_item()? else {
             return Ok(None);
         };
@@ -670,7 +672,18 @@ impl Structure {
                 return crate::jumbf::extend(&store, &update).map(Some);
             }
         }
-        Ok(Some(store))
+        let mut earlier: Option<Vec<u8>> = None;
+        for item in self.items_labelled(ItemKind::C2pa, SUPERSEDED) {
+            let next = self.read_content_async(io, item).await?;
+            earlier = Some(match earlier {
+                None => next,
+                Some(earlier) => crate::jumbf::combine_revisions(&earlier, &next)?,
+            });
+        }
+        match earlier {
+            None => Ok(Some(store)),
+            Some(earlier) => crate::jumbf::combine_revisions(&earlier, &store).map(Some),
+        }
     }
 
     /// The boxes a C2PA box hash (`c2pa.hash.boxes`, C2PA 18.7) lists:

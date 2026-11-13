@@ -11,14 +11,14 @@
 // specific language governing permissions and limitations under
 // each license.
 
-//! Stream filters: which FlateDecode parameters a stream dictionary gives. The
+//! Stream filters: Identity Crypt and the FlateDecode parameters a dictionary gives. The
 //! decoding itself is the core's (see [`TransferEncoding`]).
 
 use super::lexer::{invalid, Dictionary, Value};
 use crate::{transfer::undo_png_predictor, Error, Result, TransferEncoding};
 
 /// How a stream is encoded: Flate, then optionally a PNG predictor over rows of
-/// `columns` single-byte samples. A stream with no filter has no `Decode`.
+/// `columns` single-byte samples. Unfiltered and Identity Crypt streams have no `Decode`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Decode {
     pub(super) predictor: u8,
@@ -47,15 +47,32 @@ impl Decode {
             }
             return Ok(None);
         }
-        if !filter.is_name(b"FlateDecode") && !filter.is_name(b"Fl") {
+        let crypt = filter.is_name(b"Crypt");
+        if !crypt && !filter.is_name(b"FlateDecode") && !filter.is_name(b"Fl") {
             return Err(Error::UnsupportedFeature(
-                "PDF stream filter (only FlateDecode is supported)",
+                "PDF stream filter (only FlateDecode and Identity Crypt are supported)",
             ));
         }
         let mut parameters = match parameters {
             Value::Null => Dictionary::new(),
             value => value.dictionary()?,
         };
+        if crypt {
+            if parameters
+                .remove(b"Type".as_slice())
+                .is_some_and(|value| !value.is_name(b"CryptFilterDecodeParms"))
+            {
+                return Err(invalid("unexpected Crypt DecodeParms type"));
+            }
+            match parameters.remove(b"Name".as_slice()) {
+                None => return Ok(None),
+                Some(Value::Name(name)) if name == b"Identity" => return Ok(None),
+                Some(Value::Name(_)) => {
+                    return Err(Error::UnsupportedFeature("PDF non-Identity Crypt filter"));
+                }
+                Some(_) => return Err(invalid("Crypt filter Name must be a name")),
+            }
+        }
         let mut take = |key: &[u8], default: u64| -> Result<u64> {
             Ok(parameters
                 .remove(key)

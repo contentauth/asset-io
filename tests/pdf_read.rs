@@ -55,6 +55,168 @@ fn detects_pdf_and_extracts_exact_payload_ranges() {
 }
 
 #[test]
+fn corrupt_or_truncated_flate_manifests_fail_instead_of_returning_partial_data() {
+    let payload: Vec<u8> = (0..4096u32).map(|i| (i * 31 % 251) as u8).collect();
+    let good = deflate(&payload);
+    let mut checksum = good.clone();
+    *checksum.last_mut().unwrap() ^= 1;
+    let mut trailing = good.clone();
+    trailing.extend_from_slice(b"junk");
+    let mut corrupt = good.clone();
+    corrupt[good.len() / 2] ^= 0xff;
+    for (name, stored) in [
+        ("truncated", good[..good.len() - 6].to_vec()),
+        ("no trailer", good[..good.len() - 4].to_vec()),
+        ("checksum", checksum),
+        ("trailing data", trailing),
+        ("corrupt", corrupt),
+    ] {
+        let mut pdf = metadata_pdf();
+        pdf.stream(
+            5,
+            &format!(
+                "/Type /EmbeddedFile /Length {} /Filter /FlateDecode",
+                stored.len()
+            ),
+            &stored,
+        );
+        pdf.finish("/Root 1 0 R");
+        let mut asset = Asset::from_source(Cursor::new(pdf.bytes)).unwrap();
+        assert!(
+            matches!(asset.jumbf(), Err(Error::InvalidFormat(_))),
+            "{name}"
+        );
+        assert_eq!(asset.xmp().unwrap().as_deref(), Some(b"<xmp/>".as_slice()));
+    }
+}
+
+#[test]
+fn flate_manifest_size_limit_is_bounded() {
+    let mut pdf = metadata_pdf();
+    let stored = deflate(&vec![0u8; 65 * 1024 * 1024]);
+    pdf.stream(
+        5,
+        &format!(
+            "/Type /EmbeddedFile /Length {} /Filter /FlateDecode",
+            stored.len()
+        ),
+        &stored,
+    );
+    pdf.finish("/Root 1 0 R");
+    let mut asset = Asset::from_source(Cursor::new(pdf.bytes)).unwrap();
+    assert!(matches!(asset.jumbf(), Err(Error::InvalidFormat(_))));
+}
+
+#[test]
+fn identity_crypt_metadata_is_unencoded() {
+    for filter in ["/Crypt", "[/Crypt]"] {
+        for parameters in [
+            "",
+            "/DecodeParms null",
+            "/DecodeParms << >>",
+            "/DecodeParms << /Name /Identity >>",
+            "/DecodeParms << /Type /CryptFilterDecodeParms >>",
+            "/DecodeParms << /Type /CryptFilterDecodeParms /Name /Identity >>",
+            "/DecodeParms [null]",
+            "/DecodeParms [<< /Name /Identity >>]",
+        ] {
+            let mut pdf = metadata_pdf();
+            for (id, dictionary, payload) in [
+                (2, "/Type /Metadata /Subtype /XML", b"<xmp/>".as_slice()),
+                (
+                    5,
+                    "/Type /EmbeddedFile /Subtype /application#2Fc2pa",
+                    b"manifest".as_slice(),
+                ),
+            ] {
+                pdf.stream(
+                    id,
+                    &format!(
+                        "{dictionary} /Length {} /Filter {filter} {parameters}",
+                        payload.len()
+                    ),
+                    payload,
+                );
+            }
+            pdf.finish("/Root 1 0 R");
+            let mut asset = Asset::from_source(Cursor::new(pdf.bytes.clone())).unwrap();
+            assert_eq!(asset.xmp().unwrap().as_deref(), Some(b"<xmp/>".as_slice()));
+            assert_eq!(
+                asset.jumbf().unwrap().as_deref(),
+                Some(b"manifest".as_slice())
+            );
+            for (kind, payload) in [
+                (ItemKind::Xmp, b"<xmp/>".as_slice()),
+                (ItemKind::C2pa, b"manifest".as_slice()),
+            ] {
+                let item = asset.structure.require_item(kind).unwrap();
+                assert_eq!(*item.transfer(), TransferEncoding::Identity);
+                assert_eq!(
+                    asset.structure.read_item(&mut asset.source, item).unwrap(),
+                    payload
+                );
+                assert_eq!(
+                    asset
+                        .structure
+                        .read_content(&mut asset.source, item)
+                        .unwrap(),
+                    payload
+                );
+            }
+            let mut output = Vec::new();
+            asset.write(&mut output, &asset_io::Updates::new()).unwrap();
+            assert_eq!(output, pdf.bytes);
+        }
+    }
+}
+
+#[test]
+fn crypt_filters_reject_encryption_and_malformed_parameters() {
+    for (extra, unsupported) in [
+        ("/DecodeParms << /Name /StdCF >>", true),
+        ("/DecodeParms [<< /Name /EncryptedFile >>]", true),
+        ("/DecodeParms << /Name (Identity) >>", false),
+        ("/DecodeParms << /Name 1 >>", false),
+        ("/DecodeParms << /Type /Other /Name /Identity >>", false),
+        ("/DecodeParms /Identity", false),
+    ] {
+        for (id, dictionary, payload) in [
+            (2, "/Type /Metadata /Subtype /XML", b"<xmp/>".as_slice()),
+            (5, "/Type /EmbeddedFile", b"manifest".as_slice()),
+        ] {
+            let mut pdf = metadata_pdf();
+            pdf.stream(
+                id,
+                &format!(
+                    "{dictionary} /Length {} /Filter /Crypt {extra}",
+                    payload.len()
+                ),
+                payload,
+            );
+            pdf.finish("/Root 1 0 R");
+            let error = parse_error(pdf.bytes);
+            if unsupported {
+                assert!(matches!(error, Error::UnsupportedFeature(_)), "{extra}");
+            } else {
+                assert!(matches!(error, Error::InvalidFormat(_)), "{extra}");
+            }
+        }
+    }
+}
+
+#[test]
+fn identity_crypt_seed_conforms() {
+    let bytes = include_bytes!("../fuzz/seeds/fuzz_parse/pdf_identity_crypt.pdf");
+    let mut asset = Asset::from_source(Cursor::new(bytes.as_slice())).unwrap();
+    assert_eq!(
+        asset.jumbf().unwrap().as_deref(),
+        Some(b"manifest".as_slice())
+    );
+    asset_io::testing::Conformance::new(std::sync::Arc::new(asset_io::containers::pdf::PdfHandler))
+        .check("PDF Identity Crypt", bytes);
+}
+
+#[test]
 fn flate_metadata_is_decoded_only_on_request() {
     let mut pdf = metadata_pdf();
     for (id, dictionary, payload) in [
@@ -554,6 +716,9 @@ fn rejects_unsupported_features_explicitly() {
     }
     for extra in [
         "/Filter [/ASCII85Decode]",
+        "/Filter [/FlateDecode /FlateDecode]",
+        "/Filter [/FlateDecode /Crypt]",
+        "/Filter [/Crypt /FlateDecode] /DecodeParms [null null]",
         "/F (remote.pdf)",
         "/Filter /FlateDecode /DecodeParms << /Predictor 2 >>",
     ] {
@@ -569,6 +734,14 @@ fn rejects_unsupported_features_explicitly() {
             Error::UnsupportedFeature(_)
         ));
     }
+    let mut pdf = metadata_pdf();
+    pdf.stream(
+        2,
+        "/Type /Metadata /Subtype /XML /Length 6 /Filter [/FlateDecode] /DecodeParms [null null]",
+        b"<xmp/>",
+    );
+    pdf.finish("/Root 1 0 R");
+    assert!(matches!(parse_error(pdf.bytes), Error::InvalidFormat(_)));
     let bytes = b"%PDF-1.7\n1 0 obj\n<< /Type /XRef >>\nendobj\nstartxref\n9\n%%EOF\n".to_vec();
     assert!(matches!(parse_error(bytes), Error::InvalidFormat(_)));
 }

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Read PDF metadata with a single Identity Crypt filter, including C2PA streams
+  with no `/DecodeParms`, while still rejecting non-Identity crypt filters.
+
 ## [0.5.0](https://github.com/contentauth/asset-io/compare/v0.4.0...v0.5.0) - 2026-11-13
 
 ### Added

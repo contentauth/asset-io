@@ -249,6 +249,45 @@ fn writable_pdf() -> Pdf {
 }
 
 #[test]
+fn a_filtered_existing_store_is_extended_by_its_decoded_manifests() {
+    use asset_io::testing::c2pa_store;
+
+    let first = c2pa_store(&[b"m1"]);
+    let full = c2pa_store(&[b"m1", b"m2"]);
+    for filter in ["/Filter /FlateDecode", "/Filter /Crypt", "/Filter [/Crypt]"] {
+        let stored = if filter.contains("Flate") {
+            deflate(&first)
+        } else {
+            first.clone()
+        };
+        let mut pdf = writable_pdf();
+        pdf.stream(
+            5,
+            &format!("/Type /EmbeddedFile /Length {} {filter}", stored.len()),
+            &stored,
+        );
+        pdf.finish("/Root 1 0 R");
+        let mut asset = Asset::from_source(Cursor::new(&pdf.bytes)).unwrap();
+        assert_eq!(asset.jumbf().unwrap().unwrap(), first);
+        let mut output = Cursor::new(Vec::new());
+        let predicted = asset
+            .write(&mut output, &Updates::new().set_c2pa(full.clone()))
+            .unwrap();
+        // The original encoded bytes are untouched, so earlier hashes stay valid.
+        assert!(output.get_ref().starts_with(&pdf.bytes), "{filter}");
+        let mut reparsed = Asset::from_source(output).unwrap();
+        same_layout(&predicted, reparsed.structure());
+        assert_eq!(reparsed.jumbf().unwrap().unwrap(), full, "{filter}");
+
+        // Repeating the decoded store adds nothing, and is refused.
+        assert!(matches!(
+            asset.write(&mut Vec::new(), &Updates::new().set_c2pa(first.clone())),
+            Err(Error::UnsupportedFeature(_))
+        ));
+    }
+}
+
+#[test]
 fn incremental_write_combinations_preserve_prefix_and_predict_exact_layout() {
     for xmp in 0..3 {
         for jumbf in 0..3 {
@@ -775,4 +814,182 @@ fn every_kind_of_document_conforms() {
     pdf.object(8, 0, b"<< /Producer (second) >>");
     pdf.finish(&format!("/Root 1 0 R /Prev {previous}"));
     c.check("two revisions", &pdf.bytes);
+}
+
+mod update_manifests {
+    use std::io::Cursor;
+
+    use asset_io::{labels, testing::c2pa_store, ItemKind, SegmentKind, Updates};
+
+    use super::{document, same_layout, Asset};
+
+    fn manifest(n: u8) -> Vec<u8> {
+        vec![n; 4000]
+    }
+
+    fn write(bytes: &[u8], updates: &Updates) -> Vec<u8> {
+        let mut asset = Asset::from_source(Cursor::new(bytes)).unwrap();
+        let mut output = Cursor::new(Vec::new());
+        let planned = asset.write(&mut output, updates).unwrap();
+        let output = output.into_inner();
+        let reparsed = Asset::from_source(Cursor::new(&output)).unwrap();
+        same_layout(&planned, reparsed.structure());
+        output
+    }
+
+    fn open(bytes: &[u8]) -> Asset<Cursor<&[u8]>> {
+        Asset::from_source(Cursor::new(bytes)).unwrap()
+    }
+
+    /// The store a reader sees: every revision's, combined.
+    fn combined(bytes: &[u8]) -> Option<Vec<u8>> {
+        open(bytes).jumbf().unwrap()
+    }
+
+    /// The bytes of the active store, as stored in the file.
+    fn active(bytes: &[u8]) -> Vec<u8> {
+        let mut asset = open(bytes);
+        let item = asset.structure.c2pa_item().unwrap().unwrap().clone();
+        asset.structure.read_item(&mut asset.source, &item).unwrap()
+    }
+
+    fn earlier(bytes: &[u8]) -> usize {
+        open(bytes)
+            .structure
+            .items_labelled(ItemKind::C2pa, labels::SUPERSEDED)
+            .count()
+    }
+
+    #[test]
+    fn an_update_adds_only_the_new_manifest() {
+        let manifests: Vec<_> = (1..=6).map(manifest).collect();
+        let mut bytes = write(
+            &document(b"<< /Type /Catalog >>", ""),
+            &Updates::new().set_c2pa(c2pa_store(&[&manifests[0]])),
+        );
+        let mut growth = Vec::new();
+        for n in 2..=manifests.len() {
+            let refs: Vec<&[u8]> = manifests[..n].iter().map(Vec::as_slice).collect();
+            let full = c2pa_store(&refs);
+            let next = write(&bytes, &Updates::new().set_c2pa(full.clone()));
+            growth.push(next.len() - bytes.len());
+
+            // The revision holds only what it adds; the reader sees the whole store.
+            assert_eq!(active(&next), c2pa_store(&[&manifests[n - 1]]));
+            assert_eq!(combined(&next), Some(full));
+            assert_eq!(earlier(&next), n - 1);
+            bytes = next;
+        }
+        // Each save adds about one manifest, however many came before.
+        let first = growth[0];
+        assert!(first > 4000, "{growth:?}");
+        for added in &growth {
+            assert!(added.abs_diff(first) < 100, "{growth:?}");
+        }
+    }
+
+    #[test]
+    fn earlier_stores_are_ordinary_data_to_a_hash() {
+        let first = write(
+            &document(b"<< /Type /Catalog >>", ""),
+            &Updates::new().set_c2pa(c2pa_store(&[b"m1"])),
+        );
+        let second = write(
+            &first,
+            &Updates::new().set_c2pa(c2pa_store(&[b"m1", b"m2"])),
+        );
+        let mut asset = open(&second);
+        let Asset { source, structure } = &mut asset;
+        let item = structure
+            .items_labelled(ItemKind::C2pa, labels::SUPERSEDED)
+            .next()
+            .unwrap();
+        assert_eq!(
+            structure.read_item(source, item).unwrap(),
+            c2pa_store(&[b"m1"])
+        );
+        let extent = item.extents().next().unwrap();
+        let segment = structure.segment(extent.segment()).unwrap();
+        assert_eq!(segment.kind(), SegmentKind::Other);
+    }
+
+    #[test]
+    fn a_store_that_extends_the_last_is_written_as_its_addition() {
+        let first = write(
+            &document(b"<< /Type /Catalog >>", ""),
+            &Updates::new().set_c2pa(c2pa_store(&[b"m1"])),
+        );
+        let full = c2pa_store(&[b"m1", b"m2"]);
+        let second = write(&first, &Updates::new().set_c2pa(full.clone()));
+        assert_eq!(active(&second), c2pa_store(&[b"m2"]));
+        assert_eq!(combined(&second), Some(full));
+    }
+
+    #[test]
+    fn a_store_that_adds_nothing_or_does_not_extend_the_last_is_refused() {
+        let first = write(
+            &document(b"<< /Type /Catalog >>", ""),
+            &Updates::new().set_c2pa(c2pa_store(&[b"m1", b"m2"])),
+        );
+        for store in [
+            c2pa_store(&[b"x1", b"x2"]),
+            c2pa_store(&[b"m1"]),
+            c2pa_store(&[b"m1", b"m2"]),
+            c2pa_store(&[]),
+            b"not-jumbf".to_vec(),
+        ] {
+            let mut asset = open(&first);
+            let result = asset.write(&mut Vec::new(), &Updates::new().set_c2pa(store));
+            assert!(
+                matches!(result, Err(asset_io::Error::UnsupportedFeature(_))),
+                "{result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_store_after_removal_starts_again() {
+        let first = write(
+            &document(b"<< /Type /Catalog >>", ""),
+            &Updates::new().set_c2pa(c2pa_store(&[b"m1"])),
+        );
+        let second = write(
+            &first,
+            &Updates::new().set_c2pa(c2pa_store(&[b"m1", b"m2"])),
+        );
+        let removed = write(&second, &Updates::new().remove_c2pa());
+        let fresh = c2pa_store(&[b"x1"]);
+        let third = write(&removed, &Updates::new().set_c2pa(fresh.clone()));
+        assert_eq!(active(&third), fresh);
+        assert_eq!(earlier(&third), 0);
+        assert_eq!(combined(&third), Some(fresh));
+    }
+
+    #[test]
+    fn a_removed_store_stays_removed() {
+        let first = write(
+            &document(b"<< /Type /Catalog >>", ""),
+            &Updates::new().set_c2pa(c2pa_store(&[b"m1"])),
+        );
+        let second = write(
+            &first,
+            &Updates::new().set_c2pa(c2pa_store(&[b"m1", b"m2"])),
+        );
+        let removed = write(&second, &Updates::new().remove_c2pa());
+        assert_eq!(open(&removed).structure.items_of(ItemKind::C2pa).count(), 0);
+        assert_eq!(combined(&removed), None);
+    }
+
+    #[test]
+    fn keeping_the_store_keeps_its_history() {
+        let first = write(
+            &document(b"<< /Type /Catalog >>", ""),
+            &Updates::new().set_c2pa(c2pa_store(&[b"m1"])),
+        );
+        let full = c2pa_store(&[b"m1", b"m2"]);
+        let second = write(&first, &Updates::new().set_c2pa(full.clone()));
+        let kept = write(&second, &Updates::new().set_xmp(b"<xmp/>".to_vec()));
+        assert_eq!(combined(&kept), Some(full));
+        assert_eq!(earlier(&kept), 1);
+    }
 }

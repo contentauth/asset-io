@@ -123,15 +123,15 @@ impl UpdateSegment for Structure {
     }
 }
 
-/// Where the payload of the `kind` store is.
+/// Where the payload of the `kind` store is. The active one, if there are earlier
+/// C2PA stores.
 pub fn payload_range(structure: &Structure, kind: ItemKind) -> Location {
-    let range = structure
-        .require_item(kind)
-        .unwrap()
-        .extents()
-        .next()
-        .unwrap()
-        .range();
+    let item = if kind == ItemKind::C2pa {
+        structure.c2pa_item().unwrap().unwrap()
+    } else {
+        structure.require_item(kind).unwrap()
+    };
+    let range = item.extents().next().unwrap().range();
     Location {
         offset: range.offset(),
         size: range.len(),

@@ -11,7 +11,8 @@ resolving the current catalog's `/Metadata` and document-level `/AF` C2PA
 association. Cross-reference streams remain compact tables; compressed object
 streams are decoded on demand, with only one object stream cached during
 parsing. It does not load the document, decode page content, or search for
-metadata markers. Unreferenced and superseded metadata are not exposed.
+metadata markers. Unreferenced and superseded XMP and attachments are not exposed;
+the C2PA stores of earlier revisions are (see below).
 Linearized PDFs may link forward through `/Prev`; repeated cross-reference offsets
 are rejected as cycles, and the same revision and resource limits apply.
 
@@ -26,6 +27,10 @@ no native zlib).
 FlateDecode and 8-bit single-component PNG predictors are supported; a
 compressed stream's item has the transfer encoding `TransferEncoding::Zlib`, with its
 predictor columns.
+Single `/Crypt` filters with absent or null `/DecodeParms`, or a parameter
+dictionary whose `/Name` is absent or `/Identity`, are supported as unencoded
+data (`TransferEncoding::Identity`). Named non-Identity crypt filters are
+rejected; this does not add encryption support.
 
 `Structure::read_item`, `read_range`, a `Sink`, and optional memory mapping
 (`slice_item`) give streaming or borrowed access to **physical file bytes**. For
@@ -43,7 +48,18 @@ conflicting subtype is rejected. For compatibility with legacy writers, the
 associated embedded stream may omit `/Type /EmbeddedFile`; an explicitly
 conflicting type is rejected. XMP streams still require `/Type /Metadata` and
 `/Subtype /XML`.
-Multiple document-level C2PA stores are rejected rather than concatenated.
+A catalog lists one document-level C2PA store in `/AF`, the one with the active
+manifest; more than one is rejected rather than concatenated. C2PA reads the stores
+of all of a document's revisions as one store, so the reader also follows the
+revisions back, and exposes each earlier revision's store as a C2PA item labelled
+`superseded` (in a segment of ordinary data, so a hash of the file counts it as
+such). `Structure::c2pa_item` is the latest store, and `Structure::c2pa_store` reads
+all of them in order. A store that already holds everything before it, as one
+written whole is, stands alone instead of being appended. A revision that adds more
+than one store, or that cannot be read, contributes none, and does not fail the
+document. The walk back ends at a revision whose catalog lists no store, so
+`remove_c2pa` leaves a document with no store, and a store added after it starts
+again; the removed stores remain in the file as ordinary data.
 
 Encryption, hybrid-reference files, external metadata streams, other filter
 types/chains, and other predictor layouts remain unsupported. Recognized
@@ -101,7 +117,21 @@ attachments are preserved. Strings retain their byte values, although their
 representation in rewritten dictionaries may change to hexadecimal.
 
 C2PA embedding creates a file specification referenced by both catalog `/AF`
-and `/Names /EmbeddedFiles`. The first writer supports flat, sorted name trees
+and `/Names /EmbeddedFiles`. Setting a store replaces the references to the one
+before, which stays in the file as an earlier revision's store.
+
+`set_c2pa(store)` writes only what `store` adds to the store the file already has.
+`store` is the whole store, as a caller builds it for any container, and it must
+begin with the manifests already in the file, byte for byte: the new revision's
+store then holds the new manifests alone, and a reader combines it with the earlier
+ones. Each save adds about the size of the new manifest, however many came before,
+and the earlier manifests are never repeated. A store that adds nothing, or that
+does not extend the existing one (the earlier manifests changed, or `store` is not
+JUMBF), is refused with `Error::UnsupportedFeature`: the only way to write it would
+be to repeat them. `as_update()` has no effect here. A store written before this
+rule, whole in each revision, is read as the latest one alone. If the existing
+store is not JUMBF, there are no manifests to repeat, and the new store is written
+as it is. The first writer supports flat, sorted name trees
 (including indirect dictionaries/arrays), not `/Kids` trees. Existing active
 C2PA attachments must already be registered in that tree; annotation-only or
 unregistered associations are not writable. Attachment-name collisions are

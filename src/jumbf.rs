@@ -215,6 +215,19 @@ pub fn extend(frozen: &[u8], addition: &[u8]) -> Result<Vec<u8>> {
     Ok(superbox(&frozen[f.description], children))
 }
 
+/// The store a reader sees when `later` is the store of a later revision than
+/// `earlier`. A `later` that already holds all of `earlier`'s manifests, byte for
+/// byte, is a whole store and stands alone; otherwise it holds only the manifests
+/// that revision added, and follows `earlier`. If the two cannot be combined (not
+/// JUMBF, or different superbox types), the later store stands alone, as it did
+/// before a reader looked at earlier revisions.
+pub(crate) fn combine_revisions(earlier: &[u8], later: &[u8]) -> Result<Vec<u8>> {
+    if earlier == later || matches!(addition_to(earlier, later), Ok(Some(_))) {
+        return Ok(later.to_vec());
+    }
+    Ok(extend(earlier, later).unwrap_or_else(|_| later.to_vec()))
+}
+
 /// A `jumb` box around `description` and `children`, using an extended length only
 /// when the size needs one.
 fn superbox<'a>(description: &[u8], children: impl Iterator<Item = &'a [u8]> + Clone) -> Vec<u8> {
@@ -331,5 +344,23 @@ mod tests {
             c[i] ^= 0xff;
             let _ = addition_to(&store, &c);
         }
+    }
+
+    #[test]
+    fn a_later_revision_is_a_whole_store_or_an_addition() {
+        let (m1, m2, m3) = (manifest(b"1"), manifest(b"2"), manifest(b"3"));
+        let earlier = superbox(&STORE, &[m1.clone(), m2.clone()]);
+        // One written whole, holding the earlier manifests, or repeating them
+        // exactly, stands alone.
+        let whole = superbox(&STORE, &[m1.clone(), m2.clone(), m3.clone()]);
+        assert_eq!(combine_revisions(&earlier, &whole).unwrap(), whole);
+        assert_eq!(combine_revisions(&earlier, &earlier).unwrap(), earlier);
+        // One that holds only what a revision added follows the earlier store.
+        let added = superbox(&STORE, std::slice::from_ref(&m3));
+        assert_eq!(combine_revisions(&earlier, &added).unwrap(), whole);
+        // Stores that cannot be combined leave the later one.
+        let other = superbox(&OTHER, std::slice::from_ref(&m3));
+        assert_eq!(combine_revisions(&earlier, &other).unwrap(), other);
+        assert_eq!(combine_revisions(b"first", b"second").unwrap(), b"second");
     }
 }
