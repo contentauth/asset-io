@@ -54,7 +54,7 @@ impl<R: Read + Seek> Asset<R> {
     }
 
     pub fn jumbf(&mut self) -> asset_io::Result<Option<Vec<u8>>> {
-        self.structure.store(&mut self.source)
+        self.structure.c2pa_store(&mut self.source)
     }
 
     /// Write with `updates`, returning the structure of the output.

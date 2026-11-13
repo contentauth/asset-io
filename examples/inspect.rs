@@ -17,7 +17,7 @@
 
 use std::{env, fs::File};
 
-use asset_io::{Asset, HandlerRegistry, Item, Name, Role, ScanLimits, TransferEncoding};
+use asset_io::{Asset, HandlerRegistry, Item, Name, Role, ScanLimits, SegmentId, TransferEncoding};
 
 fn main() -> asset_io::Result<()> {
     let Some(path) = env::args().nth(1) else {
@@ -74,7 +74,7 @@ fn main() -> asset_io::Result<()> {
     println!("\nSegments:");
     for (i, seg) in asset.segments().iter().enumerate() {
         let name = asset
-            .box_name(seg.name())
+            .box_name(SegmentId::from_index(i)?, seg)
             .map(|n| n.into_owned())
             .unwrap_or_default();
         println!(

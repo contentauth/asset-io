@@ -264,7 +264,7 @@ impl ContainerHandler for TiffHandler {
 
     fn compose(&self, kind: ItemKind, data: &[u8]) -> Result<Vec<u8>> {
         match kind {
-            ItemKind::Jumbf | ItemKind::Xmp => Ok(data.to_vec()),
+            ItemKind::C2pa | ItemKind::Xmp => Ok(data.to_vec()),
             _ => Err(Error::UnsupportedFormat),
         }
     }
@@ -312,7 +312,7 @@ impl ContainerHandler for ReadOnlyTiffHandler {
 
     fn compose(&self, kind: ItemKind, data: &[u8]) -> Result<Vec<u8>> {
         match kind {
-            ItemKind::Jumbf | ItemKind::Xmp => Ok(data.to_vec()),
+            ItemKind::C2pa | ItemKind::Xmp => Ok(data.to_vec()),
             _ => Err(Error::UnsupportedFormat),
         }
     }
@@ -700,7 +700,7 @@ fn metadata(state: &TiffLayout) -> impl Iterator<Item = (&Entry, ItemInfo)> {
     [
         state
             .manifest_entry()
-            .map(|e| (e, ItemInfo::jumbf().native_type(Name::Id(C2PA_TAG as u64)))),
+            .map(|e| (e, ItemInfo::c2pa().native_type(Name::Id(C2PA_TAG as u64)))),
         state
             .xmp_entry()
             .map(|e| (e, ItemInfo::xmp().native_type(Name::Id(XMP_TAG as u64)))),

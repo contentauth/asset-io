@@ -51,7 +51,8 @@ impl<'a> Chunk<'a> {
 /// Every byte the sink wants is delivered exactly once, in order, tagged with
 /// its segment and role. The sink decides what the bytes mean; asset-io attaches
 /// no hashing semantics to them. Return [`Error::UserCanceled`](crate::Error::UserCanceled) from `chunk` to
-/// stop the operation.
+/// stop the operation, or [`Error::callback`](crate::Error::callback) to stop it
+/// with an error of your own, which the operation returns unchanged.
 pub trait Sink {
     /// Called once before any bytes, with the complete structure of the asset being
     /// read or of the output being written.

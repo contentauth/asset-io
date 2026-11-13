@@ -28,7 +28,7 @@ use crate::{
     range::ByteRange,
     registry::HandlerRegistry,
     sink::Sink,
-    structure::{C2paBox, Structure},
+    structure::Structure,
     thumbnail::Thumbnail,
     updates::Updates,
     walk::Node,
@@ -55,13 +55,13 @@ use crate::{
 ///     );
 /// }
 /// let mut out = std::fs::File::create("out.jpg")?;
-/// asset.write(&mut out, &Updates::new().remove_jumbf(), &mut NullSink)?;
+/// asset.write(&mut out, &Updates::new().remove_c2pa(), &mut NullSink)?;
 /// # Ok(())
 /// # }
 /// ```
 ///
 /// It dereferences to its [`Structure`], so the methods that need no I/O
-/// (`items`, `segments`, `c2pa_hash`, `c2pa_data_hash_exclusions`, ...) are
+/// (`items`, `segments`, `c2pa_item`, `supports_named_boxes`, `c2pa_data_hash_exclusions`, ...) are
 /// available directly. Where both define a method, the `Asset` one reads from
 /// the held source.
 ///
@@ -184,34 +184,14 @@ impl<S: Read + Seek> Asset<S> {
         self.structure.walk(&mut *self.src()?, f)
     }
 
-    /// See [`Structure::jumbf_type`].
-    pub fn jumbf_type(&self, item: &Item) -> Result<Option<[u8; 16]>> {
-        self.structure.jumbf_type(&mut *self.src()?, item)
-    }
-
-    /// See [`Structure::store`].
-    pub fn store(&self) -> Result<Option<Vec<u8>>> {
-        self.structure.store(&mut *self.src()?)
-    }
-
-    /// See [`Structure::xmp`].
-    pub fn xmp(&self) -> Result<Option<Vec<u8>>> {
-        self.structure.xmp(&mut *self.src()?)
-    }
-
-    /// See [`Structure::c2pa_item`].
-    pub fn c2pa_item(&self) -> Result<Option<&Item>> {
-        self.structure.c2pa_item(&mut *self.src()?)
-    }
-
     /// See [`Structure::c2pa_store`].
     pub fn c2pa_store(&self) -> Result<Option<Vec<u8>>> {
         self.structure.c2pa_store(&mut *self.src()?)
     }
 
-    /// See [`Structure::c2pa_boxes`].
-    pub fn c2pa_boxes(&self) -> Result<Vec<C2paBox>> {
-        self.structure.c2pa_boxes(&mut *self.src()?)
+    /// See [`Structure::xmp`].
+    pub fn xmp(&self) -> Result<Option<Vec<u8>>> {
+        self.structure.xmp(&mut *self.src()?)
     }
 
     /// See [`Structure::embedded_thumbnail`].

@@ -21,7 +21,7 @@ use std::{
 /// What to do with one kind of metadata when writing an asset.
 ///
 /// By default, all metadata is kept unchanged. A handler reads it from
-/// [`Updates::xmp`] and [`Updates::jumbf`].
+/// [`Updates::xmp`] and [`Updates::c2pa`].
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub enum MetadataUpdate {
@@ -47,7 +47,7 @@ pub enum Existing<'a> {
     Replace(&'a [u8]),
 }
 
-/// Applies a [`MetadataUpdate`] to the items of one kind of metadata (XMP, JUMBF)
+/// Applies a [`MetadataUpdate`] to the items of one kind of metadata (XMP, C2PA)
 /// as a handler meets them, and says what is left to insert.
 ///
 /// A handler asks [`existing`](Self::existing) for each item of that kind in the
@@ -131,9 +131,9 @@ impl<'a> MetadataSlot<'a> {
 /// // Remove XMP, keep everything else
 /// let no_xmp = Updates::new().remove_xmp();
 ///
-/// // Set new JUMBF, remove XMP, keep everything else
+/// // Set a new C2PA manifest store, remove XMP, keep everything else
 /// let updates = Updates::new()
-///     .set_jumbf(b"new jumbf data".to_vec())
+///     .set_c2pa(b"new manifest store".to_vec())
 ///     .remove_xmp();
 /// ```
 #[derive(Debug, Default)]
@@ -141,19 +141,15 @@ pub struct Updates {
     /// XMP data update strategy (use builder methods to modify)
     pub(crate) xmp: MetadataUpdate,
 
-    /// JUMBF data update strategy (use builder methods to modify)
-    pub(crate) jumbf: MetadataUpdate,
+    /// C2PA manifest store update strategy (use builder methods to modify)
+    pub(crate) c2pa: MetadataUpdate,
 
-    /// The JUMBF being set adds to the existing store
+    /// The store being set adds to the existing store
     /// (see [`Updates::as_update`]).
-    pub(crate) jumbf_is_update: bool,
-
-    /// The JUMBF type the JUMBF update applies to; `None` means any JUMBF
-    /// (see [`Updates::set_jumbf`]).
-    pub(crate) jumbf_scope: Option<[u8; 16]>,
+    pub(crate) c2pa_is_update: bool,
 
     /// Set by [`Updates::remove_all`], for handlers that remove more than XMP and
-    /// JUMBF then.
+    /// the C2PA store then.
     pub(crate) remove_all: bool,
 
     /// Options a container defines for itself (see [`Updates::set_extension`]).
@@ -220,39 +216,25 @@ impl Updates {
         self
     }
 
-    /// Set JUMBF metadata to a new value.
+    /// Set the C2PA manifest store (a JUMBF superbox) to a new value.
     ///
-    /// The JUMBF replaces the existing JUMBF of the same type: the type in the
-    /// description box of `jumbf`, which this crate compares but does not interpret.
-    /// JUMBF of other types is left as it is, and if there is none of the same type
-    /// the new JUMBF is added. If `jumbf` has no readable type, it replaces all JUMBF.
-    ///
-    /// This applies to containers that carry JUMBF of any type, such as JPEG.
-    /// Containers with an element reserved for one store (the PNG `caBX` chunk, the
-    /// ISO BMFF C2PA box) replace that element.
+    /// The store replaces the existing one, or is added where the container's C2PA
+    /// embedding puts it. Other JUMBF, which containers such as JPEG may carry
+    /// alongside, is left as it is. A container that carries JUMBF of any type
+    /// tells a store by its superbox type, so there the store must have the type
+    /// [`C2PA_STORE_TYPE`](crate::jumbf::C2PA_STORE_TYPE).
     ///
     /// # Example
     ///
     /// ```no_run
     /// use asset_io::Updates;
     ///
-    /// let updates = Updates::new().set_jumbf(b"jumbf data".to_vec());
+    /// let updates = Updates::new().set_c2pa(b"manifest store".to_vec());
     /// ```
-    pub fn set_jumbf(mut self, jumbf: Vec<u8>) -> Self {
-        self.jumbf_scope = crate::jumbf::superbox_type(&jumbf);
-        self.jumbf = MetadataUpdate::Set(jumbf);
-        self.jumbf_is_update = false;
+    pub fn set_c2pa(mut self, store: Vec<u8>) -> Self {
+        self.c2pa = MetadataUpdate::Set(store);
+        self.c2pa_is_update = false;
         self
-    }
-
-    /// Whether the JUMBF update applies to existing JUMBF of type `ty`, as a
-    /// container that carries JUMBF of any type reports it. A type that is not
-    /// known is never touched by an update limited to one type.
-    pub fn jumbf_targets(&self, ty: Option<[u8; 16]>) -> bool {
-        match self.jumbf_scope {
-            None => true,
-            Some(scope) => ty == Some(scope),
-        }
     }
 
     /// What to do with the XMP.
@@ -260,21 +242,15 @@ impl Updates {
         &self.xmp
     }
 
-    /// What to do with the JUMBF.
-    pub fn jumbf(&self) -> &MetadataUpdate {
-        &self.jumbf
+    /// What to do with the C2PA manifest store.
+    pub fn c2pa(&self) -> &MetadataUpdate {
+        &self.c2pa
     }
 
-    /// Whether the JUMBF being set is an update to the existing store; see
+    /// Whether the store being set is an update to the existing store; see
     /// [`as_update`](Self::as_update).
-    pub fn is_jumbf_update(&self) -> bool {
-        self.jumbf_is_update
-    }
-
-    /// The JUMBF type the JUMBF update is limited to, or `None` for any JUMBF; see
-    /// [`set_jumbf`](Self::set_jumbf).
-    pub fn jumbf_scope(&self) -> Option<[u8; 16]> {
-        self.jumbf_scope
+    pub fn is_c2pa_update(&self) -> bool {
+        self.c2pa_is_update
     }
 
     /// Whether these updates came from [`remove_all`](Self::remove_all). A handler
@@ -309,9 +285,9 @@ impl Updates {
         self
     }
 
-    /// Mark the JUMBF given to [`set_jumbf`](Self::set_jumbf) as an update
-    /// manifest added to the existing store: `set_jumbf(store).as_update()`. Call it
-    /// after `set_jumbf`; a later `set_jumbf`, `remove_jumbf` or `keep_jumbf`
+    /// Mark the store given to [`set_c2pa`](Self::set_c2pa) as an update
+    /// manifest added to the existing store: `set_c2pa(store).as_update()`. Call it
+    /// after `set_c2pa`; a later `set_c2pa`, `remove_c2pa` or `keep_c2pa`
     /// clears it.
     ///
     /// Most containers ignore this. A container that keeps the original store apart
@@ -322,50 +298,37 @@ impl Updates {
     /// needed because a standard manifest added to a signed file extends the store
     /// in the same way, and must not be treated as an update.
     pub fn as_update(mut self) -> Self {
-        self.jumbf_is_update = true;
+        self.c2pa_is_update = true;
         self
     }
 
-    /// Remove all JUMBF metadata, of every type. To remove one type and keep the
-    /// rest, use [`remove_jumbf_of`](Self::remove_jumbf_of).
+    /// Remove the C2PA manifest store. Other JUMBF is kept.
     ///
     /// # Example
     ///
     /// ```no_run
     /// use asset_io::Updates;
     ///
-    /// let updates = Updates::new().remove_jumbf();
+    /// let updates = Updates::new().remove_c2pa();
     /// ```
-    pub fn remove_jumbf(mut self) -> Self {
-        self.jumbf = MetadataUpdate::Remove;
-        self.jumbf_scope = None;
-        self.jumbf_is_update = false;
+    pub fn remove_c2pa(mut self) -> Self {
+        self.c2pa = MetadataUpdate::Remove;
+        self.c2pa_is_update = false;
         self
     }
 
-    /// Remove the JUMBF of one type (see [`Item::jumbf_type`](crate::Item::jumbf_type))
-    /// and keep any other. Containers with an element reserved for one store
-    /// remove that element.
-    pub fn remove_jumbf_of(mut self, jumbf_type: [u8; 16]) -> Self {
-        self.jumbf = MetadataUpdate::Remove;
-        self.jumbf_scope = Some(jumbf_type);
-        self.jumbf_is_update = false;
-        self
-    }
-
-    /// Keep existing JUMBF metadata (explicit, same as default)
+    /// Keep the existing C2PA manifest store (explicit, same as default)
     ///
     /// # Example
     ///
     /// ```no_run
     /// use asset_io::Updates;
     ///
-    /// let updates = Updates::new().keep_jumbf();
+    /// let updates = Updates::new().keep_c2pa();
     /// ```
-    pub fn keep_jumbf(mut self) -> Self {
-        self.jumbf = MetadataUpdate::Keep;
-        self.jumbf_scope = None;
-        self.jumbf_is_update = false;
+    pub fn keep_c2pa(mut self) -> Self {
+        self.c2pa = MetadataUpdate::Keep;
+        self.c2pa_is_update = false;
         self
     }
 
@@ -386,7 +349,7 @@ impl Updates {
     /// let updates = Updates::remove_all();
     /// ```
     pub fn remove_all() -> Self {
-        let mut updates = Self::new().remove_xmp().remove_jumbf();
+        let mut updates = Self::new().remove_xmp().remove_c2pa();
         updates.remove_all = true;
         updates
     }
@@ -399,12 +362,12 @@ impl Updates {
         Self::new().set_xmp(xmp)
     }
 
-    /// Create updates that set new JUMBF (legacy constructor)
+    /// Create updates that set a new C2PA manifest store (legacy constructor)
     ///
-    /// Prefer using `Updates::new().set_jumbf(jumbf)` for consistency with
+    /// Prefer using `Updates::new().set_c2pa(store)` for consistency with
     /// the builder pattern.
-    pub fn with_jumbf(jumbf: Vec<u8>) -> Self {
-        Self::new().set_jumbf(jumbf)
+    pub fn with_c2pa(store: Vec<u8>) -> Self {
+        Self::new().set_c2pa(store)
     }
 }
 
@@ -431,7 +394,7 @@ mod tests {
 
     #[test]
     fn remove_all_is_remembered() {
-        assert!(!Updates::new().remove_xmp().remove_jumbf().removes_all());
+        assert!(!Updates::new().remove_xmp().remove_c2pa().removes_all());
         assert!(Updates::remove_all().removes_all());
     }
 }

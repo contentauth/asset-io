@@ -23,24 +23,28 @@ use crate::{range::ByteRange, segment::Name, structure::SegmentId, transfer::Tra
 pub enum ItemKind {
     /// XMP (ISO 16684-1).
     Xmp,
-    /// A JUMBF superbox (ISO/IEC 19566-5), such as a C2PA manifest store.
-    Jumbf,
     /// EXIF, whose data is TIFF.
     Exif,
+    /// A C2PA manifest store, whose data is JUMBF. Where the container reserves an
+    /// element for it (PNG `caBX`, the ISO BMFF C2PA box), that element is the item;
+    /// where the container carries JUMBF of any type (JPEG APP11), the superbox type
+    /// tells. Other JUMBF is [`Other`](Self::Other) with [`Encoding::Jumbf`].
+    C2pa,
     /// A self-contained file stored inside the asset, or a reference to one.
     EmbeddedAsset,
-    /// Anything else the container exposes; see its native identifiers.
+    /// Anything else the container exposes; see its [encoding](Item::encoding)
+    /// and native identifiers.
     Other,
 }
 
 impl ItemKind {
-    /// A string for this kind: `"xmp"`, `"jumbf"`, `"exif"`, `"embedded_asset"`,
+    /// A string for this kind: `"xmp"`, `"exif"`, `"c2pa"`, `"embedded_asset"`,
     /// `"other"`.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Xmp => "xmp",
-            Self::Jumbf => "jumbf",
             Self::Exif => "exif",
+            Self::C2pa => "c2pa",
             Self::EmbeddedAsset => "embedded_asset",
             Self::Other => "other",
         }
@@ -49,7 +53,7 @@ impl ItemKind {
     /// Whether items of this kind are metadata or assets.
     pub fn category(&self) -> ItemCategory {
         match self {
-            Self::Xmp | Self::Jumbf | Self::Exif => ItemCategory::Metadata,
+            Self::Xmp | Self::Exif | Self::C2pa => ItemCategory::Metadata,
             Self::EmbeddedAsset => ItemCategory::Asset,
             Self::Other => ItemCategory::Other,
         }
@@ -244,14 +248,14 @@ impl ItemInfo {
         Self::new(ItemKind::Xmp, Encoding::Xml)
     }
 
-    /// A JUMBF superbox.
-    pub fn jumbf() -> Self {
-        Self::new(ItemKind::Jumbf, Encoding::Jumbf)
-    }
-
     /// EXIF (TIFF) data.
     pub fn exif() -> Self {
         Self::new(ItemKind::Exif, Encoding::Tiff)
+    }
+
+    /// A C2PA manifest store (JUMBF).
+    pub fn c2pa() -> Self {
+        Self::new(ItemKind::C2pa, Encoding::Jumbf)
     }
 
     /// Set the [transfer encoding](Item::transfer).
@@ -260,9 +264,12 @@ impl ItemInfo {
         self
     }
 
-    /// A JUMBF item whose superbox type has not been recorded.
+    /// A JUMBF item, other than a C2PA store, whose superbox type has not been
+    /// recorded.
     pub(crate) fn lacks_jumbf_type(&self) -> bool {
-        self.kind == ItemKind::Jumbf && self.jumbf_type.is_none()
+        self.kind == ItemKind::Other
+            && self.encoding == Encoding::Jumbf
+            && self.jumbf_type.is_none()
     }
 
     pub(crate) fn transfer_encoding(&self) -> &TransferEncoding {
@@ -384,11 +391,11 @@ impl Item {
     }
 
     /// The type of a JUMBF superbox, from its description box, when the container
-    /// recorded it while parsing: JPEG does, as it carries JUMBF of any type.
-    /// `None` for other kinds, for containers that reserve an element for one
-    /// kind of store (PNG `caBX`, the BMFF C2PA box), and for data that is not a
-    /// superbox. [`Structure::jumbf_type`](crate::Structure::jumbf_type) reads it
-    /// from the stream when needed. This crate attaches no meaning to any type.
+    /// recorded it while parsing: containers that carry JUMBF of any type (JPEG)
+    /// do, to tell a [C2PA](ItemKind::C2pa) store from [other](ItemKind::Other)
+    /// JUMBF. `None` for items that are not JUMBF, for containers that reserve an
+    /// element for the C2PA store (PNG `caBX`, the BMFF C2PA box), and for data that
+    /// is not a superbox.
     pub fn jumbf_type(&self) -> Option<[u8; 16]> {
         self.info.jumbf_type
     }
@@ -450,7 +457,9 @@ mod tests {
     #[test]
     fn kinds_map_to_categories_and_strings() {
         assert_eq!(ItemKind::Xmp.category(), ItemCategory::Metadata);
-        assert_eq!(ItemKind::Jumbf.category(), ItemCategory::Metadata);
+        assert_eq!(ItemKind::C2pa.category(), ItemCategory::Metadata);
+        assert_eq!(ItemKind::C2pa.as_str(), "c2pa");
+        assert_eq!(ItemInfo::c2pa().encoding, Encoding::Jumbf);
         assert_eq!(ItemKind::Exif.category(), ItemCategory::Metadata);
         assert_eq!(ItemKind::EmbeddedAsset.category(), ItemCategory::Asset);
         assert_eq!(ItemKind::Other.category(), ItemCategory::Other);

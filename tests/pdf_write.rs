@@ -48,7 +48,7 @@ fn unregistered_attachment_edits_fail_but_noop_copies_exactly() {
     assert!(matches!(
         asset.write_with_sink(
             &mut output,
-            &Updates::new().set_jumbf(b"replacement".to_vec()),
+            &Updates::new().set_c2pa(b"replacement".to_vec()),
             &mut called
         ),
         Err(Error::UnsupportedFeature(_))
@@ -66,7 +66,7 @@ fn unregistered_attachment_edits_fail_but_noop_copies_exactly() {
     assert!(matches!(
         asset
             .structure()
-            .update_segment(&mut file, ItemKind::Jumbf, b"bad".to_vec()),
+            .update_segment(&mut file, ItemKind::C2pa, b"bad".to_vec()),
         Err(Error::UnsupportedFeature(_))
     ));
     assert_eq!(file.get_ref(), &original);
@@ -106,7 +106,7 @@ fn a_sink_sees_the_output_with_superseded_data_as_ordinary_bytes() {
     let mut pdf = writable_pdf();
     pdf.finish("/Root 1 0 R");
     let mut asset = Asset::from_source(Cursor::new(pdf.bytes)).unwrap();
-    let updates = Updates::new().set_jumbf(b"new-manifest".to_vec());
+    let updates = Updates::new().set_c2pa(b"new-manifest".to_vec());
     let mut output = Vec::new();
     let mut sink = SkipStores(Vec::new());
     let structure = asset
@@ -116,7 +116,7 @@ fn a_sink_sees_the_output_with_superseded_data_as_ordinary_bytes() {
     let reparsed = Asset::from_source(Cursor::new(&output)).unwrap();
     same_layout(&structure, reparsed.structure());
     let mut expected = Vec::new();
-    for kind in [ItemKind::Xmp, ItemKind::Jumbf] {
+    for kind in [ItemKind::Xmp, ItemKind::C2pa] {
         let range = payload_range(reparsed.structure(), kind);
         // The ranges are collected, then removed from the end backwards below.
         expected.push((range.offset as usize, range.end_offset() as usize));
@@ -140,7 +140,7 @@ fn signed_certified_and_unsupported_attachment_trees_reject_before_output() {
         b"<< /Type /Catalog /Names << /EmbeddedFiles << /Names [(Content Credentials) 2 0 R] >> >> >>",
     ] {
         let mut asset = Asset::from_source(Cursor::new(document(catalog, ""))).unwrap();
-        let updates = Updates::new().set_jumbf(b"new".to_vec());
+        let updates = Updates::new().set_c2pa(b"new".to_vec());
         let mut output = b"unchanged".to_vec();
         struct Called(bool);
         impl Sink for Called {
@@ -209,7 +209,7 @@ fn compressed_patches_and_changed_source_length_are_rejected_before_output() {
         .write(
             &mut shorter,
             &mut output,
-            &Updates::new().set_jumbf(b"new".to_vec()),
+            &Updates::new().set_c2pa(b"new".to_vec()),
             &mut asset_io::NullSink
         )
         .is_err());
@@ -224,7 +224,7 @@ fn the_written_file_reparses_to_what_was_planned_and_to_what_the_sink_saw() {
     let mut asset = Asset::from_source(Cursor::new(pdf.bytes)).unwrap();
     let updates = Updates::new()
         .set_xmp(b"<new/>".to_vec())
-        .set_jumbf(b"new-manifest".to_vec());
+        .set_c2pa(b"new-manifest".to_vec());
     let planned = asset.structure.plan(&mut asset.source, &updates).unwrap();
     let mut output = Vec::new();
     let written = asset.write(&mut output, &updates).unwrap();
@@ -263,8 +263,8 @@ fn incremental_write_combinations_preserve_prefix_and_predict_exact_layout() {
             };
             updates = match jumbf {
                 0 => updates,
-                1 => updates.remove_jumbf(),
-                _ => updates.set_jumbf(b"new-manifest".to_vec()),
+                1 => updates.remove_c2pa(),
+                _ => updates.set_c2pa(b"new-manifest".to_vec()),
             };
             let mut output = Cursor::new(Vec::new());
             let predicted = asset.write(&mut output, &updates).unwrap();
@@ -315,7 +315,7 @@ fn new_metadata_and_multiple_revisions_round_trip_and_empty_payloads_read_as_abs
                 &mut output,
                 &Updates::new()
                     .set_xmp(data.to_vec())
-                    .set_jumbf(data.to_vec()),
+                    .set_c2pa(data.to_vec()),
             )
             .unwrap();
         assert!(output.get_ref().starts_with(&bytes));
@@ -330,7 +330,7 @@ fn new_metadata_and_multiple_revisions_round_trip_and_empty_payloads_read_as_abs
     let mut asset = Asset::from_source(Cursor::new(&bytes)).unwrap();
     let mut output = Cursor::new(Vec::new());
     let structure = asset
-        .write(&mut output, &Updates::new().remove_xmp().remove_jumbf())
+        .write(&mut output, &Updates::new().remove_xmp().remove_c2pa())
         .unwrap();
     assert!(output.get_ref().starts_with(&bytes));
     let mut asset = Asset::from_source(output).unwrap();
@@ -365,7 +365,7 @@ fn writer_accepts_compressed_catalog_and_keeps_or_replaces_flate_metadata() {
         pdf.finish_stream("/Root 1 0 R", &[(1, 3, 0)], true, false);
         let original = pdf.bytes;
         let mut asset = Asset::from_source(Cursor::new(&original)).unwrap();
-        let updates = Updates::new().set_jumbf(b"new-manifest".to_vec());
+        let updates = Updates::new().set_c2pa(b"new-manifest".to_vec());
         let updates = if replace {
             updates.set_xmp(b"plain-xmp".to_vec())
         } else {
@@ -397,21 +397,21 @@ fn exact_length_finalization_changes_only_reserved_bytes() {
         .write(
             &mut output,
             &Updates::new()
-                .set_jumbf(vec![0; 32])
+                .set_c2pa(vec![0; 32])
                 .set_xmp(b"<xmp/>".to_vec()),
         )
         .unwrap();
     for length in [0, 31, 33] {
         let before = output.get_ref().clone();
         assert!(structure
-            .update_segment(&mut output, ItemKind::Jumbf, vec![1; length])
+            .update_segment(&mut output, ItemKind::C2pa, vec![1; length])
             .is_err());
         assert_eq!(&before, output.get_ref());
     }
     let before = output.get_ref().clone();
-    let range = payload_range(&structure, ItemKind::Jumbf);
+    let range = payload_range(&structure, ItemKind::C2pa);
     structure
-        .update_segment(&mut output, ItemKind::Jumbf, vec![7; 32])
+        .update_segment(&mut output, ItemKind::C2pa, vec![7; 32])
         .unwrap();
     assert_eq!(
         &before[..range.offset as usize],
@@ -494,11 +494,11 @@ fn unsigned_forms_and_empty_signature_fields_are_preserved() {
             let mut asset = Asset::from_source(Cursor::new(&original)).unwrap();
             let mut output = Cursor::new(Vec::new());
             let predicted = asset
-                .write(&mut output, &Updates::new().set_jumbf(vec![0; 32]))
+                .write(&mut output, &Updates::new().set_c2pa(vec![0; 32]))
                 .unwrap();
             assert!(output.get_ref().starts_with(&original));
             predicted
-                .update_segment(&mut output, ItemKind::Jumbf, vec![1; 32])
+                .update_segment(&mut output, ItemKind::C2pa, vec![1; 32])
                 .unwrap();
             let mut reparsed = Asset::from_source(output).unwrap();
             same_layout(&predicted, reparsed.structure());
@@ -551,7 +551,7 @@ fn populated_signature_fields_including_inherited_types_block_edits_and_patches(
             let mut asset = Asset::from_source(Cursor::new(bytes)).unwrap();
             let mut output = Cursor::new(b"unchanged".to_vec());
             let error = asset
-                .write(&mut output, &Updates::new().set_jumbf(vec![0; 32]))
+                .write(&mut output, &Updates::new().set_c2pa(vec![0; 32]))
                 .unwrap_err();
             assert!(
                 matches!(error, Error::UnsupportedFeature(reason) if reason.contains("populated signature")),
@@ -560,7 +560,7 @@ fn populated_signature_fields_including_inherited_types_block_edits_and_patches(
             // There is no store to patch, and the document could not be edited anyway.
             assert!(asset
                 .structure()
-                .update_segment(&mut output, ItemKind::Jumbf, vec![0; 32])
+                .update_segment(&mut output, ItemKind::C2pa, vec![0; 32])
                 .is_err());
             assert_eq!(output.get_ref(), b"unchanged");
         }
@@ -695,7 +695,7 @@ fn malformed_attachment_tree_does_not_hide_readable_metadata_but_blocks_writing(
     assert_eq!(asset.xmp().unwrap().unwrap(), b"<xmp/>");
     let mut output = Cursor::new(b"unchanged".to_vec());
     assert!(matches!(
-        asset.write(&mut output, &Updates::new().remove_jumbf()),
+        asset.write(&mut output, &Updates::new().remove_c2pa()),
         Err(Error::InvalidFormat(_))
     ));
     assert_eq!(output.get_ref(), b"unchanged");
@@ -705,7 +705,8 @@ fn malformed_attachment_tree_does_not_hide_readable_metadata_but_blocks_writing(
 fn every_kind_of_document_conforms() {
     use asset_io::testing::Conformance;
 
-    let c = Conformance::new(asset_io::containers::pdf::handler()).jumbf(Some(b"STORE".to_vec()));
+    let c = Conformance::new(asset_io::containers::pdf::handler())
+        .c2pa(Some(asset_io::testing::c2pa_store_of_len(64)));
     let finished = |mut pdf: Pdf| {
         pdf.finish("/Root 1 0 R /ID [<0102> <0304>] /Info 8 0 R");
         pdf.bytes

@@ -165,7 +165,7 @@ struct AssetIoBuffer *asset_io_item_bytes(struct AssetIoAsset *asset,
                                           uint32_t decoded);
 
 /**
- * Extract XMP (kind=1) or logical JUMBF store (kind=2).
+ * Extract XMP (kind=1) or the logical C2PA manifest store (kind=2).
  * Absence is a NotFound error, not an empty buffer; ambiguity remains an error.
  */
 ASSET_IO_API extern
@@ -173,7 +173,8 @@ struct AssetIoBuffer *asset_io_metadata_bytes(struct AssetIoAsset *asset,
                                               uint32_t kind);
 
 /**
- * Read a JUMBF item's type as 16 bytes; error if not known/a superbox.
+ * A JUMBF item's superbox type as 16 bytes, as the container recorded it while
+ * parsing; NotFound if it did not (see `Item::jumbf_type`).
  */
 ASSET_IO_API extern
 struct AssetIoBuffer *asset_io_item_jumbf_type(struct AssetIoAsset *asset,
@@ -182,8 +183,8 @@ struct AssetIoBuffer *asset_io_item_jumbf_type(struct AssetIoAsset *asset,
 ASSET_IO_API extern struct AssetIoUpdates *asset_io_updates_new(void);
 
 /**
- * kind: 1=XMP, 2=JUMBF. action: 0=keep, 1=set, 2=remove.
- * Data is copied for set; ignored otherwise. JUMBF set automatically scopes to its superbox type.
+ * kind: 1=XMP, 2=C2PA manifest store. action: 0=keep, 1=set, 2=remove.
+ * Data is copied for set; ignored otherwise. Other JUMBF is never changed.
  */
 ASSET_IO_API extern
 int32_t asset_io_updates_metadata(struct AssetIoUpdates *updates,
@@ -193,20 +194,12 @@ int32_t asset_io_updates_metadata(struct AssetIoUpdates *updates,
                                   size_t len);
 
 /**
- * Remove only JUMBF of the supplied 16-byte type. len must equal 16.
- */
-ASSET_IO_API extern
-int32_t asset_io_updates_remove_jumbf_type(struct AssetIoUpdates *updates,
-                                           const uint8_t *uuid,
-                                           size_t len);
-
-/**
  * Apply remove-all semantics including container-specific metadata defaults.
  */
 ASSET_IO_API extern int32_t asset_io_updates_remove_all(struct AssetIoUpdates *updates);
 
 /**
- * Mark the currently set JUMBF as an update manifest (core BMFF semantics).
+ * Mark the currently set C2PA store as an update manifest (core BMFF semantics).
  */
 ASSET_IO_API extern int32_t asset_io_updates_as_update(struct AssetIoUpdates *updates);
 

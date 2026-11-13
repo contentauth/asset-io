@@ -25,15 +25,10 @@
 
 use std::{fs, path::PathBuf};
 
-use asset_io::{testing::Conformance, HandlerRegistry};
-
-/// A JUMBF superbox of `n` bytes.
-fn jumbf(n: usize) -> Vec<u8> {
-    let mut v = vec![0x5au8; n];
-    v[0..4].copy_from_slice(&(n as u32).to_be_bytes());
-    v[4..8].copy_from_slice(b"jumb");
-    v
-}
+use asset_io::{
+    testing::{c2pa_store_of_len, Conformance},
+    HandlerRegistry,
+};
 
 #[test]
 fn every_fixture_conforms_to_its_handler() {
@@ -59,7 +54,7 @@ fn every_fixture_conforms_to_its_handler() {
             continue;
         }
         Conformance::new(handler.clone())
-            .jumbf(Some(jumbf(2048)))
+            .c2pa(Some(c2pa_store_of_len(2048)))
             .mutations(small)
             .check(&path.display().to_string(), &bytes);
         checked += 1;

@@ -120,7 +120,7 @@ pub(super) fn plan<'a>(source: &Structure, updates: &'a Updates) -> Result<Write
     let old_manifest = original.manifest_entry();
     let old_xmp = original.xmp_entry();
     let change_xmp = changed(updates.xmp(), old_xmp)?;
-    let change_manifest = changed(updates.jumbf(), old_manifest)?;
+    let change_manifest = changed(updates.c2pa(), old_manifest)?;
     if !change_xmp && !change_manifest {
         return emit(
             source,
@@ -132,7 +132,7 @@ pub(super) fn plan<'a>(source: &Structure, updates: &'a Updates) -> Result<Write
     }
     // Placeholder filling must preserve the IFD and every other byte.
     if !change_xmp {
-        if let (MetadataUpdate::Set(bytes), Some(entry)) = (updates.jumbf(), old_manifest) {
+        if let (MetadataUpdate::Set(bytes), Some(entry)) = (updates.c2pa(), old_manifest) {
             if entry.count == bytes.len() as u64 {
                 let range = entry.value.ok_or(Error::NotFound {
                     what: "TIFF manifest range",
@@ -183,7 +183,7 @@ pub(super) fn plan<'a>(source: &Structure, updates: &'a Updates) -> Result<Write
                 .insert(XMP_TAG, tag_entry(&state, XMP_TAG, bytes.len() as u64)?);
         }
     }
-    let manifest = match updates.jumbf() {
+    let manifest = match updates.c2pa() {
         MetadataUpdate::Keep => old_manifest.and_then(|e| e.value).map(Data::Copy),
         MetadataUpdate::Remove => None,
         MetadataUpdate::Set(bytes) => Some(Data::New(bytes.as_slice())),

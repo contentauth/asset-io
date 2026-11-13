@@ -18,16 +18,6 @@ use std::io::Cursor;
 use asset_io::{container_api, testing::Conformance, HandlerRegistry, Structure};
 use libfuzzer_sys::fuzz_target;
 
-/// A JUMBF with a description box, so a format that wants a type has one.
-fn jumbf() -> Vec<u8> {
-    let mut v = vec![0x5au8; 200];
-    v[0..4].copy_from_slice(&200u32.to_be_bytes());
-    v[4..8].copy_from_slice(b"jumb");
-    v[8..12].copy_from_slice(&192u32.to_be_bytes());
-    v[12..16].copy_from_slice(b"jumd");
-    v
-}
-
 // Whatever parses must keep the promises every handler makes: the structure tiles
 // the stream, a write that changes nothing is byte-identical, plan, write and
 // stepper agree, the sink sees every byte once, and what was set reads back.
@@ -42,7 +32,7 @@ fuzz_target!(|data: &[u8]| {
         },
     };
     Conformance::new(container_api::handler(&structure).clone())
-        .jumbf(Some(jumbf()))
+        .c2pa(Some(asset_io::testing::c2pa_store_of_len(200)))
         .mutations(false)
         .check_if_parses("fuzz input", data);
 });

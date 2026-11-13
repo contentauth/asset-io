@@ -91,7 +91,7 @@ fn flate_metadata_is_decoded_only_on_request() {
     };
     for (kind, content) in [
         (ItemKind::Xmp, b"<compressed-xmp/>".as_slice()),
-        (ItemKind::Jumbf, b"compressed manifest".as_slice()),
+        (ItemKind::C2pa, b"compressed manifest".as_slice()),
     ] {
         let item = asset.structure.require_item(kind).unwrap();
         assert_eq!(*item.transfer(), flate);
@@ -985,7 +985,7 @@ fn a_sink_that_skips_the_store_sees_exactly_the_rest() {
     let mut asset = Asset::from_source(Cursor::new(pdf.bytes.clone())).unwrap();
     let store = asset
         .structure()
-        .require_item(ItemKind::Jumbf)
+        .require_item(ItemKind::C2pa)
         .unwrap()
         .extents()
         .next()

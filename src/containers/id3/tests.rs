@@ -14,10 +14,7 @@
 use std::io::Cursor;
 
 use super::*;
-use crate::{
-    testing::{write, Conformance},
-    NullSink,
-};
+use crate::testing::{c2pa_store_of_len, rewrite, Conformance};
 
 // ── Builders ─────────────────────────────────────────────────────────────────
 
@@ -66,13 +63,6 @@ fn tag(major: u8, flags: u8, frames: &[Vec<u8>], pad: usize) -> Vec<u8> {
     v
 }
 
-fn jumbf_stub(n: usize) -> Vec<u8> {
-    let mut v = vec![0u8; n];
-    v[0..4].copy_from_slice(&(n as u32).to_be_bytes());
-    v[4..8].copy_from_slice(b"jumb");
-    v
-}
-
 fn flac() -> Vec<u8> {
     let mut v = b"fLaC".to_vec();
     v.extend_from_slice(&[0x80, 0, 0, 34]);
@@ -98,16 +88,7 @@ fn parse(bytes: &[u8]) -> Result<Structure> {
 }
 
 fn edit(bytes: &[u8], updates: &Updates) -> Result<Vec<u8>> {
-    let s = parse(bytes)?;
-    let mut out = Cursor::new(Vec::new());
-    write(
-        &s,
-        &mut Cursor::new(bytes.to_vec()),
-        &mut out,
-        updates,
-        &mut NullSink,
-    )?;
-    Ok(out.into_inner())
+    Ok(rewrite(handler(), bytes, updates)?.0)
 }
 
 fn items(bytes: &[u8], kind: ItemKind) -> Vec<Vec<u8>> {
@@ -127,9 +108,9 @@ fn audio_start(bytes: &[u8]) -> usize {
 #[test]
 fn conforms() {
     let c = Conformance::new(handler())
-        .jumbf(Some(jumbf_stub(64)))
+        .c2pa(Some(c2pa_store_of_len(64)))
         .xmp(Some(b"<x/>".to_vec()));
-    let g = |m| geob(m, "application/c2pa", &jumbf_stub(48));
+    let g = |m| geob(m, "application/c2pa", &c2pa_store_of_len(48));
     c.check("bare mp3", &mp3());
     c.check("bare flac", &flac());
     c.check("empty v4 tag, flac", &cat(&[&tag(4, 0, &[], 0), &flac()]));
@@ -175,7 +156,7 @@ fn finds_items_in_v3_and_v4() {
             xmp_frame(major, b"<x/>"),
         ];
         let f = cat(&[&tag(major, 0, &frames, 4), &flac()]);
-        assert_eq!(items(&f, ItemKind::Jumbf), [b"manifest!".to_vec()]);
+        assert_eq!(items(&f, ItemKind::C2pa), [b"manifest!".to_vec()]);
         assert_eq!(items(&f, ItemKind::Xmp), [b"<x/>".to_vec()]);
     }
 }
@@ -184,9 +165,9 @@ fn finds_items_in_v3_and_v4() {
 fn geob_mime_and_encoding() {
     let with = |g: Vec<u8>| cat(&[&tag(4, 0, &[g], 0), &mp3()]);
     let old = geob(4, "application/x-c2pa-manifest-store", b"old");
-    assert_eq!(items(&with(old), ItemKind::Jumbf), [b"old".to_vec()]);
+    assert_eq!(items(&with(old), ItemKind::C2pa), [b"old".to_vec()]);
     let other = geob(4, "application/octet-stream", b"x");
-    assert!(items(&with(other), ItemKind::Jumbf).is_empty());
+    assert!(items(&with(other), ItemKind::C2pa).is_empty());
 
     // UTF-16: the file name and description end in two NULs.
     let mut body = vec![1u8];
@@ -195,20 +176,20 @@ fn geob_mime_and_encoding() {
     body.extend_from_slice(&[0, 0]); // empty description
     body.extend_from_slice(b"utf16");
     let utf16 = frame(4, b"GEOB", 0, &body);
-    assert_eq!(items(&with(utf16), ItemKind::Jumbf), [b"utf16".to_vec()]);
+    assert_eq!(items(&with(utf16), ItemKind::C2pa), [b"utf16".to_vec()]);
 }
 
 #[test]
 fn data_hash_excludes_only_the_object_data() {
-    let stub = jumbf_stub(64);
+    let stub = c2pa_store_of_len(64);
     let t = tag(4, 0, &[text(4), geob(4, "application/c2pa", &stub)], 0);
     let f = cat(&[&t, &mp3()]);
     let s = parse(&f).unwrap();
-    let item = s.require_item(ItemKind::Jumbf).unwrap();
+    let item = s.require_item(ItemKind::C2pa).unwrap();
     let ex = s.c2pa_data_hash_exclusions(item).unwrap();
     assert_eq!(ex.len(), 1);
     assert_eq!(&f[ex[0].offset() as usize..ex[0].end() as usize], &stub[..]);
-    assert_eq!(s.c2pa_hash(), Some(C2paHash::Data));
+    assert!(!s.supports_named_boxes());
 }
 
 #[test]
@@ -216,10 +197,10 @@ fn footer_is_counted_then_dropped_on_write() {
     let f = cat(&[&tag(4, 0x10, &[text(4)], 6), &flac()]);
     assert_eq!(parse(&f).unwrap().media_type(), "audio/flac");
 
-    let out = edit(&f, &Updates::new().set_jumbf(jumbf_stub(40))).unwrap();
+    let out = edit(&f, &Updates::new().set_c2pa(c2pa_store_of_len(48))).unwrap();
     assert_eq!(out[5] & 0x10, 0);
     assert!(!out.windows(3).any(|w| w == b"3DI"));
-    assert_eq!(items(&out, ItemKind::Jumbf), [jumbf_stub(40)]);
+    assert_eq!(items(&out, ItemKind::C2pa), [c2pa_store_of_len(48)]);
     let end = audio_start(&out);
     assert_eq!(&out[end..end + 4], b"fLaC");
 }
@@ -251,8 +232,8 @@ fn unreadable_tags_pass_through_untouched() {
     for f in cases {
         assert_eq!(parse(&f).unwrap().items().count(), 0);
         assert_eq!(edit(&f, &Updates::new()).unwrap(), f);
-        assert_eq!(edit(&f, &Updates::new().remove_jumbf()).unwrap(), f);
-        assert!(edit(&f, &Updates::new().set_jumbf(jumbf_stub(40))).is_err());
+        assert_eq!(edit(&f, &Updates::new().remove_c2pa()).unwrap(), f);
+        assert!(edit(&f, &Updates::new().set_c2pa(c2pa_store_of_len(48))).is_err());
     }
 }
 
@@ -265,11 +246,11 @@ fn encoded_frames_are_not_items() {
     };
     // v2.4: compression, encryption, unsynchronisation, data length, grouping.
     for flags in [0x08, 0x04, 0x02, 0x01, 0x40] {
-        assert!(items(&flagged(4, flags), ItemKind::Jumbf).is_empty());
+        assert!(items(&flagged(4, flags), ItemKind::C2pa).is_empty());
     }
     // v2.3: compression, encryption, grouping.
     for flags in [0x80, 0x40, 0x20] {
-        assert!(items(&flagged(3, flags), ItemKind::Jumbf).is_empty());
+        assert!(items(&flagged(3, flags), ItemKind::C2pa).is_empty());
     }
 }
 
@@ -284,11 +265,11 @@ fn a_bad_frame_ends_the_frames() {
     ];
     let f = cat(&[&tag(4, 0, &frames, 0), &mp3()]);
     assert_eq!(items(&f, ItemKind::Xmp).len(), 1);
-    assert!(items(&f, ItemKind::Jumbf).is_empty());
+    assert!(items(&f, ItemKind::C2pa).is_empty());
 
     // New metadata goes ahead of the unparsed remainder, which is kept.
-    let out = edit(&f, &Updates::new().set_jumbf(jumbf_stub(40))).unwrap();
-    assert_eq!(items(&out, ItemKind::Jumbf), [jumbf_stub(40)]);
+    let out = edit(&f, &Updates::new().set_c2pa(c2pa_store_of_len(48))).unwrap();
+    assert_eq!(items(&out, ItemKind::C2pa), [c2pa_store_of_len(48)]);
     assert_eq!(items(&out, ItemKind::Xmp).len(), 1);
     assert!(out.windows(5).any(|w| w == b"later"));
 }
@@ -298,14 +279,14 @@ fn set_replaces_the_first_in_place_and_drops_the_rest() {
     let one = geob(4, "application/c2pa", b"one");
     let two = geob(4, "application/c2pa", b"two");
     let f = cat(&[&tag(4, 0, &[one, text(4), two], 8), &flac()]);
-    assert_eq!(items(&f, ItemKind::Jumbf).len(), 2);
+    assert_eq!(items(&f, ItemKind::C2pa).len(), 2);
 
-    let out = edit(&f, &Updates::new().set_jumbf(jumbf_stub(40))).unwrap();
-    assert_eq!(items(&out, ItemKind::Jumbf), [jumbf_stub(40)]);
+    let out = edit(&f, &Updates::new().set_c2pa(c2pa_store_of_len(48))).unwrap();
+    assert_eq!(items(&out, ItemKind::C2pa), [c2pa_store_of_len(48)]);
     assert_eq!(&out[10..14], b"GEOB"); // still the first frame
 
-    let gone = edit(&f, &Updates::new().remove_jumbf()).unwrap();
-    assert!(items(&gone, ItemKind::Jumbf).is_empty());
+    let gone = edit(&f, &Updates::new().remove_c2pa()).unwrap();
+    assert!(items(&gone, ItemKind::C2pa).is_empty());
     let title = text(4);
     assert!(gone.windows(title.len()).any(|w| w == &title[..]));
     assert_eq!(&gone[audio_start(&gone)..], &flac()[..]);
@@ -315,47 +296,16 @@ fn set_replaces_the_first_in_place_and_drops_the_rest() {
 fn a_tag_is_added_to_a_bare_file() {
     let f = flac();
     let updates = Updates::new()
-        .set_jumbf(jumbf_stub(40))
+        .set_c2pa(c2pa_store_of_len(48))
         .set_xmp(b"<x/>".to_vec());
     let out = edit(&f, &updates).unwrap();
     assert_eq!(&out[..4], b"ID3\x04");
     assert_eq!(&out[audio_start(&out)..], &f[..]);
     assert_eq!(items(&out, ItemKind::Xmp), [b"<x/>".to_vec()]);
 
-    let back = edit(&out, &Updates::new().remove_jumbf().remove_xmp()).unwrap();
-    assert!(items(&back, ItemKind::Jumbf).is_empty());
+    let back = edit(&out, &Updates::new().remove_c2pa().remove_xmp()).unwrap();
+    assert!(items(&back, ItemKind::C2pa).is_empty());
     assert_eq!(&back[audio_start(&back)..], &f[..]);
-}
-
-#[test]
-fn compose_is_the_frame_a_write_emits() {
-    let data = jumbf_stub(40);
-    let frame = handler().compose(ItemKind::Jumbf, &data).unwrap();
-    let out = edit(&mp3(), &Updates::new().set_jumbf(data)).unwrap();
-    assert_eq!(&out[10..10 + frame.len()], &frame[..]);
-    assert!(handler().compose(ItemKind::Exif, b"x").is_err());
-}
-
-#[test]
-fn patch_fills_the_placeholder_in_place() {
-    let f = cat(&[&tag(4, 0, &[text(4)], 0), &flac()]);
-    let s = parse(&f).unwrap();
-    let mut out = Cursor::new(Vec::new());
-    let dest = write(
-        &s,
-        &mut Cursor::new(f),
-        &mut out,
-        &Updates::new().set_jumbf(vec![0u8; 64]),
-        &mut NullSink,
-    )
-    .unwrap();
-    let item = dest.require_item(ItemKind::Jumbf).unwrap().clone();
-    dest.patch(&mut out, &item, b"signed").unwrap();
-    assert!(dest.patch(&mut out, &item, &[1u8; 65]).is_err());
-
-    let got = items(&out.into_inner(), ItemKind::Jumbf);
-    assert_eq!(got[0].len(), 64);
-    assert_eq!(&got[0][..6], b"signed");
 }
 
 #[test]
@@ -363,10 +313,10 @@ fn real_file_round_trip() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample1.mp3");
     let Ok(f) = std::fs::read(path) else { return };
     let updates = Updates::new()
-        .set_jumbf(jumbf_stub(256))
+        .set_c2pa(c2pa_store_of_len(256))
         .set_xmp(b"<x/>".to_vec());
     let out = edit(&f, &updates).unwrap();
-    assert_eq!(items(&out, ItemKind::Jumbf), [jumbf_stub(256)]);
-    let back = edit(&out, &Updates::new().remove_jumbf().remove_xmp()).unwrap();
+    assert_eq!(items(&out, ItemKind::C2pa), [c2pa_store_of_len(256)]);
+    let back = edit(&out, &Updates::new().remove_c2pa().remove_xmp()).unwrap();
     assert!(back.ends_with(&f[f.len() - 1000..]));
 }

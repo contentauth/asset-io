@@ -126,8 +126,8 @@ read-at parsing, tagged source streaming, bounded range reads, independent struc
 item extraction (`asset_io_item_bytes`: `decoded=0` gives the stored bytes, which
 are what a hash covers; `decoded=1` gives the content with the item's `transfer`
 undone),
-logical XMP/JUMBF extraction, JUMBF UUID extraction, XMP/JUMBF keep/set/remove,
-type-scoped JUMBF removal, remove-all, BMFF update-manifest hint, output planning,
+logical XMP/C2PA store extraction, JUMBF UUID extraction, XMP/C2PA keep/set/remove,
+remove-all, BMFF update-manifest hint, output planning,
 memory writing and tagged streaming writing.
 
 `asset_io_structure_json` returns UTF-8 JSON, **not NUL terminated**. Copy the bytes
@@ -140,8 +140,8 @@ or parse with a length-aware JSON API. Schema version `schema: 1` contains:
 * Names: `{type:"none"}`, `{type:"marker",value:u8}`,
   `{type:"fourcc",bytes:[u8;4]}`, `{type:"id",value:u64}`. Future core variants
   are explicitly tagged `future` with their debug representation, never flattened.
-* `items`: declaration order (indices used for extraction); `kind` (`xmp`, `jumbf`,
-  `exif`, `embedded_asset`, `other`), `category` (`metadata`, `asset`, `other`),
+* `items`: declaration order (indices used for extraction); `kind` (`xmp`, `exif`,
+  `c2pa`, `embedded_asset`, `other`), `category` (`metadata`, `asset`, `other`),
   `encoding` (`xml`, `tiff`, `jumbf`, `iso_bmff`, `asset`, `unknown`); `transfer`,
   how the stored bytes wrap the content: `{type:T}` with `T` one of `identity`,
   `base64`, `zlib`, `deflate`, `gzip`, `brotli`, `unknown`; `zlib` adds
@@ -162,13 +162,13 @@ or parse with a length-aware JSON API. Schema version `schema: 1` contains:
 
 Snapshots retain no source and survive freeing assets/updates/registries.
 Planned snapshots describe future output, not readable source bytes.
-UUIDs absent in the snapshot can be queried with `asset_io_item_jumbf_type`
-(reads at most the core's 32-byte prefix).
+`asset_io_item_jumbf_type` returns the same recorded UUID for an item, and
+`NotFound` when the container recorded none (it reads nothing).
 
 Set replaces the first matching item and drops other matching items as defined
-by the core. A typed JUMBF superbox automatically scopes a set to its type in
-containers that distinguish types; an untyped value targets any JUMBF.
-Removal without a type removes every JUMBF type. `remove_all` resets the builder
+by the core. Metadata kind 2 is the C2PA manifest store; other JUMBF (kind
+`other`, encoding `jumbf`) is never changed. In JPEG a store must have the C2PA
+store superbox type. `remove_all` resets the builder
 to the core's remove-all state, including container-specific metadata defaults;
 later explicit setters override the corresponding metadata choice.
 Missing logical metadata is `NotFound`; multiple unrelated stores remain

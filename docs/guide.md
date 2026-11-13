@@ -26,10 +26,23 @@ schemas. Callers decide what each byte range means.
   writer copies, replaces or moves. Each has framing (header and trailer
   **roles**) and a payload. Its `SegmentKind` gives its dominant purpose:
   `Preamble`, `Metadata`, `MediaData` or `Other`.
-- **Items** are the logical units a format defines, such as XMP, JUMBF, EXIF or
-  an embedded file. Each has an `ItemKind` (the specification that defines it), an
-  `Encoding` (its serialization) and a category derived from its kind (metadata
-  or asset). An item's bytes are one or more **extents**, possibly spread across
+- **Elements** are the finest tiling: `elements` expands subdividing segments
+  into their smaller structural units, such as JPEG restart intervals.
+- **Boxes** group elements according to the container, such as a GIF application
+  extension and its data sub-blocks. `boxes()` returns `BoxInfo` values containing
+  a name, range and XMP/EXIF metadata ranges. Unnamed bytes have `name: None`.
+  This view tiles the asset without C2PA-specific names or restrictions.
+  `boxes_with(item, name)` groups each contiguous run of the selected item's
+  segments under a supplied name, framing included. Both methods read nothing
+  and work on planned structures.
+  `supports_named_boxes()` reports whether the container's own structure is
+  entirely named boxes, ignoring unnamed trailing bytes. It is a structural
+  capability, not a choice of hashing or signing scheme.
+- **Items** are the logical units a format defines, such as XMP, EXIF, a C2PA
+  manifest store or an embedded file. Each has an `ItemKind` (the specification
+  that defines it), an `Encoding` (its serialization) and a category derived from
+  its kind (metadata or asset). A C2PA store is kind `C2pa` encoded as `Jumbf`;
+  JUMBF of other types is kind `Other`, also encoded as `Jumbf`. An item's bytes are one or more **extents**, possibly spread across
   segments (JPEG XT packets, extended XMP, HEIF `iloc` extents).
 - **Native identifiers** are kept exactly: `native_type()` (such as a HEIF item
   type), `native_id()` (a HEIF `item_ID`), `uri()`, `media_type()`,
@@ -101,12 +114,13 @@ overwrites. `read_content` undoes the transfer encoding and returns
 
 ## Updating metadata
 
-`Updates` describes XMP and JUMBF changes; `write` streams a new output:
+`Updates` describes XMP and C2PA manifest store changes; `write` streams a new
+output:
 
 ```rust,ignore
 use asset_io::{NullSink, Updates};
 
-let updates = Updates::new().set_xmp(xmp_bytes).remove_jumbf();
+let updates = Updates::new().set_xmp(xmp_bytes).remove_c2pa();
 let written = asset.write(&mut out, &updates, &mut NullSink)?;
 ```
 
@@ -114,16 +128,18 @@ ISO BMFF outputs must also be readable (`Read + Write + Seek`). `write` returns 
 output's `Structure`; `Structure::plan(src, &updates)` computes it without writing,
 including where each item lands and the output size.
 
-- `set_jumbf` replaces JUMBF of the same superbox type and leaves other types
-  alone. `remove_jumbf_of(type)` removes one type; `remove_jumbf()` removes all.
-  Type selection matters for JPEG, which can carry JUMBF of any type. PNG, RIFF and
-  ISO BMFF reserve one element for the manifest store.
+- `set_c2pa` replaces the C2PA manifest store, or adds one where the container's
+  C2PA embedding puts it; `remove_c2pa()` removes it. Other JUMBF is never
+  changed. PNG, RIFF, ISO BMFF and most other containers reserve an element for
+  the store. JPEG carries JUMBF of any type in APP11, so there a store must have
+  the C2PA store superbox type, and a new store takes a box instance number (En)
+  that no other JUMBF uses.
 - Generic ISO BMFF boxes carried in JPEG XT APP11 packets are not JUMBF. They are
-  `Other` items encoded as `IsoBmff`, and JUMBF updates leave them alone.
-- `set_jumbf(store).as_update()` marks the JUMBF as an update to the existing
+  `Other` items encoded as `IsoBmff`, and C2PA updates leave them alone.
+- `set_c2pa(store).as_update()` marks the store as an update to the existing
   store. ISO BMFF stores only the addition and keeps the original manifests
-  untouched; other containers ignore the flag. `Structure::store(src)` reads the
-  combined store, and `jumbf::{addition_to, extend}` convert between forms.
+  untouched; other containers ignore the flag. `Structure::c2pa_store(src)` reads
+  the combined store, and `jumbf::{addition_to, extend}` convert between forms.
 - In ISO BMFF, XMP is written as the XMP `uuid` box; HEIF items, XMP items
   included, are carried through unchanged.
 - Container-specific options use `Updates::set_extension`, for example
@@ -146,34 +162,40 @@ interpret manifests, compute hashes or sign.
 
 ### Finding the store
 
-`c2pa_item()` returns the JUMBF item whose superbox type is
-`jumbf::C2PA_STORE_TYPE`, ignoring other JUMBF. `c2pa_store()` returns its
-content with transfer encoding undone and, for ISO BMFF, any `update` appended to
-its `original`. Handlers record JUMBF types while parsing, so finding the item
-normally reads nothing. Planned structures carry these types, so the store is
-found before the output exists.
+The manifest store is an `ItemKind::C2pa` item, encoded as JUMBF. Each handler
+identifies it while parsing: from the element the container reserves for it, or,
+where the container carries JUMBF of any type (JPEG APP11), from the superbox
+type. Other JUMBF is an `ItemKind::Other` item with `Encoding::Jumbf` and its
+`jumbf_type()`.
+
+`c2pa_item()` returns the store item; it reads nothing, so it also works on
+planned structures before the output exists. `c2pa_store()` returns its content
+with transfer encoding undone and, for ISO BMFF, any `update` appended to its
+`original`.
 
 ### Hard bindings
 
-`c2pa_hash()` names the binding an embedded manifest calls for:
+Choosing, building and checking a C2PA hard-binding assertion is the caller's
+job, following the applicable container specification. `supports_named_boxes()`
+only reports a structural capability; it does not select or recommend a C2PA
+binding. For example, ISO BMFF has named boxes but C2PA defines its own
+`c2pa.hash.bmff` rules.
 
-| Binding | Containers |
-|---------|------------|
-| `C2paHash::Box` (`c2pa.hash.boxes`) | JPEG, PNG, RIFF, GIF |
-| `C2paHash::Data` (`c2pa.hash.data`) | SVG, TIFF, ID3 |
-| `C2paHash::Bmff` (`c2pa.hash.bmff`) | ISO BMFF |
-| None | PDF, C2PA sidecars |
+`complete_boxes(group, trailing_name)` lists every byte of the asset as named
+boxes, in order: what a `c2pa.hash.boxes` covers (C2PA 2.4, 18.7). Box names
+come from the handler; for example, a JPEG scan with restart markers is its
+`SOS` box plus one per `RSTn`, and a RIFF `LIST` chunk is named by its list
+type. The caller names the rest: pass an item and a name to make it one box,
+and a name for bytes after the structure. Each box lists the metadata ranges
+(XMP, EXIF) a box hash may exclude. It reads nothing and works on planned
+structures. An unnamed element inside the structure is `UnsupportedFeature`.
 
-A caller may use a data hash where a box hash is named. Building and checking the
-assertion is the caller's job.
+`c2pa_boxes()` is `complete_boxes` with the names C2PA uses: the manifest store
+is the `C2PA` box and bytes after the structure are `c2pa.after`.
 
-`c2pa_boxes()` lists the boxes a `c2pa.hash.boxes` covers (C2PA 2.4, 18.7), in
-order and tiling the asset. Box names come from the handler; for example, a JPEG
-scan with restart markers is its `SOS` box plus one per `RSTn`, and a RIFF `LIST`
-chunk is named by its list type. The store is one `C2PA` box and bytes after the
-structure are one `c2pa.after` box. Each box lists the metadata ranges (XMP,
-EXIF) a box hash may exclude. It works on planned structures, and
-`c2pa_boxes_with(item)` reads nothing.
+```rust,ignore
+let boxes = asset.c2pa_boxes()?;
+```
 
 `c2pa_data_hash_exclusions(item)` returns the ranges a `c2pa.hash.data` excludes,
 checked, sorted and merged. The default excludes the whole segments carrying the
@@ -186,7 +208,7 @@ To sign without reparsing, write a placeholder store, hash the output, then
 patch the signed store in place:
 
 ```rust,ignore
-let written = asset.write(&mut out, &Updates::new().set_jumbf(placeholder), &mut NullSink)?;
+let written = asset.write(&mut out, &Updates::new().set_c2pa(placeholder), &mut NullSink)?;
 let output = Asset::from_parts(written, out); // `out` must be Read + Write + Seek
 let item = output.c2pa_item()?.expect("the placeholder");
 let exclusions = output.c2pa_data_hash_exclusions(item)?;
@@ -297,7 +319,7 @@ if let Some(item) = structure.item(ItemKind::Xmp)? {
     let xmp = asset::read_content(&structure, &mut src, item).await?;
 }
 let mut out = tokio::fs::File::create("out.jpg").await?;
-asset::write(&structure, &mut src, &mut out, &Updates::new().remove_jumbf(), &mut NullSink).await?;
+asset::write(&structure, &mut src, &mut out, &Updates::new().remove_c2pa(), &mut NullSink).await?;
 ```
 
 `write_plan` and `execute` separate planning from execution; `c2pa_item` and
@@ -326,8 +348,8 @@ Writes run the same way: `WritePlan::start` (`asset_io::plan`) returns an
 `Action::Write` or `Action::Done`. It handles sink calls, validation and read
 coalescing, so every driver behaves like the blocking `execute`.
 
-The `*_async` methods (`parse_async`, `c2pa_item_async`, `c2pa_store_async`,
-`jumbf_type_async`, `read_item_async`, `read_content_async`) compose parsing,
+The `*_async` methods (`parse_async`, `c2pa_store_async`, `read_item_async`,
+`read_content_async`) compose parsing,
 store lookup and your own work into a single task.
 
 ## Safety

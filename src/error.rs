@@ -31,6 +31,12 @@ pub enum Error {
     #[error("operation canceled by a callback")]
     UserCanceled,
 
+    /// A caller-supplied callback (for example a [`Sink`](crate::Sink)) failed
+    /// with its own error, returned unchanged so the caller can recover it by
+    /// downcasting.
+    #[error(transparent)]
+    Callback(Box<dyn std::error::Error + Send + Sync>),
+
     /// Invalid file format
     #[error("Invalid container: {0}")]
     InvalidFormat(String),
@@ -42,6 +48,13 @@ pub enum Error {
     /// A recognized format uses a feature or operation this reader cannot support.
     #[error("Unsupported feature: {0}")]
     UnsupportedFeature(&'static str),
+
+    /// The container cannot hold, or this handler cannot write, an item of
+    /// this kind. A write plan reports it for an
+    /// [`Updates`](crate::Updates) value it cannot place, before anything is
+    /// written.
+    #[error("cannot write {0} to this container")]
+    UnsupportedItem(crate::ItemKind),
 
     /// Invalid segment
     #[error("Invalid segment at offset {offset}: {reason}")]
@@ -66,6 +79,12 @@ pub enum Error {
 }
 
 impl Error {
+    /// [`Error::Callback`] holding `error`, for a callback to return its own error
+    /// through asset-io.
+    pub fn callback(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
+        Error::Callback(error.into())
+    }
+
     /// [`Error::InvalidSegment`]: the data at `offset` is not a valid element of the
     /// container, for the given `reason`.
     pub fn invalid_segment(offset: u64, reason: impl Into<String>) -> Self {

@@ -66,6 +66,9 @@
 //!   ([`Region`]).
 //! - **Element**: a native unit of the container (box, chunk, marker segment, PDF
 //!   object, IFD). [`Structure::elements`] is the finest tiling by elements.
+//! - **Box**: a container-defined grouping of elements, with a name, range and
+//!   metadata ranges ([`BoxInfo`], [`Structure::boxes`]). Unnamed bytes are kept
+//!   without a name. This view does not apply C2PA-specific names or restrictions.
 //! - **Node**: an element and its position in the container's tree
 //!   ([`Node`], [`Structure::walk`]).
 //! - **Item**: a logical unit the format defines, with an [`ItemKind`] (the
@@ -149,7 +152,7 @@
 //! let asset = Asset::open(std::fs::File::open("image.jpg")?, None)?;
 //!
 //! // Read a metadata item, which may have extents in several segments.
-//! if let Some(jumbf) = asset.item(ItemKind::Jumbf)? {
+//! if let Some(jumbf) = asset.item(ItemKind::C2pa)? {
 //!     let bytes = asset.read_item(jumbf)?;
 //!     println!("JUMBF: {} bytes", bytes.len());
 //! }
@@ -159,7 +162,7 @@
 //! let mut out = std::fs::File::create("out.jpg")?;
 //! let updates = Updates::new()
 //!     .set_xmp(b"<x:xmpmeta/>".to_vec())
-//!     .remove_jumbf();
+//!     .remove_c2pa();
 //! asset.write(&mut out, &updates, &mut NullSink)?;
 //! # Ok(())
 //! # }
@@ -209,15 +212,14 @@ mod xmp;
 pub use asset::Asset;
 pub use embedded::{EmbeddedAsset, EmbeddedReader, ScanLimits};
 pub use error::{Error, Result};
-pub use handler::C2paHash;
 pub use item::{Encoding, Extent, Item, ItemCategory, ItemKind, Relation, RelationKind};
 #[cfg(feature = "memory-mapped")]
 pub use mapped::MappedFile;
 pub use range::ByteRange;
 pub use registry::HandlerRegistry;
-pub use segment::{labels, Name, Role, Segment, SegmentKind, AFTER_BOX, C2PA_BOX};
+pub use segment::{labels, Name, Role, Segment, SegmentKind};
 pub use sink::{Chunk, NullSink, Sink};
-pub use structure::{C2paBox, Region, SegmentId, Structure, SubAsset};
+pub use structure::{BoxInfo, Region, SegmentId, Structure, SubAsset};
 pub use thumbnail::Thumbnail;
 #[cfg(feature = "exif")]
 pub use tiff::ExifInfo;

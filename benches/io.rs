@@ -105,15 +105,6 @@ fn synthetic_mp4(mdat: usize) -> Vec<u8> {
     v
 }
 
-fn fake_jumbf() -> Vec<u8> {
-    let mut jumd = vec![0u8; 16];
-    jumd.push(3);
-    jumd.extend_from_slice(b"c2pa\0");
-    let mut payload = bx(b"jumd", &jumd);
-    payload.extend_from_slice(&filler(4096));
-    bx(b"jumb", &payload)
-}
-
 fn cases() -> Vec<Case> {
     let mut v = Vec::new();
     let mut add = |name: &str, format: &'static str, bytes: Option<Vec<u8>>| {
@@ -261,9 +252,9 @@ fn bench_read(c: &mut Criterion) {
 }
 
 fn bench_write(c: &mut Criterion) {
-    let jumbf = fake_jumbf();
+    let jumbf = asset_io::testing::c2pa_store(&[&filler(4096)]);
     let keep = Updates::new();
-    let set = Updates::new().set_jumbf(jumbf);
+    let set = Updates::new().set_c2pa(jumbf);
     let mut g = group(c, "write");
     for case in cases() {
         let s = parse(&case);
@@ -277,7 +268,7 @@ fn bench_write(c: &mut Criterion) {
                 black_box(out.get_ref().len())
             })
         });
-        for (label, updates) in [("keep", &keep), ("set_jumbf", &set)] {
+        for (label, updates) in [("keep", &keep), ("set_c2pa", &set)] {
             g.bench_function(BenchmarkId::new(label, &case.name), |b| {
                 b.iter(|| {
                     out.get_mut().clear();
@@ -298,7 +289,7 @@ fn bench_write(c: &mut Criterion) {
         if case.bytes.len() < BIG {
             continue;
         }
-        g.bench_function(BenchmarkId::new("set_jumbf_sha256", &case.name), |b| {
+        g.bench_function(BenchmarkId::new("set_c2pa_sha256", &case.name), |b| {
             b.iter(|| {
                 out.get_mut().clear();
                 out.set_position(0);

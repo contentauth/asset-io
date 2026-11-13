@@ -263,7 +263,7 @@ impl ContainerHandler for Deaf {
 }
 
 #[test]
-#[should_panic(expected = "XMP is not what was set")]
+#[should_panic(expected = "XMP is still there after it was removed")]
 fn conformance_catches_a_handler_that_ignores_updates() {
     Conformance::new(Arc::new(Deaf)).check("deaf", &toy_bytes());
 }

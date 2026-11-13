@@ -20,6 +20,7 @@ use std::{io::Cursor, path::PathBuf};
 
 use asset_io::{
     task::{Progress, Task},
+    testing::c2pa_store_of_len,
     Error, HandlerRegistry, NullSink, Result, Structure, Updates,
 };
 
@@ -228,7 +229,7 @@ fn a_write_plan_task_reads_what_it_needs_and_gives_the_same_plan() {
         Updates::new().set_xmp(b"<x/>".to_vec()),
         Updates::new()
             .set_xmp(b"<x/>".to_vec())
-            .set_jumbf(b"S".to_vec()),
+            .set_c2pa(b"S".to_vec()),
         Updates::new().remove_xmp(),
     ];
     for (i, f) in files.iter().enumerate() {
@@ -300,17 +301,12 @@ fn jpeg_parses_through_a_task_in_large_windows_for_the_scan_data() {
 #[test]
 fn a_jpeg_write_plan_task_gives_the_same_plan() {
     let reg = HandlerRegistry::builtin();
-    let jumbf = {
-        let mut v = 70_000u32.to_be_bytes().to_vec();
-        v.extend(b"jumb");
-        v.extend(vec![7u8; 69_992]);
-        v
-    };
+    let jumbf = c2pa_store_of_len(70_000);
     let updates = [
         Updates::new(),
-        Updates::new().set_jumbf(jumbf.clone()),
-        Updates::new().set_xmp(b"<x/>".to_vec()).set_jumbf(jumbf),
-        Updates::new().remove_xmp().remove_jumbf(),
+        Updates::new().set_c2pa(jumbf.clone()),
+        Updates::new().set_xmp(b"<x/>".to_vec()).set_c2pa(jumbf),
+        Updates::new().remove_xmp().remove_c2pa(),
     ];
     let mut checked = 0;
     for name in ["FireflyTrain.jpg", "P1000708.jpg"] {
@@ -426,12 +422,7 @@ fn a_fragmented_file_plans_through_a_task_and_every_fragment_is_relocated() {
     let reg = HandlerRegistry::builtin();
     let f = fragmented(300);
     let s = Structure::parse(&reg, &mut Cursor::new(&f), Some("mp4")).unwrap();
-    let u = Updates::new().set_jumbf({
-        let mut j = 100u32.to_be_bytes().to_vec();
-        j.extend(b"jumb");
-        j.extend([0u8; 92]);
-        j
-    });
+    let u = Updates::new().set_c2pa(c2pa_store_of_len(100));
     let want = s.write_plan(&mut Cursor::new(&f), &u).unwrap();
     let (got, requests) = drive(s.write_plan_task(&u), &f);
     let got = got.unwrap();

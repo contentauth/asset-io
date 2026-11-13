@@ -470,7 +470,7 @@ pub(super) fn revision(context: &Context, source_size: u64, updates: &Updates) -
                 .insert(b"Metadata".to_vec(), Value::Reference(id));
         }
     }
-    if !matches!(updates.jumbf(), MetadataUpdate::Keep) {
+    if !matches!(updates.c2pa(), MetadataUpdate::Keep) {
         context
             .associated
             .retain(|value| !matches!(value, Value::Reference(id) if context.active.contains(id)));
@@ -478,8 +478,8 @@ pub(super) fn revision(context: &Context, source_size: u64, updates: &Updates) -
             |_, value| !matches!(value, Value::Reference(id) if context.active.contains(id)),
         );
         context.active.clear();
-        if let MetadataUpdate::Set(data) = updates.jumbf() {
-            let stream = result.stream(ItemKind::Jumbf, data.len())?;
+        if let MetadataUpdate::Set(data) = updates.c2pa() {
+            let stream = result.stream(ItemKind::C2pa, data.len())?;
             let spec = result.allocate()?;
             let file_name = b"Content Credentials".to_vec();
             if context.pairs.contains_key(&file_name) {

@@ -28,14 +28,14 @@
 //! hash lists a `RIFF` chunk under its form type and a `LIST` chunk under its list
 //! type (C2PA 2.4, 18.7.3.5); both are recorded when parsing and planning.
 //!
-//! The `C2PA` chunk is an [`ItemKind::Jumbf`] item and the `XMP ` chunk an
+//! The `C2PA` chunk is an [`ItemKind::C2pa`] item and the `XMP ` chunk an
 //! [`ItemKind::Xmp`] item, both only when they are children of the first
 //! `RIFF` chunk. In WebP the `EXIF` chunk is an [`ItemKind::Exif`] item. WAV and
 //! AVI keep their metadata in `LIST INFO` and similar, which is not EXIF.
 //!
 //! # Writing
 //!
-//! `set_jumbf` and `set_xmp` replace the existing chunk in place, or append one
+//! `set_c2pa` and `set_xmp` replace the existing chunk in place, or append one
 //! after the last child of the first `RIFF` chunk (XMP before C2PA). Only that
 //! chunk's size field changes; any `AVIX` chunks are copied as they are. A size
 //! that no longer fits 32 bits is an error. For WebP, XMP needs the XMP flag in the
@@ -50,7 +50,6 @@ use crate::{
         BoxFuture, ContainerHandler, Existing, FormatSpec, Io, ItemInfo, MetadataSlot,
         MetadataUpdate, PlanBuilder, StructureBuilder, WritePlan,
     },
-    jumbf::superbox_type_at,
     Error, ItemKind, Name, Result, Role, Segment, SegmentId, SegmentKind, Structure, Updates,
 };
 
@@ -121,14 +120,19 @@ impl ChunkTypes {
 impl ContainerHandler for RiffHandler {
     // A `RIFF` chunk is listed under its form and a `LIST` chunk under its list
     // type; nested chunks are part of their `LIST`.
-    fn c2pa_box_name(
+    fn box_name(
         &self,
         structure: &Structure,
         segment: SegmentId,
         element: &Segment,
     ) -> Option<Cow<'static, str>> {
         let ty = container_api::attachment::<ChunkTypes>(structure).and_then(|t| t.get(segment));
-        self.box_name(ty.map_or(element.name(), Name::FourCC))
+        match ty.map_or(element.name(), Name::FourCC) {
+            Name::None => None,
+            Name::FourCC(cc) => Some(Cow::Owned(String::from_utf8_lossy(&cc).into_owned())),
+            Name::Id(n) => Some(Cow::Owned(n.to_string())),
+            name @ Name::Marker(_) => Some(Cow::Owned(name.to_string())),
+        }
     }
 
     fn c2pa_data_hash_exclusions(
@@ -304,16 +308,13 @@ async fn parse_chunk(
     let pad = u16::from(size & 1 == 1 && data_end < end);
 
     let item = match id {
-        C2PA if classify => Some(ItemKind::Jumbf),
+        C2PA if classify => Some(ItemKind::C2pa),
         XMP if classify => Some(ItemKind::Xmp),
         EXIF if classify && webp => Some(ItemKind::Exif),
         _ => None,
     };
     if let Some(kind) = item {
-        let mut info = item_info(kind);
-        if kind == ItemKind::Jumbf {
-            info = info.jumbf_type(superbox_type_at(io, at + 8, size).await?);
-        }
+        let info = item_info(kind);
         b.push_item(SegmentKind::Metadata, Name::FourCC(id), 8, size, pad, info)?;
         return Ok(data_end + pad as u64);
     }
@@ -341,7 +342,7 @@ async fn parse_chunk(
 fn item_info(kind: ItemKind) -> ItemInfo {
     match kind {
         ItemKind::Xmp => ItemInfo::xmp(),
-        ItemKind::Jumbf => ItemInfo::jumbf(),
+        ItemKind::C2pa => ItemInfo::c2pa(),
         _ => ItemInfo::exif(),
     }
 }
@@ -449,7 +450,7 @@ async fn plan<'a>(src: &Structure, io: &mut Io, updates: &'a Updates) -> Result<
 
     let mut ops: Vec<Op<'a>> = Vec::with_capacity(segs.len() + 3);
     let mut xmp = MetadataSlot::new(updates.xmp());
-    let mut jumbf = MetadataSlot::new(updates.jumbf());
+    let mut jumbf = MetadataSlot::new(updates.c2pa());
     let mut saw_vp8x = false;
 
     for (i, seg) in segs.iter().enumerate().take(kids_end).skip(1) {
@@ -462,10 +463,10 @@ async fn plan<'a>(src: &Structure, io: &mut Io, updates: &'a Updates) -> Result<
                 }
                 _ => {}
             },
-            Some(ItemKind::Jumbf) => match jumbf.existing() {
+            Some(ItemKind::C2pa) => match jumbf.existing() {
                 Existing::Keep => ops.push(Op::Copy(id)),
                 Existing::Replace(d) => {
-                    ops.push(new_chunk(Some(ItemKind::Jumbf), C2PA, Cow::Borrowed(d))?)
+                    ops.push(new_chunk(Some(ItemKind::C2pa), C2PA, Cow::Borrowed(d))?)
                 }
                 _ => {}
             },
@@ -509,7 +510,7 @@ async fn plan<'a>(src: &Structure, io: &mut Io, updates: &'a Updates) -> Result<
         tail.push(new_chunk(Some(ItemKind::Xmp), XMP, Cow::Borrowed(d))?);
     }
     if let Some(d) = jumbf.pending() {
-        tail.push(new_chunk(Some(ItemKind::Jumbf), C2PA, Cow::Borrowed(d))?);
+        tail.push(new_chunk(Some(ItemKind::C2pa), C2PA, Cow::Borrowed(d))?);
     }
 
     // WebP needs VP8X to say the file has XMP.
@@ -666,20 +667,54 @@ mod tests {
         riff(b"WAVE", &kids)
     }
 
+    #[test]
+    fn inspection_and_walk_use_box_hash_names() {
+        let bytes = riff(
+            b"WAVE",
+            &[
+                chunk(
+                    b"LIST",
+                    &[b"INFO".as_slice(), &chunk(b"INAM", b"abc")].concat(),
+                ),
+                chunk(b"data", &[1, 2, 3]),
+            ],
+        );
+        let s = parse(&mut Cursor::new(&bytes)).unwrap();
+        let mut elements = Vec::new();
+        s.elements(|id, element| {
+            elements.push((
+                s.box_name(id, element).unwrap().into_owned(),
+                element.range(),
+            ));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            elements
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["WAVE", "INFO", "data"]
+        );
+        let boxes = s.c2pa_boxes().unwrap();
+        assert_eq!(
+            elements,
+            boxes
+                .into_iter()
+                .map(|b| (b.name.unwrap().into_owned(), b.range))
+                .collect::<Vec<_>>()
+        );
+        let mut paths = Vec::new();
+        s.walk(&mut Cursor::new(&bytes), |node| {
+            paths.push(node.path.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(paths, ["/WAVE", "/INFO", "/data"]);
+    }
+
     fn rewrite(src: &[u8], u: &Updates) -> Result<Vec<u8>> {
-        let s = parse(&mut Cursor::new(src))?;
-        let mut out = Cursor::new(Vec::new());
-        let dest = container_api::handler(&s).write(
-            &s,
-            &mut Cursor::new(src),
-            &mut out,
-            u,
-            &mut NullSink,
-        )?;
-        let out = out.into_inner();
-        let again = parse(&mut Cursor::new(&out))?;
-        assert_eq!(dest.segments(), again.segments());
-        assert_eq!(dest.total_size(), out.len() as u64);
+        let (out, _) = crate::testing::rewrite(handler(), src, u)?;
         // The RIFF size always matches the file.
         assert_eq!(le32(&out[4..8]) as usize, out.len() - 8);
         Ok(out)
@@ -737,7 +772,7 @@ mod tests {
         assert_eq!(s.segments()[2].payload().len(), 5);
         assert_eq!(s.segments()[2].trailer().len(), 1);
         assert_eq!(s.segments()[2].kind(), SegmentKind::MediaData);
-        assert_eq!(payload(&f, ItemKind::Jumbf).unwrap(), b"STORE");
+        assert_eq!(payload(&f, ItemKind::C2pa).unwrap(), b"STORE");
         assert_eq!(payload(&f, ItemKind::Xmp).unwrap(), b"<x/>");
     }
 
@@ -759,7 +794,7 @@ mod tests {
 
     #[test]
     fn conforms() {
-        let c = Conformance::new(handler()).jumbf(Some(b"STORE".to_vec()));
+        let c = Conformance::new(handler()).c2pa(Some(crate::testing::c2pa_store_of_len(64)));
         c.check(
             "wav",
             &wav(&[chunk(b"XMP ", b"<x/>"), chunk(b"C2PA", b"STORE")]),
@@ -784,27 +819,27 @@ mod tests {
     #[test]
     fn a_manifest_is_appended_replaced_and_removed() {
         let f = wav(&[]);
-        let one = rewrite(&f, &Updates::new().set_jumbf(b"STORE".to_vec())).unwrap();
-        assert_eq!(payload(&one, ItemKind::Jumbf).unwrap(), b"STORE");
+        let one = rewrite(&f, &Updates::new().set_c2pa(b"STORE".to_vec())).unwrap();
+        assert_eq!(payload(&one, ItemKind::C2pa).unwrap(), b"STORE");
         // Appended at the end, after everything that was there.
         let s = parse(&mut Cursor::new(&one)).unwrap();
         assert_eq!(s.segments().last().unwrap().name(), Name::FourCC(C2PA));
 
         // Replaced in place, in any size.
-        let longer = rewrite(&one, &Updates::new().set_jumbf(vec![7u8; 100])).unwrap();
-        assert_eq!(payload(&longer, ItemKind::Jumbf).unwrap(), vec![7u8; 100]);
-        let shorter = rewrite(&one, &Updates::new().set_jumbf(b"S".to_vec())).unwrap();
-        assert_eq!(payload(&shorter, ItemKind::Jumbf).unwrap(), b"S");
+        let longer = rewrite(&one, &Updates::new().set_c2pa(vec![7u8; 100])).unwrap();
+        assert_eq!(payload(&longer, ItemKind::C2pa).unwrap(), vec![7u8; 100]);
+        let shorter = rewrite(&one, &Updates::new().set_c2pa(b"S".to_vec())).unwrap();
+        assert_eq!(payload(&shorter, ItemKind::C2pa).unwrap(), b"S");
 
         // Removing restores the original.
-        assert_eq!(rewrite(&one, &Updates::new().remove_jumbf()).unwrap(), f);
+        assert_eq!(rewrite(&one, &Updates::new().remove_c2pa()).unwrap(), f);
     }
 
     #[test]
     fn xmp_goes_before_the_manifest() {
         let f = wav(&[]);
         let u = Updates::new()
-            .set_jumbf(b"STORE".to_vec())
+            .set_c2pa(b"STORE".to_vec())
             .set_xmp(b"<x/>".to_vec());
         let out = rewrite(&f, &u).unwrap();
         let s = parse(&mut Cursor::new(&out)).unwrap();
@@ -828,8 +863,8 @@ mod tests {
         assert_eq!(s.segments().last().unwrap().trailer().len(), 0);
         assert_eq!(rewrite(&f, &Updates::new()).unwrap(), f);
 
-        let out = rewrite(&f, &Updates::new().set_jumbf(b"STORE".to_vec())).unwrap();
-        assert_eq!(payload(&out, ItemKind::Jumbf).unwrap(), b"STORE");
+        let out = rewrite(&f, &Updates::new().set_c2pa(b"STORE".to_vec())).unwrap();
+        assert_eq!(payload(&out, ItemKind::C2pa).unwrap(), b"STORE");
         // The earlier chunk got its pad, so the file is aligned and re-parses.
         let s = parse(&mut Cursor::new(&out)).unwrap();
         assert!(s.segments().iter().all(|g| g.range().offset() % 2 == 0));
@@ -880,7 +915,7 @@ mod tests {
         let out = rewrite(&with, &Updates::new().set_xmp(b"<x/>".to_vec())).unwrap();
         assert_eq!(vp8x_flags(&out), Some(0x14));
         // A manifest alone leaves VP8X alone.
-        let out = rewrite(&with, &Updates::new().set_jumbf(b"S".to_vec())).unwrap();
+        let out = rewrite(&with, &Updates::new().set_c2pa(b"S".to_vec())).unwrap();
         assert_eq!(vp8x_flags(&out), Some(0x10));
     }
 
@@ -899,7 +934,7 @@ mod tests {
         let none = riff(b"WEBP", &[chunk(b"ICCP", b"x")]);
         assert!(rewrite(&none, &Updates::new().set_xmp(b"<x/>".to_vec())).is_err());
         // Not needed when no XMP is written.
-        assert!(rewrite(&none, &Updates::new().set_jumbf(b"S".to_vec())).is_ok());
+        assert!(rewrite(&none, &Updates::new().set_c2pa(b"S".to_vec())).is_ok());
     }
 
     #[test]
@@ -912,7 +947,7 @@ mod tests {
         let first_len = f.len();
         f.extend_from_slice(&avix);
         let s = parse(&mut Cursor::new(&f)).unwrap();
-        assert!(s.items_of(ItemKind::Jumbf).next().is_none());
+        assert!(s.items_of(ItemKind::C2pa).next().is_none());
 
         let mut out = Cursor::new(Vec::new());
         container_api::handler(&s)
@@ -920,7 +955,7 @@ mod tests {
                 &s,
                 &mut Cursor::new(&f),
                 &mut out,
-                &Updates::new().set_jumbf(b"STORE".to_vec()),
+                &Updates::new().set_c2pa(b"STORE".to_vec()),
                 &mut NullSink,
             )
             .unwrap();
@@ -929,7 +964,7 @@ mod tests {
         assert_eq!(le32(&out[4..8]) as usize, first_len - 8 + grown);
         assert_eq!(&out[first_len + grown..], &avix[..]);
         // The new store is the item, not the C2PA chunk inside AVIX.
-        assert_eq!(payload(&out, ItemKind::Jumbf).unwrap(), b"STORE");
+        assert_eq!(payload(&out, ItemKind::C2pa).unwrap(), b"STORE");
     }
 
     #[test]
@@ -946,7 +981,7 @@ mod tests {
                 &s,
                 &mut Cursor::new(&f),
                 &mut out,
-                &Updates::new().set_jumbf(b"STORE".to_vec()),
+                &Updates::new().set_c2pa(b"STORE".to_vec()),
                 &mut NullSink,
             )
             .unwrap();
@@ -954,7 +989,7 @@ mod tests {
         let grown = 8 + 6; // C2PA header, "STORE" and its pad
         assert_eq!(le32(&out[4..8]) as usize, first_len - 8 + grown);
         assert_eq!(&out[first_len + grown..], &avix[..]);
-        assert_eq!(payload(&out, ItemKind::Jumbf).unwrap(), b"STORE");
+        assert_eq!(payload(&out, ItemKind::C2pa).unwrap(), b"STORE");
     }
 
     #[test]
@@ -985,17 +1020,5 @@ mod tests {
         // Too short, and not RIFF.
         assert!(parse(&mut Cursor::new(b"RIFF")).is_err());
         assert!(parse(&mut Cursor::new(b"RIFX\0\0\0\0WAVE")).is_err());
-    }
-
-    #[test]
-    fn a_placeholder_is_filled_in_place() {
-        let f = wav(&[chunk(b"C2PA", &[0u8; 20])]);
-        let s = parse(&mut Cursor::new(&f)).unwrap();
-        let e = s.require_item(ItemKind::Jumbf).unwrap();
-        let mut cur = Cursor::new(f.clone());
-        s.patch_exact(&mut cur, e, &[9u8; 20]).unwrap();
-        let out = cur.into_inner();
-        assert_eq!(out.len(), f.len());
-        assert_eq!(payload(&out, ItemKind::Jumbf).unwrap(), vec![9u8; 20]);
     }
 }

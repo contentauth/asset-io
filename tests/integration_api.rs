@@ -18,8 +18,8 @@
 use std::{fs, io::Cursor, path::PathBuf};
 
 use asset_io::{
-    container_api, container_api::ItemInfo, Asset, HandlerRegistry, ItemKind, NullSink, Structure,
-    Updates,
+    container_api, container_api::ItemInfo, testing::c2pa_store, Asset, HandlerRegistry, ItemKind,
+    NullSink, Structure, Updates,
 };
 
 /// `bytes` as an asset, its container detected.
@@ -50,25 +50,6 @@ fn fixtures() -> Vec<(String, Vec<u8>)> {
     v
 }
 
-fn boxed(ty: &[u8; 4], body: &[u8]) -> Vec<u8> {
-    let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
-    v.extend_from_slice(ty);
-    v.extend_from_slice(body);
-    v
-}
-
-/// A JUMBF superbox of type `uuid` holding one child per entry of `children`.
-fn store(uuid: u8, children: &[&[u8]]) -> Vec<u8> {
-    let mut d = [uuid; 16].to_vec();
-    d.push(3);
-    d.extend_from_slice(b"c2pa\0");
-    let mut body = boxed(b"jumd", &d);
-    for c in children {
-        body.extend_from_slice(&boxed(b"json", c));
-    }
-    boxed(b"jumb", &body)
-}
-
 /// An item as a caller observes it: what it is, and its extents as
 /// (segment index, offset, length).
 type ItemShape = (ItemInfo, Vec<(usize, u64, u64)>);
@@ -95,12 +76,12 @@ fn plan_is_what_write_returns() {
     let reg = HandlerRegistry::builtin();
     let updates = [
         Updates::new(),
-        Updates::new().set_jumbf(store(1, &[b"one"])),
+        Updates::new().set_c2pa(c2pa_store(&[b"one"])),
         Updates::new()
-            .set_jumbf(store(1, &[b"one"]))
+            .set_c2pa(c2pa_store(&[b"one"]))
             .set_xmp(b"<x:xmpmeta/>\n".to_vec()),
         Updates::remove_all(),
-        Updates::new().remove_jumbf().remove_xmp(),
+        Updates::new().remove_c2pa().remove_xmp(),
     ];
     let mut ran = 0;
     for (name, bytes) in fixtures() {
@@ -132,20 +113,20 @@ fn plan_is_what_write_returns() {
 #[test]
 fn plan_places_a_manifest_that_is_not_there_yet() {
     let reg = HandlerRegistry::builtin();
-    let u = Updates::new().set_jumbf(store(1, &[b"one"]));
+    let u = Updates::new().set_c2pa(c2pa_store(&[b"one"]));
     let mut ran = 0;
     for (name, bytes) in fixtures() {
         let Ok(s) = open(&reg, &bytes) else {
             continue;
         };
-        if s.item(ItemKind::Jumbf).ok().flatten().is_some() {
+        if s.item(ItemKind::C2pa).ok().flatten().is_some() {
             continue;
         }
         let Ok(dest) = s.plan(&u) else {
             continue;
         };
-        let e = dest.require_item(ItemKind::Jumbf).unwrap();
-        assert_eq!(e.len(), store(1, &[b"one"]).len() as u64, "{name}");
+        let e = dest.require_item(ItemKind::C2pa).unwrap();
+        assert_eq!(e.len(), c2pa_store(&[b"one"]).len() as u64, "{name}");
         assert!(dest.total_size() > s.total_size(), "{name}");
         ran += 1;
     }
@@ -159,8 +140,8 @@ fn a_reader_sees_original_and_update_as_one_store() {
         fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample1.heic"));
     let Ok(bytes) = bytes else { return };
 
-    let first = store(1, &[b"m1"]);
-    let second = store(1, &[b"m1", b"m2"]);
+    let first = c2pa_store(&[b"m1"]);
+    let second = c2pa_store(&[b"m1", b"m2"]);
 
     // Start from a file with no store, whatever the fixture holds.
     let mut none = Vec::new();
@@ -169,119 +150,39 @@ fn a_reader_sees_original_and_update_as_one_store() {
         .write(&mut none, &Updates::remove_all(), &mut NullSink)
         .unwrap();
     let s0 = open(&reg, &none).unwrap();
-    assert_eq!(s0.store().unwrap(), None);
+    assert_eq!(s0.c2pa_store().unwrap(), None);
 
     let mut a = Vec::new();
     s0.write(
         &mut a,
-        &Updates::new().set_jumbf(first.clone()),
+        &Updates::new().set_c2pa(first.clone()),
         &mut NullSink,
     )
     .unwrap();
     let s1 = open(&reg, &a).unwrap();
-    assert_eq!(s1.store().unwrap(), Some(first));
+    assert_eq!(s1.c2pa_store().unwrap(), Some(first));
 
     let mut b = Vec::new();
     s1.write(
         &mut b,
-        &Updates::new().set_jumbf(second.clone()).as_update(),
+        &Updates::new().set_c2pa(second.clone()).as_update(),
         &mut NullSink,
     )
     .unwrap();
     let s2 = open(&reg, &b).unwrap();
     // Two stores are in the file, and a reader sees them as the one that was set.
-    assert_eq!(s2.items_of(ItemKind::Jumbf).count(), 2);
-    assert_eq!(s2.store().unwrap(), Some(second));
+    assert_eq!(s2.items_of(ItemKind::C2pa).count(), 2);
+    assert_eq!(s2.c2pa_store().unwrap(), Some(second));
 }
 
 /// The bytes of the segments an item lives in, in order.
-fn item_segments(s: &Structure, out: &[u8], kind: ItemKind) -> Vec<u8> {
-    // A JPEG that already holds a store of another type keeps it, so choose the
-    // one just written, which these tests give the type `[1; 16]`.
-    let e = s
-        .items_of(kind)
-        .find(|e| e.jumbf_type() == Some([1; 16]))
-        .or_else(|| s.items_of(kind).next())
-        .unwrap();
-    let mut ids: Vec<_> = e.extents().map(|p| p.segment()).collect();
-    ids.dedup();
-    let mut v = Vec::new();
-    for id in ids {
-        let x = s.segment(id).unwrap().range();
-        v.extend_from_slice(&out[x.offset() as usize..x.end() as usize]);
-    }
-    v
-}
-
-#[test]
-fn compose_is_what_write_inserts() {
-    let reg = HandlerRegistry::builtin();
-    let jumbf = store(1, &[b"one"]);
-    let xmp = b"<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"/>".to_vec();
-    let mut checked = std::collections::HashSet::new();
-    for (name, bytes) in fixtures() {
-        let Ok(s) = open(&reg, &bytes) else {
-            continue;
-        };
-        for (kind, data) in [(ItemKind::Jumbf, &jumbf), (ItemKind::Xmp, &xmp)] {
-            let composed = match reg.handler(s.media_type()).unwrap().compose(kind, data) {
-                Ok(c) => c,
-                Err(asset_io::Error::UnsupportedFormat) => continue,
-                Err(e) => panic!("{name}: {e}"),
-            };
-            let updates = match kind {
-                ItemKind::Jumbf => Updates::new().set_jumbf(data.clone()),
-                _ => Updates::new().set_xmp(data.clone()),
-            };
-            let mut out = Vec::new();
-            let dest = s.write(&mut out, &updates, &mut NullSink).unwrap();
-            assert_eq!(
-                composed,
-                item_segments(&dest, &out, kind),
-                "{name} {kind:?}"
-            );
-            checked.insert((s.container_id().to_owned(), kind));
-        }
-    }
-    // JPEG, PNG and BMFF, each for both kinds.
-    assert_eq!(checked.len(), 6, "{checked:?}");
-}
-
-#[test]
-fn compose_splits_a_large_jpeg_store_like_write() {
-    let reg = HandlerRegistry::builtin();
-    let children = vec![0x5au8; 200_000];
-    let jumbf = store(1, &[&children]);
-    let composed = reg
-        .handler("jpg")
-        .unwrap()
-        .compose(ItemKind::Jumbf, &jumbf)
-        .unwrap();
-    // Four APP11 segments, each with its own marker.
-    let markers = composed
-        .windows(2)
-        .filter(|w| w[0] == 0xff && w[1] == 0xeb)
-        .count();
-    assert!(markers >= 4, "{markers} APP11 markers");
-
-    let Some((_, bytes)) = fixtures().into_iter().find(|(n, _)| n.ends_with(".jpg")) else {
-        return;
-    };
-    let s = Asset::open(Cursor::new(&bytes), Some("jpg")).unwrap();
-    let mut out = Vec::new();
-    let dest = s
-        .write(&mut out, &Updates::new().set_jumbf(jumbf), &mut NullSink)
-        .unwrap();
-    assert_eq!(composed, item_segments(&dest, &out, ItemKind::Jumbf));
-}
-
 #[test]
 fn compose_rejects_what_it_cannot_encode() {
     let reg = HandlerRegistry::builtin();
     assert!(reg
         .handler("jpg")
         .unwrap()
-        .compose(ItemKind::Jumbf, b"not a superbox")
+        .compose(ItemKind::C2pa, b"not a superbox")
         .is_err());
     assert!(reg
         .handler("jpg")
@@ -293,6 +194,17 @@ fn compose_rejects_what_it_cannot_encode() {
         .unwrap()
         .compose(ItemKind::EmbeddedAsset, b"x")
         .is_err());
+    // Kinds a format cannot hold.
+    for (format, kind) in [
+        ("gif", ItemKind::Exif),
+        ("mp3", ItemKind::Exif),
+        ("svg", ItemKind::Xmp),
+    ] {
+        assert!(
+            reg.handler(format).unwrap().compose(kind, b"x").is_err(),
+            "{format} {kind}"
+        );
+    }
     assert!(reg.handler("xyz").is_none());
 }
 
@@ -358,7 +270,7 @@ fn item_kinds_encodings_and_categories_per_container() {
         for e in s.items() {
             let ok = match e.kind() {
                 ItemKind::Xmp => e.encoding() == Encoding::Xml,
-                ItemKind::Jumbf => e.encoding() == Encoding::Jumbf,
+                ItemKind::C2pa => e.encoding() == Encoding::Jumbf,
                 ItemKind::Exif => e.encoding() == Encoding::Tiff,
                 ItemKind::EmbeddedAsset => e.encoding() == Encoding::Asset,
                 _ => matches!(e.encoding(), Encoding::IsoBmff | Encoding::Unknown),
@@ -374,14 +286,14 @@ fn item_kinds_encodings_and_categories_per_container() {
     };
     let reg = HandlerRegistry::builtin();
     let xmp = b"<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"/>".to_vec();
-    let jumbf = store(1, &[b"one"]);
+    let jumbf = c2pa_store(&[b"one"]);
     let mut written = std::collections::BTreeSet::new();
     for (name, bytes) in fixtures() {
         let Ok(s) = open(&reg, &bytes) else {
             continue;
         };
         check(&s, &name);
-        let updates = Updates::new().set_xmp(xmp.clone()).set_jumbf(jumbf.clone());
+        let updates = Updates::new().set_xmp(xmp.clone()).set_c2pa(jumbf.clone());
         let mut out = Vec::new();
         let Ok(dest) = s.write(&mut out, &updates, &mut NullSink) else {
             continue;
@@ -391,7 +303,7 @@ fn item_kinds_encodings_and_categories_per_container() {
         // What a write inserts is a metadata item in a metadata segment.
         for (kind, encoding, data) in [
             (ItemKind::Xmp, Encoding::Xml, &xmp),
-            (ItemKind::Jumbf, Encoding::Jumbf, &jumbf),
+            (ItemKind::C2pa, Encoding::Jumbf, &jumbf),
         ] {
             let found = dest
                 .items_of(kind)

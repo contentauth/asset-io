@@ -25,6 +25,7 @@ use std::{
 use asset_io::{
     execute::Action,
     task::{Progress, ReadRequest, Task},
+    testing::c2pa_store_of_len,
     Asset, Chunk, HandlerRegistry, NullSink, Result, Structure, Updates,
 };
 use tokio::{
@@ -94,16 +95,11 @@ async fn write_file(
 }
 
 fn updates() -> Vec<Updates> {
-    let jumbf = {
-        let mut v = 5000u32.to_be_bytes().to_vec();
-        v.extend(b"jumb");
-        v.extend(vec![3u8; 4992]);
-        v
-    };
+    let jumbf = c2pa_store_of_len(5000);
     vec![
         Updates::new().set_xmp(b"<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"></x:xmpmeta>".to_vec()),
-        Updates::new().set_jumbf(jumbf),
-        Updates::new().remove_xmp().remove_jumbf(),
+        Updates::new().set_c2pa(jumbf),
+        Updates::new().remove_xmp().remove_c2pa(),
     ]
 }
 

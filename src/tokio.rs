@@ -17,7 +17,7 @@
 //! let registry = asset_io::HandlerRegistry::builtin();
 //! let mut src = tokio::fs::File::open("image.jpg").await?;
 //! let structure = asset_io::tokio::parse(&registry, &mut src, None).await?;
-//! let updates = asset_io::Updates::new().remove_jumbf();
+//! let updates = asset_io::Updates::new().remove_c2pa();
 //! let mut out = tokio::fs::File::create("out.jpg").await?;
 //! asset_io::tokio::write(
 //!     &structure,
@@ -116,21 +116,8 @@ where
     .await
 }
 
-/// Find the C2PA manifest-store item, reading only if its type was not recorded.
-pub async fn c2pa_item<'s, R>(structure: &'s Structure, src: &mut R) -> Result<Option<&'s Item>>
-where
-    R: AsyncRead + AsyncSeek + Unpin + ?Sized,
-{
-    run(
-        Task::new(structure.total_size(), |mut io| async move {
-            structure.c2pa_item_async(&mut io).await
-        }),
-        src,
-    )
-    .await
-}
-
-/// Read the decoded C2PA store, combining BMFF original/update stores.
+/// Read the C2PA manifest store, combining BMFF original/update stores; see
+/// [`Structure::c2pa_store`]. [`Structure::c2pa_item`] finds the item without I/O.
 pub async fn c2pa_store<R>(structure: &Structure, src: &mut R) -> Result<Option<Vec<u8>>>
 where
     R: AsyncRead + AsyncSeek + Unpin + ?Sized,

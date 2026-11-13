@@ -57,9 +57,7 @@ use crate::{
         BoxFuture, ContainerHandler, Existing, FormatSpec, Io, ItemInfo, MetadataSlot, PlanBuilder,
         StructureBuilder, WritePlan,
     },
-    jumbf::superbox_type,
-    ByteRange, C2paHash, Error, Item, ItemKind, Name, Result, SegmentId, SegmentKind, Structure,
-    Updates,
+    ByteRange, Error, Item, ItemKind, Name, Result, SegmentId, SegmentKind, Structure, Updates,
 };
 
 /// The ID3 container's [`ContainerHandler::id`].
@@ -116,11 +114,6 @@ impl ContainerHandler for Id3Handler {
     /// file; parsing tells MP3 from FLAC.
     fn detect(&self, header: &[u8]) -> bool {
         header.starts_with(b"ID3") || header.starts_with(FLAC_MARKER)
-    }
-
-    // No box structure to hash: the data hash excludes the object data.
-    fn c2pa_hash(&self, _structure: &Structure) -> Option<C2paHash> {
-        Some(C2paHash::Data)
     }
 
     fn c2pa_data_hash_exclusions(
@@ -298,7 +291,7 @@ fn classify(id: [u8; 4], body: &[u8]) -> Option<(ItemKind, usize)> {
             // File name, then description.
             at += string_len(body.get(at..)?, encoding)?;
         }
-        Some((ItemKind::Jumbf, at))
+        Some((ItemKind::C2pa, at))
     } else if id == PRIV && body.starts_with(PRIV_PREFIX) {
         Some((ItemKind::Xmp, PRIV_PREFIX.len()))
     } else {
@@ -308,15 +301,15 @@ fn classify(id: [u8; 4], body: &[u8]) -> Option<(ItemKind, usize)> {
 
 fn frame_type(kind: ItemKind) -> Option<([u8; 4], &'static [u8])> {
     match kind {
-        ItemKind::Jumbf => Some((GEOB, GEOB_PREFIX)),
+        ItemKind::C2pa => Some((GEOB, GEOB_PREFIX)),
         ItemKind::Xmp => Some((PRIV, PRIV_PREFIX)),
         _ => None,
     }
 }
 
-fn item_info(ty: [u8; 4], data: &[u8]) -> ItemInfo {
+fn item_info(ty: [u8; 4]) -> ItemInfo {
     if ty == GEOB {
-        ItemInfo::jumbf().jumbf_type(superbox_type(data))
+        ItemInfo::c2pa()
     } else {
         ItemInfo::xmp()
     }
@@ -396,15 +389,11 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<St
                     if run > 0 {
                         b.push_span(SegmentKind::Other, Name::None, 0, run, 0)?;
                     }
-                    let mut info = if kind == ItemKind::Xmp {
+                    let info = if kind == ItemKind::Xmp {
                         ItemInfo::xmp()
                     } else {
-                        ItemInfo::jumbf()
+                        ItemInfo::c2pa()
                     };
-                    if kind == ItemKind::Jumbf && size - prefix >= 32 {
-                        r.seek(pos + 10 + prefix);
-                        info = info.jumbf_type(superbox_type(r.take(32).await?));
-                    }
                     b.push_item(
                         SegmentKind::Metadata,
                         Name::FourCC(id),
@@ -452,7 +441,7 @@ enum Op<'a> {
 }
 
 fn new_frame<'a>(kind: ItemKind, data: &'a [u8]) -> Result<Op<'a>> {
-    let (ty, prefix) = frame_type(kind).ok_or(Error::UnsupportedFormat)?;
+    let (ty, prefix) = frame_type(kind).ok_or(Error::UnsupportedItem(kind))?;
     Ok(Op::New { ty, prefix, data })
 }
 
@@ -463,7 +452,7 @@ fn plan<'a>(src: &Structure, head: [u8; 10], updates: &'a Updates) -> Result<Wri
     let tagged = first == Some(HEADER);
 
     let mut xmp = MetadataSlot::new(updates.xmp());
-    let mut jumbf = MetadataSlot::new(updates.jumbf());
+    let mut jumbf = MetadataSlot::new(updates.c2pa());
     let (mut body, mut padding, mut media, mut changed) = (Vec::new(), None, None, false);
     if tagged {
         for (i, seg) in src.segments().iter().enumerate() {
@@ -481,7 +470,7 @@ fn plan<'a>(src: &Structure, head: [u8; 10], updates: &'a Updates) -> Result<Wri
                     continue;
                 }
                 (_, Some(ItemKind::Xmp)) => Some((ItemKind::Xmp, &mut xmp)),
-                (_, Some(ItemKind::Jumbf)) => Some((ItemKind::Jumbf, &mut jumbf)),
+                (_, Some(ItemKind::C2pa)) => Some((ItemKind::C2pa, &mut jumbf)),
                 _ => None,
             };
             match slot {
@@ -502,7 +491,7 @@ fn plan<'a>(src: &Structure, head: [u8; 10], updates: &'a Updates) -> Result<Wri
     }
     for (kind, add) in [
         (ItemKind::Xmp, xmp.pending()),
-        (ItemKind::Jumbf, jumbf.pending()),
+        (ItemKind::C2pa, jumbf.pending()),
     ] {
         if let Some(d) = add {
             if opaque {
@@ -570,7 +559,7 @@ fn plan<'a>(src: &Structure, head: [u8; 10], updates: &'a Updates) -> Result<Wri
                     data,
                     &[][..],
                 )?;
-                b.item(item_info(ty, data), &[id])?;
+                b.item(item_info(ty), &[id])?;
             }
         }
     }

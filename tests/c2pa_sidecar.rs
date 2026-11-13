@@ -16,9 +16,13 @@
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
 use asset_io::{
-    container_api, containers::c2pa::handler, io::DEFAULT_WINDOW, plan::validate, task::Progress,
-    testing::Conformance, Asset, Encoding, Error, HandlerRegistry, ItemKind, NullSink, SegmentKind,
-    Structure, TransferEncoding, Updates,
+    container_api,
+    containers::c2pa::handler,
+    plan::validate,
+    task::Progress,
+    testing::{c2pa_store, jumbf, Conformance},
+    Asset, Encoding, Error, HandlerRegistry, ItemKind, NullSink, SegmentKind, Structure,
+    TransferEncoding, Updates,
 };
 
 /// Parse with the sidecar handler directly, from any reader.
@@ -30,21 +34,6 @@ fn parse<R: Read + Seek>(source: &mut R) -> asset_io::Result<Structure> {
 fn open(bytes: &[u8]) -> Asset<Cursor<&[u8]>> {
     let registry = HandlerRegistry::new().with_handler(asset_io::containers::c2pa::C2paHandler);
     Asset::open_with(&registry, Cursor::new(bytes), Some("c2pa")).unwrap()
-}
-
-const STORE_TYPE: [u8; 16] = [
-    0x63, 0x32, 0x70, 0x61, 0x00, 0x11, 0x00, 0x10, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71,
-];
-
-fn store(ty: [u8; 16]) -> Vec<u8> {
-    let mut bytes = 38u32.to_be_bytes().to_vec();
-    bytes.extend_from_slice(b"jumb");
-    bytes.extend_from_slice(&30u32.to_be_bytes());
-    bytes.extend_from_slice(b"jumd");
-    bytes.extend_from_slice(&ty);
-    bytes.push(3);
-    bytes.extend_from_slice(b"c2pa\0");
-    bytes
 }
 
 fn write(source: &[u8], updates: &Updates) -> (Vec<u8>, Structure) {
@@ -84,7 +73,7 @@ fn aliases_and_conservative_detection() {
         assert_eq!(registry.media_type_for(format), Some("application/c2pa"));
         assert_eq!(registry.extension_for(format), Some("c2pa"));
     }
-    let bytes = store(STORE_TYPE);
+    let bytes = c2pa_store(&[]);
     assert_eq!(registry.detect(&bytes).unwrap().id(), "c2pa");
     assert_eq!(
         Asset::open_with(&registry, Cursor::new(&bytes), None)
@@ -95,7 +84,7 @@ fn aliases_and_conservative_detection() {
     for n in 0..32 {
         assert!(registry.detect(&bytes[..n]).is_none(), "{n} bytes");
     }
-    assert!(registry.detect(&store([1; 16])).is_none());
+    assert!(registry.detect(&jumbf([1; 16], &[])).is_none());
     assert!(registry.detect(b"opaque manifest bytes").is_none());
     let mut wrong_box = bytes;
     wrong_box[4..8].copy_from_slice(b"free");
@@ -104,7 +93,7 @@ fn aliases_and_conservative_detection() {
 
 #[test]
 fn the_entire_file_is_the_stored_jumbf_item() {
-    for bytes in [store(STORE_TYPE), b"opaque bytes".to_vec(), vec![0]] {
+    for bytes in [c2pa_store(&[]), b"opaque bytes".to_vec(), vec![0]] {
         let asset = open(&bytes);
         assert_eq!(asset.media_type(), "application/c2pa");
         assert_eq!(asset.total_size(), bytes.len() as u64);
@@ -114,22 +103,23 @@ fn the_entire_file_is_the_stored_jumbf_item() {
         assert_eq!(segment.header().len(), 0);
         assert_eq!(segment.trailer().len(), 0);
         assert_eq!(segment.payload().len(), bytes.len() as u64);
-        let item = asset.require_item(ItemKind::Jumbf).unwrap();
+        let item = asset.require_item(ItemKind::C2pa).unwrap();
         assert_eq!(item.encoding(), Encoding::Jumbf);
         assert_eq!(*item.transfer(), TransferEncoding::Identity);
         assert_eq!(item.extent_count(), 1);
         assert_eq!(item.extents().next().unwrap().range(), segment.range());
-        assert_eq!(asset.store().unwrap(), Some(bytes.clone()));
+        assert_eq!(asset.c2pa_store().unwrap(), Some(bytes.clone()));
         assert_eq!(asset.read_item(item).unwrap(), bytes);
         assert_eq!(asset.xmp().unwrap(), None);
     }
-    let bytes = store(STORE_TYPE);
+    // The whole file is the store; nothing is read to say so.
+    let bytes = c2pa_store(&[]);
     assert_eq!(
         open(&bytes)
-            .require_item(ItemKind::Jumbf)
+            .require_item(ItemKind::C2pa)
             .unwrap()
             .jumbf_type(),
-        Some(STORE_TYPE)
+        None
     );
 }
 
@@ -139,30 +129,30 @@ fn empty_sidecars_have_no_items_and_can_receive_a_store() {
     assert_eq!(empty.total_size(), 0);
     assert!(empty.segments().is_empty());
     assert!(empty.items().next().is_none());
-    assert_eq!(empty.store().unwrap(), None);
-    let bytes = store(STORE_TYPE);
-    let (output, _) = write(&[], &Updates::new().set_jumbf(bytes.clone()));
+    assert_eq!(empty.c2pa_store().unwrap(), None);
+    let bytes = c2pa_store(&[]);
+    let (output, _) = write(&[], &Updates::new().set_c2pa(bytes.clone()));
     assert_eq!(output, bytes);
 }
 
 #[test]
 fn keep_replace_empty_and_remove_have_no_added_framing() {
-    for source in [Vec::new(), store(STORE_TYPE), b"opaque".to_vec()] {
+    for source in [Vec::new(), c2pa_store(&[]), b"opaque".to_vec()] {
         assert_eq!(write(&source, &Updates::new()).0, source);
         assert_eq!(write(&source, &Updates::new().remove_xmp()).0, source);
-        for replacement in [Vec::new(), store([1; 16]), b"new store".to_vec()] {
-            let (output, _) = write(&source, &Updates::new().set_jumbf(replacement.clone()));
+        for replacement in [Vec::new(), jumbf([1; 16], &[]), b"new store".to_vec()] {
+            let (output, _) = write(&source, &Updates::new().set_c2pa(replacement.clone()));
             assert_eq!(output, replacement);
             assert_eq!(
                 write(
                     &source,
-                    &Updates::new().set_jumbf(replacement.clone()).as_update()
+                    &Updates::new().set_c2pa(replacement.clone()).as_update()
                 )
                 .0,
                 replacement
             );
         }
-        for updates in [Updates::new().remove_jumbf(), Updates::remove_all()] {
+        for updates in [Updates::new().remove_c2pa(), Updates::remove_all()] {
             let (output, structure) = write(&source, &updates);
             assert!(output.is_empty());
             assert!(structure.items().next().is_none());
@@ -172,29 +162,12 @@ fn keep_replace_empty_and_remove_have_no_added_framing() {
 }
 
 #[test]
-fn typed_removal_preserves_other_and_unknown_types() {
-    let bytes = store(STORE_TYPE);
-    assert!(write(&bytes, &Updates::new().remove_jumbf_of(STORE_TYPE))
-        .0
-        .is_empty());
-    assert_eq!(
-        write(&bytes, &Updates::new().remove_jumbf_of([1; 16])).0,
-        bytes
-    );
-    let opaque = b"untyped store";
-    assert_eq!(
-        write(opaque, &Updates::new().remove_jumbf_of(STORE_TYPE)).0,
-        opaque
-    );
-}
-
-#[test]
 fn composing_is_identity_for_jumbf_only() {
     assert_eq!(
-        handler().compose(ItemKind::Jumbf, b"store").unwrap(),
+        handler().compose(ItemKind::C2pa, b"store").unwrap(),
         b"store"
     );
-    assert!(handler().compose(ItemKind::Jumbf, b"").unwrap().is_empty());
+    assert!(handler().compose(ItemKind::C2pa, b"").unwrap().is_empty());
     assert!(matches!(
         handler().compose(ItemKind::Xmp, b"<x/>"),
         Err(Error::UnsupportedFormat)
@@ -203,12 +176,12 @@ fn composing_is_identity_for_jumbf_only() {
 
 #[test]
 fn setting_xmp_is_rejected_before_output_is_changed() {
-    let source = store(STORE_TYPE);
+    let source = c2pa_store(&[]);
     let mut output = b"untouched".to_vec();
-    let updates = Updates::new().set_xmp(b"<x/>".to_vec()).remove_jumbf();
+    let updates = Updates::new().set_xmp(b"<x/>".to_vec()).remove_c2pa();
     assert!(matches!(
         open(&source).write(&mut output, &updates, &mut NullSink),
-        Err(Error::UnsupportedFeature(_))
+        Err(Error::UnsupportedItem(ItemKind::Xmp))
     ));
     assert_eq!(output, b"untouched");
 }
@@ -219,7 +192,7 @@ fn patches_require_the_exact_length_and_never_pad() {
     // A writable copy, opened directly, so it can be patched in place.
     let registry = HandlerRegistry::new().with_handler(asset_io::containers::c2pa::C2paHandler);
     let output = Asset::open_with(&registry, Cursor::new(source.to_vec()), Some("c2pa")).unwrap();
-    let item = output.require_item(ItemKind::Jumbf).unwrap();
+    let item = output.require_item(ItemKind::C2pa).unwrap();
     for replacement in [b"short".as_slice(), b"replacement too long".as_slice()] {
         assert!(output.patch(item, replacement).is_err());
         assert_eq!(output.read_item(item).unwrap(), source);
@@ -249,8 +222,8 @@ impl Seek for Counted {
 }
 
 #[test]
-fn parsing_reads_only_a_bounded_prefix_and_planning_reads_nothing() {
-    let mut bytes = store(STORE_TYPE);
+fn parsing_and_planning_read_nothing() {
+    let mut bytes = c2pa_store(&[]);
     bytes.resize(2 * 1024 * 1024, 0);
     let mut source = Counted {
         source: Cursor::new(bytes),
@@ -258,38 +231,18 @@ fn parsing_reads_only_a_bounded_prefix_and_planning_reads_nothing() {
     };
     let structure = parse(&mut source).unwrap();
     assert_eq!(structure.total_size(), 2 * 1024 * 1024);
-    assert!(
-        (32..=DEFAULT_WINDOW).contains(&source.read),
-        "{} bytes read",
-        source.read
-    );
-    let updates = Updates::new().remove_jumbf();
+    assert_eq!(source.read, 0);
+    let updates = Updates::new().remove_c2pa();
     let mut task = structure.write_plan_task(&updates);
     assert!(matches!(task.resume().unwrap(), Progress::Done(_)));
 }
 
 #[test]
-fn prefix_read_errors_are_propagated() {
-    struct Broken;
-    impl Read for Broken {
-        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-            Err(io::Error::other("read failed"))
-        }
-    }
-    impl Seek for Broken {
-        fn seek(&mut self, _: SeekFrom) -> io::Result<u64> {
-            Ok(64)
-        }
-    }
-    assert!(matches!(parse(&mut Broken), Err(Error::Io(_))));
-}
-
-#[test]
 fn empty_opaque_and_structured_sidecars_conform() {
-    for sample in [Vec::new(), b"opaque".to_vec(), store(STORE_TYPE)] {
+    for sample in [Vec::new(), b"opaque".to_vec(), c2pa_store(&[])] {
         Conformance::new(handler())
             .xmp(None)
-            .jumbf(Some(store(STORE_TYPE)))
+            .c2pa(Some(c2pa_store(&[])))
             .check("sidecar", &sample);
     }
 }

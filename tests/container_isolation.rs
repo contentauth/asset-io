@@ -153,7 +153,7 @@ fn containers_use_the_public_api_and_not_each_other() {
                         .chars()
                         .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
                         .collect();
-                    // `crate::Item`, `crate::{..}`, `crate::C2paHash::Bmff`: the crate
+                    // `crate::Item`, `crate::{..}`, `crate::ItemKind::C2pa`: the crate
                     // root's re-exports. Only a lower-case name is a module.
                     if !rest[module.len()..].starts_with("::")
                         || !module.starts_with(|c: char| c.is_ascii_lowercase())

@@ -23,7 +23,7 @@ use std::{
 };
 
 use asset_io::{
-    container_api::MetadataUpdate, HandlerRegistry, Name, Relation, Role, Structure,
+    container_api::MetadataUpdate, HandlerRegistry, Name, Relation, Role, SegmentId, Structure,
     TransferEncoding, Updates,
 };
 use cimpl::{
@@ -196,17 +196,25 @@ fn transfer(t: &TransferEncoding) -> Value {
 fn relation(r: &Relation) -> Value {
     json!({"kind": r.kind().as_str(), "native": r.native(), "target": r.target()})
 }
-fn describe(s: &Structure) -> Value {
-    json!({
+fn describe(s: &Structure) -> asset_io::Result<Value> {
+    let segments = s
+        .segments()
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            Ok(json!({
+                "kind":v.kind().as_str(), "name":name(v.name()), "range":range(v.range()),
+                "box_name":s.box_name(SegmentId::from_index(i)?, v),
+                "regions":v.regions().map(|(r,b)|json!({"role":role(r),"range":range(b)})).collect::<Vec<_>>(),
+                "subdivides":v.subdivides()
+            }))
+        })
+        .collect::<asset_io::Result<Vec<_>>>()?;
+    Ok(json!({
         "schema": 1,
         "container": s.container_id(), "media_type": s.media_type(), "size": s.total_size(),
         "trailing": s.trailing().map(range),
-        "segments": s.segments().iter().map(|v| json!({
-            "kind":v.kind().as_str(), "name":name(v.name()), "range":range(v.range()),
-            "box_name":s.box_name(v.name()),
-            "regions":v.regions().map(|(r,b)|json!({"role":role(r),"range":range(b)})).collect::<Vec<_>>(),
-            "subdivides":v.subdivides()
-        })).collect::<Vec<_>>(),
+        "segments": segments,
         "items": s.items().map(|e|json!({
             "kind":e.kind().as_str(), "category":e.kind().category().as_str(),
             "encoding":e.encoding().as_str(), "transfer":transfer(e.transfer()), "label":e.label(), "media_type":e.media_type(),
@@ -221,7 +229,7 @@ fn describe(s: &Structure) -> Value {
             "media_type":a.media_type(),"primary":a.is_primary()
         })).collect::<Vec<_>>(),
         "regions":s.regions().map(|r|json!({"segment":r.segment.index(),"role":role(r.role),"range":range(r.range)})).collect::<Vec<_>>()
-    })
+    }))
 }
 
 fn parse(reg: &HandlerRegistry, format: *const c_char, mut source: Source) -> *mut AssetIoAsset {
@@ -333,7 +341,8 @@ pub extern "C" fn asset_io_asset_structure(asset: *mut AssetIoAsset) -> *mut Ass
 pub extern "C" fn asset_io_structure_json(structure: *mut AssetIoStructure) -> *mut AssetIoBuffer {
     boundary(ptr::null_mut(), || {
         let s = deref_or_return!(structure, AssetIoStructure, ptr::null_mut());
-        json_buffer(describe(&s.0))
+        let value = ok_or_return!(describe(&s.0).map_err(CoreError), ptr::null_mut());
+        json_buffer(value)
     })
 }
 
@@ -409,7 +418,7 @@ pub extern "C" fn asset_io_item_bytes(
     })
 }
 
-/// Extract XMP (kind=1) or logical JUMBF store (kind=2).
+/// Extract XMP (kind=1) or the logical C2PA manifest store (kind=2).
 /// Absence is a NotFound error, not an empty buffer; ambiguity remains an error.
 #[no_mangle]
 pub extern "C" fn asset_io_metadata_bytes(
@@ -421,9 +430,9 @@ pub extern "C" fn asset_io_metadata_bytes(
         let s = a.structure.clone();
         let result = match kind {
             1 => s.xmp(&mut a.source),
-            2 => s.store(&mut a.source),
+            2 => s.c2pa_store(&mut a.source),
             _ => {
-                invalid("metadata kind must be 1 (XMP) or 2 (JUMBF)").set_last();
+                invalid("metadata kind must be 1 (XMP) or 2 (C2PA)").set_last();
                 return ptr::null_mut();
             }
         };
@@ -435,14 +444,15 @@ pub extern "C" fn asset_io_metadata_bytes(
     })
 }
 
-/// Read a JUMBF item's type as 16 bytes; error if not known/a superbox.
+/// A JUMBF item's superbox type as 16 bytes, as the container recorded it while
+/// parsing; NotFound if it did not (see `Item::jumbf_type`).
 #[no_mangle]
 pub extern "C" fn asset_io_item_jumbf_type(
     asset: *mut AssetIoAsset,
     index: usize,
 ) -> *mut AssetIoBuffer {
     boundary(ptr::null_mut(), || {
-        let mut a = deref_mut_or_return!(asset, AssetIoAsset, ptr::null_mut());
+        let a = deref_or_return!(asset, AssetIoAsset, ptr::null_mut());
         let s = a.structure.clone();
         let e = ok_or_return!(
             s.items()
@@ -450,13 +460,10 @@ pub extern "C" fn asset_io_item_jumbf_type(
                 .ok_or_else(|| invalid("item index out of range")),
             ptr::null_mut()
         );
-        let ty = ok_or_return!(
-            s.jumbf_type(&mut a.source, e).map_err(CoreError),
-            ptr::null_mut()
-        );
         buffer(
             ok_or_return!(
-                ty.ok_or_else(|| cimpl::Error::new("NotFound", "JUMBF type is absent")),
+                e.jumbf_type()
+                    .ok_or_else(|| cimpl::Error::new("NotFound", "JUMBF type is absent")),
                 ptr::null_mut()
             )
             .to_vec(),
@@ -471,8 +478,8 @@ pub extern "C" fn asset_io_updates_new() -> *mut AssetIoUpdates {
     })
 }
 
-/// kind: 1=XMP, 2=JUMBF. action: 0=keep, 1=set, 2=remove.
-/// Data is copied for set; ignored otherwise. JUMBF set automatically scopes to its superbox type.
+/// kind: 1=XMP, 2=C2PA manifest store. action: 0=keep, 1=set, 2=remove.
+/// Data is copied for set; ignored otherwise. Other JUMBF is never changed.
 #[no_mangle]
 pub extern "C" fn asset_io_updates_metadata(
     updates: *mut AssetIoUpdates,
@@ -497,32 +504,11 @@ pub extern "C" fn asset_io_updates_metadata(
             (1, 0) => old.keep_xmp(),
             (1, 1) => old.set_xmp(data),
             (1, 2) => old.remove_xmp(),
-            (2, 0) => old.keep_jumbf(),
-            (2, 1) => old.set_jumbf(data),
-            (2, 2) => old.remove_jumbf(),
+            (2, 0) => old.keep_c2pa(),
+            (2, 1) => old.set_c2pa(data),
+            (2, 2) => old.remove_c2pa(),
             _ => unreachable!(),
         };
-        0
-    })
-}
-
-/// Remove only JUMBF of the supplied 16-byte type. len must equal 16.
-#[no_mangle]
-pub extern "C" fn asset_io_updates_remove_jumbf_type(
-    updates: *mut AssetIoUpdates,
-    uuid: *const u8,
-    len: usize,
-) -> i32 {
-    boundary(-1, || {
-        let mut u = deref_mut_or_return!(updates, AssetIoUpdates, -1);
-        if len != 16 {
-            invalid("JUMBF type must be 16 bytes").set_last();
-            return -1;
-        }
-        let bytes = bytes_or_return!(uuid, len, "uuid", -1);
-        let mut ty = [0; 16];
-        ty.copy_from_slice(bytes);
-        u.0 = std::mem::take(&mut u.0).remove_jumbf_of(ty);
         0
     })
 }
@@ -537,13 +523,13 @@ pub extern "C" fn asset_io_updates_remove_all(updates: *mut AssetIoUpdates) -> i
     })
 }
 
-/// Mark the currently set JUMBF as an update manifest (core BMFF semantics).
+/// Mark the currently set C2PA store as an update manifest (core BMFF semantics).
 #[no_mangle]
 pub extern "C" fn asset_io_updates_as_update(updates: *mut AssetIoUpdates) -> i32 {
     boundary(-1, || {
         let mut u = deref_mut_or_return!(updates, AssetIoUpdates, -1);
-        if !matches!(u.0.jumbf(), MetadataUpdate::Set(_)) {
-            invalid("set JUMBF before as_update").set_last();
+        if !matches!(u.0.c2pa(), MetadataUpdate::Set(_)) {
+            invalid("set the C2PA store before as_update").set_last();
             return -1;
         }
         u.0 = std::mem::take(&mut u.0).as_update();
