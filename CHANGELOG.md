@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/contentauth/asset-io/compare/v0.4.0...v0.5.0) - 2026-11-13
+
+### Added
+
+- [**breaking**] abstract the c2pa_box handling apis to be generic over any type ([#39](https://github.com/contentauth/asset-io/pull/39))
+
+### Documentation
+
+- Add design priorities and Copilot instructions ([#37](https://github.com/contentauth/asset-io/pull/37))
+
 ### Changed
 
 - Replace `ContainerHandler::c2pa_box_name` and the context-free `box_name` with
