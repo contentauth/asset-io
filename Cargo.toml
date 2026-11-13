@@ -5,7 +5,7 @@ exclude = ["fuzz"]
 
 # Shared by every crate in the workspace, so they release with one version.
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.88"
 authors = ["Gavin Peacock <gpeacock@adobe.com>"]
@@ -13,7 +13,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/contentauth/asset-io"
 
 [workspace.dependencies]
-asset-io = { path = ".", version = "0.5.0", default-features = false }
+asset-io = { path = ".", version = "0.6.0", default-features = false }
 
 [package]
 name = "asset-io"
