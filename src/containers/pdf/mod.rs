@@ -141,8 +141,8 @@ impl ContainerHandler for PdfHandler {
     ) -> BoxFuture<'f, Result<WritePlan<'a>>> {
         Box::pin(async move {
             let mut io = io;
-            let delta = c2pa_delta(src_structure, &mut io, updates).await?;
-            plan(src_structure, io.len(), updates, delta)
+            let c2pa = c2pa_write(src_structure, &mut io, updates).await?;
+            plan(src_structure, io.len(), updates, c2pa)
         })
     }
 
@@ -962,19 +962,19 @@ impl<'io> Parser<'io> {
         Ok(stores)
     }
 
-    /// The C2PA stores of the revisions before the latest, oldest first, other than
-    /// the one at `active`. C2PA reads the stores of all revisions as one, so these
-    /// come before the latest revision's store.
+    /// The C2PA stores of the revisions before the latest, other than the one at
+    /// `active`. C2PA reads the stores of all revisions as one, so these come before
+    /// the latest revision's store.
     ///
-    /// A revision that adds more than one store has none of them counted, and a
-    /// revision that cannot be read is passed over; neither fails the document.
-    async fn earlier_stores(
-        &mut self,
-        active: Option<u64>,
-    ) -> Result<Vec<(ByteRange, Option<Decode>)>> {
+    /// The walk goes back from the latest revision and ends at one whose catalog
+    /// lists no store: the store was removed there, and what came before is not
+    /// part of what follows. A revision that adds more than one store has none of
+    /// them counted, and a revision that cannot be read is passed over; neither
+    /// fails the document.
+    async fn earlier_stores(&mut self, active: u64) -> Result<Vec<(ByteRange, Option<Decode>)>> {
         let mut found = Vec::new();
-        let mut seen = BTreeSet::new();
-        for index in (1..self.xrefs.len()).rev() {
+        let mut seen = BTreeSet::from([active]);
+        for index in 1..self.xrefs.len() {
             let Some(root) = self.roots[index] else {
                 continue;
             };
@@ -983,11 +983,16 @@ impl<'io> Parser<'io> {
             let result = self.revision_stores(root).await;
             self.skip = 0;
             self.object_stream = None;
-            let stores = match result {
+            let mut stores = match result {
                 Ok(stores) => stores,
                 Err(Error::InvalidFormat(_) | Error::UnsupportedFeature(_)) => continue,
                 Err(error) => return Err(error),
             };
+            // An empty stream holds nothing.
+            stores.retain(|(range, _)| !range.is_empty());
+            if stores.is_empty() {
+                break;
+            }
             let mut added = stores
                 .into_iter()
                 .filter(|(range, _)| !seen.contains(&range.offset()));
@@ -996,7 +1001,6 @@ impl<'io> Parser<'io> {
                 found.push(store);
             }
         }
-        found.retain(|(range, _)| Some(range.offset()) != active);
         Ok(found)
     }
 
@@ -1067,7 +1071,7 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<St
         .find(|r| r.1 == ItemKind::C2pa && !r.0.is_empty())
         .map(|r| r.0);
     if let Some(active) = current {
-        for (range, decode) in parser.earlier_stores(Some(active.offset())).await? {
+        for (range, decode) in parser.earlier_stores(active.offset()).await? {
             ranges.push((range, ItemKind::C2pa, decode, true));
         }
     }
@@ -1145,22 +1149,43 @@ fn flush<'a>(b: &mut PlanBuilder<'_, 'a>, run: &mut Vec<Text<'a>>) -> Result<()>
     Ok(())
 }
 
-/// What the new store adds to the store the file already has, if `updates` marks it
-/// as an update and it extends that store. C2PA reads the stores of a PDF's
-/// revisions as one, so the revision then holds only this addition. Otherwise
-/// (`None`) the revision holds the whole store.
-async fn c2pa_delta(src: &Structure, io: &mut Io, updates: &Updates) -> Result<Option<Vec<u8>>> {
-    let MetadataUpdate::Set(full) = updates.c2pa() else {
-        return Ok(None);
+/// What a revision holds of the C2PA store `updates` asks for.
+///
+/// C2PA reads the stores of a PDF's revisions as one, so a revision holds only the
+/// manifests it adds, never the earlier ones again. A new store is therefore the
+/// store the file already has, extended: its addition is written. One that adds
+/// nothing, does not extend the existing store, or is not JUMBF so cannot be
+/// compared with it, is refused, since the only way to write it would be to repeat
+/// the earlier manifests. An existing store that is not JUMBF has no manifests to
+/// repeat, so the new store is written as it is.
+async fn c2pa_write<'a>(
+    src: &Structure,
+    io: &mut Io,
+    updates: &'a Updates,
+) -> Result<write::C2pa<'a>> {
+    let full = match updates.c2pa() {
+        MetadataUpdate::Keep => return Ok(write::C2pa::Keep),
+        MetadataUpdate::Remove => return Ok(write::C2pa::Remove),
+        MetadataUpdate::Set(full) => full,
     };
-    if !updates.is_c2pa_update() {
-        return Ok(None);
-    }
     let Some(existing) = src.c2pa_store_async(io).await? else {
-        return Ok(None);
+        return Ok(write::C2pa::Set(Cow::Borrowed(full.as_slice())));
     };
-    // Stores that are not JUMBF cannot be told apart by their manifests.
-    Ok(crate::jumbf::addition_to(&existing, full).unwrap_or(None))
+    if *full == existing {
+        return Err(Error::UnsupportedFeature(
+            "the PDF C2PA store has no manifests the file does not already have",
+        ));
+    }
+    // Without manifests to tell apart there is nothing earlier to repeat.
+    if !crate::jumbf::is_wellformed(&existing) {
+        return Ok(write::C2pa::Set(Cow::Borrowed(full.as_slice())));
+    }
+    match crate::jumbf::addition_to(&existing, full) {
+        Ok(Some(delta)) => Ok(write::C2pa::Set(Cow::Owned(delta))),
+        _ => Err(Error::UnsupportedFeature(
+            "a new PDF C2PA store must extend the existing store: earlier manifests cannot be rewritten or repeated",
+        )),
+    }
 }
 
 /// A write is the whole source, unchanged, then an appended revision. In the output,
@@ -1172,7 +1197,7 @@ fn plan<'a>(
     src: &Structure,
     source_len: u64,
     updates: &'a Updates,
-    delta: Option<Vec<u8>>,
+    c2pa: write::C2pa<'a>,
 ) -> Result<WritePlan<'a>> {
     if source_len != src.total_size() {
         return Err(invalid("source size changed since parsing"));
@@ -1180,8 +1205,7 @@ fn plan<'a>(
     let state = PdfState::of(src)?;
     let segments = src.segments();
     let mut b = PlanBuilder::new(src);
-    let noop = matches!(updates.xmp(), MetadataUpdate::Keep)
-        && matches!(updates.c2pa(), MetadataUpdate::Keep);
+    let noop = matches!(updates.xmp(), MetadataUpdate::Keep) && matches!(c2pa, write::C2pa::Keep);
     if noop {
         for i in 0..segments.len() {
             b.copy_segment(SegmentId::from_index(i)?)?;
@@ -1196,23 +1220,17 @@ fn plan<'a>(
     let write::State::Ready(context) = &state.edit else {
         return Err(invalid("missing editable PDF context"));
     };
-    let revision = write::revision(context, src.total_size(), updates, delta.as_deref())?;
+    let revision = write::revision(context, src.total_size(), updates, &c2pa)?;
 
     let keeps = |kind: ItemKind| {
-        matches!(
-            if kind == ItemKind::Xmp {
-                updates.xmp()
-            } else {
-                updates.c2pa()
-            },
-            MetadataUpdate::Keep
-        )
+        if kind == ItemKind::Xmp {
+            matches!(updates.xmp(), MetadataUpdate::Keep)
+        } else {
+            matches!(c2pa, write::C2pa::Keep)
+        }
     };
     // With a new store, the earlier ones are read before it. An empty one is nothing.
-    let supersedes = match updates.c2pa() {
-        MetadataUpdate::Set(data) => delta.is_some() || !data.is_empty(),
-        _ => false,
-    };
+    let supersedes = matches!(&c2pa, write::C2pa::Set(data) if !data.is_empty());
     let mut run: Vec<Text<'a>> = Vec::new();
     for (i, seg) in segments.iter().enumerate() {
         let id = SegmentId::from_index(i)?;
@@ -1240,16 +1258,13 @@ fn plan<'a>(
         match piece {
             write::Piece::Syntax(bytes) => run.push(Text::Put(Cow::Owned(bytes))),
             write::Piece::Stream(kind) => {
-                let data: Cow<'a, [u8]> = match (kind, &delta) {
-                    (ItemKind::C2pa, Some(delta)) => Cow::Owned(delta.clone()),
-                    _ => match if kind == ItemKind::Xmp {
-                        updates.xmp()
-                    } else {
-                        updates.c2pa()
-                    } {
+                let data: Cow<'a, [u8]> = match (kind, &c2pa) {
+                    (ItemKind::C2pa, write::C2pa::Set(data)) => data.clone(),
+                    (ItemKind::Xmp, _) => match updates.xmp() {
                         MetadataUpdate::Set(data) => Cow::Borrowed(data.as_slice()),
                         _ => return Err(invalid("write plan payload missing")),
                     },
+                    _ => return Err(invalid("write plan payload missing")),
                 };
                 // An empty stream holds nothing to expose.
                 if !data.is_empty() {

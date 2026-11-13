@@ -215,6 +215,12 @@ pub fn extend(frozen: &[u8], addition: &[u8]) -> Result<Vec<u8>> {
     Ok(superbox(&frozen[f.description], children))
 }
 
+/// Whether `b` is a JUMBF superbox with well-formed children: one whose manifests
+/// [`addition_to`] can tell apart.
+pub(crate) fn is_wellformed(b: &[u8]) -> bool {
+    parse(b).is_ok()
+}
+
 /// The store a reader sees when `later` is the store of a later revision than
 /// `earlier`. A `later` that already holds all of `earlier`'s manifests, byte for
 /// byte, is a whole store and stands alone; otherwise it holds only the manifests
@@ -344,5 +350,25 @@ mod tests {
             c[i] ^= 0xff;
             let _ = addition_to(&store, &c);
         }
+    }
+
+    #[test]
+    fn a_later_revision_is_a_whole_store_or_an_addition() {
+        let (m1, m2, m3) = (manifest(b"1"), manifest(b"2"), manifest(b"3"));
+        let earlier = superbox(&STORE, &[m1.clone(), m2.clone()]);
+        // One written whole, holding the earlier manifests, or repeating them
+        // exactly, stands alone.
+        let whole = superbox(&STORE, &[m1.clone(), m2.clone(), m3.clone()]);
+        assert_eq!(combine_revisions(&earlier, &whole).unwrap(), whole);
+        assert_eq!(combine_revisions(&earlier, &earlier).unwrap(), earlier);
+        // One that holds only what a revision added follows the earlier store.
+        let added = superbox(&STORE, std::slice::from_ref(&m3));
+        assert_eq!(combine_revisions(&earlier, &added).unwrap(), whole);
+        // Stores that cannot be combined leave the later one.
+        let other = superbox(&OTHER, std::slice::from_ref(&m3));
+        assert_eq!(combine_revisions(&earlier, &other).unwrap(), other);
+        assert_eq!(combine_revisions(b"first", b"second").unwrap(), b"second");
+        assert!(is_wellformed(&earlier));
+        assert!(!is_wellformed(b"first"));
     }
 }

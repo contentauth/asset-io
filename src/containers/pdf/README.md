@@ -53,8 +53,9 @@ such). `Structure::c2pa_item` is the latest store, and `Structure::c2pa_store` r
 all of them in order. A store that already holds everything before it, as one
 written whole is, stands alone instead of being appended. A revision that adds more
 than one store, or that cannot be read, contributes none, and does not fail the
-document. Earlier stores count only beside a current one: after `remove_c2pa` the
-document has no store.
+document. The walk back ends at a revision whose catalog lists no store, so
+`remove_c2pa` leaves a document with no store, and a store added after it starts
+again; the removed stores remain in the file as ordinary data.
 
 Encryption, hybrid-reference files, external metadata streams, other filter
 types/chains, and other predictor layouts remain unsupported. Recognized
@@ -115,14 +116,18 @@ C2PA embedding creates a file specification referenced by both catalog `/AF`
 and `/Names /EmbeddedFiles`. Setting a store replaces the references to the one
 before, which stays in the file as an earlier revision's store.
 
-`set_c2pa(store).as_update()` writes only what `store` adds, when it begins with the
-manifests already in the file, byte for byte: the new revision's store holds the
-new manifests alone, and a reader combines it with the earlier ones. Each save then
-adds about the size of the new manifest, however many came before. Otherwise (no
-flag, or a store that does not extend the existing one) the whole store is written,
-as before; that is the legacy form, and it repeats the earlier manifests in every
-revision. A caller adding a manifest should build the full store as it would for
-any container, and use `as_update()`. The first writer supports flat, sorted name trees
+`set_c2pa(store)` writes only what `store` adds to the store the file already has.
+`store` is the whole store, as a caller builds it for any container, and it must
+begin with the manifests already in the file, byte for byte: the new revision's
+store then holds the new manifests alone, and a reader combines it with the earlier
+ones. Each save adds about the size of the new manifest, however many came before,
+and the earlier manifests are never repeated. A store that adds nothing, or that
+does not extend the existing one (the earlier manifests changed, or `store` is not
+JUMBF), is refused with `Error::UnsupportedFeature`: the only way to write it would
+be to repeat them. `as_update()` has no effect here. A store written before this
+rule, whole in each revision, is read as the latest one alone. If the existing
+store is not JUMBF, there are no manifests to repeat, and the new store is written
+as it is. The first writer supports flat, sorted name trees
 (including indirect dictionaries/arrays), not `/Kids` trees. Existing active
 C2PA attachments must already be registered in that tree; annotation-only or
 unregistered associations are not writable. Attachment-name collisions are

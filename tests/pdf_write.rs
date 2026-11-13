@@ -831,7 +831,7 @@ mod update_manifests {
         for n in 2..=manifests.len() {
             let refs: Vec<&[u8]> = manifests[..n].iter().map(Vec::as_slice).collect();
             let full = c2pa_store(&refs);
-            let next = write(&bytes, &Updates::new().set_c2pa(full.clone()).as_update());
+            let next = write(&bytes, &Updates::new().set_c2pa(full.clone()));
             growth.push(next.len() - bytes.len());
 
             // The revision holds only what it adds; the reader sees the whole store.
@@ -856,9 +856,7 @@ mod update_manifests {
         );
         let second = write(
             &first,
-            &Updates::new()
-                .set_c2pa(c2pa_store(&[b"m1", b"m2"]))
-                .as_update(),
+            &Updates::new().set_c2pa(c2pa_store(&[b"m1", b"m2"])),
         );
         let mut asset = open(&second);
         let Asset { source, structure } = &mut asset;
@@ -876,20 +874,55 @@ mod update_manifests {
     }
 
     #[test]
-    fn a_store_that_extends_the_last_is_read_whole_without_the_flag() {
+    fn a_store_that_extends_the_last_is_written_as_its_addition() {
         let first = write(
             &document(b"<< /Type /Catalog >>", ""),
             &Updates::new().set_c2pa(c2pa_store(&[b"m1"])),
         );
         let full = c2pa_store(&[b"m1", b"m2"]);
         let second = write(&first, &Updates::new().set_c2pa(full.clone()));
-        assert_eq!(active(&second), full);
+        assert_eq!(active(&second), c2pa_store(&[b"m2"]));
         assert_eq!(combined(&second), Some(full));
+    }
 
-        // An update that does not extend the store is written whole, too.
-        let other = c2pa_store(&[b"x1", b"x2"]);
-        let third = write(&second, &Updates::new().set_c2pa(other.clone()).as_update());
-        assert_eq!(active(&third), other);
+    #[test]
+    fn a_store_that_adds_nothing_or_does_not_extend_the_last_is_refused() {
+        let first = write(
+            &document(b"<< /Type /Catalog >>", ""),
+            &Updates::new().set_c2pa(c2pa_store(&[b"m1", b"m2"])),
+        );
+        for store in [
+            c2pa_store(&[b"x1", b"x2"]),
+            c2pa_store(&[b"m1"]),
+            c2pa_store(&[b"m1", b"m2"]),
+            c2pa_store(&[]),
+            b"not-jumbf".to_vec(),
+        ] {
+            let mut asset = open(&first);
+            let result = asset.write(&mut Vec::new(), &Updates::new().set_c2pa(store));
+            assert!(
+                matches!(result, Err(asset_io::Error::UnsupportedFeature(_))),
+                "{result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_store_after_removal_starts_again() {
+        let first = write(
+            &document(b"<< /Type /Catalog >>", ""),
+            &Updates::new().set_c2pa(c2pa_store(&[b"m1"])),
+        );
+        let second = write(
+            &first,
+            &Updates::new().set_c2pa(c2pa_store(&[b"m1", b"m2"])),
+        );
+        let removed = write(&second, &Updates::new().remove_c2pa());
+        let fresh = c2pa_store(&[b"x1"]);
+        let third = write(&removed, &Updates::new().set_c2pa(fresh.clone()));
+        assert_eq!(active(&third), fresh);
+        assert_eq!(earlier(&third), 0);
+        assert_eq!(combined(&third), Some(fresh));
     }
 
     #[test]
@@ -900,9 +933,7 @@ mod update_manifests {
         );
         let second = write(
             &first,
-            &Updates::new()
-                .set_c2pa(c2pa_store(&[b"m1", b"m2"]))
-                .as_update(),
+            &Updates::new().set_c2pa(c2pa_store(&[b"m1", b"m2"])),
         );
         let removed = write(&second, &Updates::new().remove_c2pa());
         assert_eq!(open(&removed).structure.items_of(ItemKind::C2pa).count(), 0);
@@ -916,7 +947,7 @@ mod update_manifests {
             &Updates::new().set_c2pa(c2pa_store(&[b"m1"])),
         );
         let full = c2pa_store(&[b"m1", b"m2"]);
-        let second = write(&first, &Updates::new().set_c2pa(full.clone()).as_update());
+        let second = write(&first, &Updates::new().set_c2pa(full.clone()));
         let kept = write(&second, &Updates::new().set_xmp(b"<xmp/>".to_vec()));
         assert_eq!(combined(&kept), Some(full));
         assert_eq!(earlier(&kept), 1);

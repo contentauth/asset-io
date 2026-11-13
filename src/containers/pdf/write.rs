@@ -353,6 +353,17 @@ fn serialize(value: &Value, output: &mut Vec<u8>) -> Result<()> {
     Ok(())
 }
 
+/// What a revision does with the C2PA store.
+pub(super) enum C2pa<'a> {
+    /// The store the catalog lists stays.
+    Keep,
+    /// The catalog stops listing a store.
+    Remove,
+    /// The payload of the revision's new store: all of it, or what it adds to the
+    /// stores of earlier revisions.
+    Set(std::borrow::Cow<'a, [u8]>),
+}
+
 /// One piece of the appended revision, in order.
 pub(super) enum Piece {
     /// Bytes of syntax.
@@ -437,12 +448,13 @@ impl Appender {
     }
 }
 
-/// Plan the revision that applies `updates` to a document `source_size` bytes long.
+/// Plan the revision that applies `updates` and `c2pa` to a document `source_size`
+/// bytes long.
 pub(super) fn revision(
     context: &Context,
     source_size: u64,
     updates: &Updates,
-    c2pa_delta: Option<&[u8]>,
+    c2pa: &C2pa<'_>,
 ) -> Result<Revision> {
     let mut result = Appender {
         pieces: Vec::new(),
@@ -475,7 +487,7 @@ pub(super) fn revision(
                 .insert(b"Metadata".to_vec(), Value::Reference(id));
         }
     }
-    if !matches!(updates.c2pa(), MetadataUpdate::Keep) {
+    if !matches!(c2pa, C2pa::Keep) {
         context
             .associated
             .retain(|value| !matches!(value, Value::Reference(id) if context.active.contains(id)));
@@ -483,9 +495,8 @@ pub(super) fn revision(
             |_, value| !matches!(value, Value::Reference(id) if context.active.contains(id)),
         );
         context.active.clear();
-        if let MetadataUpdate::Set(data) = updates.c2pa() {
-            let length = c2pa_delta.map_or(data.len(), <[u8]>::len);
-            let stream = result.stream(ItemKind::C2pa, length)?;
+        if let C2pa::Set(data) = c2pa {
+            let stream = result.stream(ItemKind::C2pa, data.len())?;
             let spec = result.allocate()?;
             let file_name = b"Content Credentials".to_vec();
             if context.pairs.contains_key(&file_name) {

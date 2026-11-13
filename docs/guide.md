@@ -138,9 +138,10 @@ including where each item lands and the output size.
   `Other` items encoded as `IsoBmff`, and C2PA updates leave them alone.
 - `set_c2pa(store).as_update()` marks the store as an update to the existing
   store. ISO BMFF stores only the addition and keeps the original manifests
-  untouched; so does PDF, which writes the addition as the new revision's store
-  and keeps the earlier stores as `superseded` items. Other containers ignore the
-  flag. `Structure::c2pa_store(src)` reads the combined store, and
+  untouched; other containers ignore the flag. PDF needs no flag: it always writes
+  only what a new store adds to the existing one, and keeps the earlier stores as
+  `superseded` items (a store that does not extend the existing one is refused).
+  `Structure::c2pa_store(src)` reads the combined store, and
   `jumbf::{addition_to, extend}` convert between forms.
 - In ISO BMFF, XMP is written as the XMP `uuid` box; HEIF items, XMP items
   included, are carried through unchanged.
