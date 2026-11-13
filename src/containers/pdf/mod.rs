@@ -1176,8 +1176,9 @@ async fn c2pa_write<'a>(
             "the PDF C2PA store has no manifests the file does not already have",
         ));
     }
-    // Without manifests to tell apart there is nothing earlier to repeat.
-    if !crate::jumbf::is_wellformed(&existing) {
+    // Comparing the store with itself fails exactly when its manifests cannot be
+    // told apart, and then there is nothing earlier to repeat.
+    if crate::jumbf::addition_to(&existing, &existing).is_err() {
         return Ok(write::C2pa::Set(Cow::Borrowed(full.as_slice())));
     }
     match crate::jumbf::addition_to(&existing, full) {

@@ -215,12 +215,6 @@ pub fn extend(frozen: &[u8], addition: &[u8]) -> Result<Vec<u8>> {
     Ok(superbox(&frozen[f.description], children))
 }
 
-/// Whether `b` is a JUMBF superbox with well-formed children: one whose manifests
-/// [`addition_to`] can tell apart.
-pub(crate) fn is_wellformed(b: &[u8]) -> bool {
-    parse(b).is_ok()
-}
-
 /// The store a reader sees when `later` is the store of a later revision than
 /// `earlier`. A `later` that already holds all of `earlier`'s manifests, byte for
 /// byte, is a whole store and stands alone; otherwise it holds only the manifests
@@ -368,7 +362,5 @@ mod tests {
         let other = superbox(&OTHER, std::slice::from_ref(&m3));
         assert_eq!(combine_revisions(&earlier, &other).unwrap(), other);
         assert_eq!(combine_revisions(b"first", b"second").unwrap(), b"second");
-        assert!(is_wellformed(&earlier));
-        assert!(!is_wellformed(b"first"));
     }
 }

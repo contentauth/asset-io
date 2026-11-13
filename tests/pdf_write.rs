@@ -778,8 +778,9 @@ fn every_kind_of_document_conforms() {
 }
 
 mod update_manifests {
-    use asset_io::{labels, testing::c2pa_store, ItemKind, SegmentKind, Updates};
     use std::io::Cursor;
+
+    use asset_io::{labels, testing::c2pa_store, ItemKind, SegmentKind, Updates};
 
     use super::{document, same_layout, Asset};
 
