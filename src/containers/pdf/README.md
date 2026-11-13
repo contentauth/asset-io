@@ -27,6 +27,10 @@ no native zlib).
 FlateDecode and 8-bit single-component PNG predictors are supported; a
 compressed stream's item has the transfer encoding `TransferEncoding::Zlib`, with its
 predictor columns.
+Single `/Crypt` filters with absent or null `/DecodeParms`, or a parameter
+dictionary whose `/Name` is absent or `/Identity`, are supported as unencoded
+data (`TransferEncoding::Identity`). Named non-Identity crypt filters are
+rejected; this does not add encryption support.
 
 `Structure::read_item`, `read_range`, a `Sink`, and optional memory mapping
 (`slice_item`) give streaming or borrowed access to **physical file bytes**. For

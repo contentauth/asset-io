@@ -249,6 +249,45 @@ fn writable_pdf() -> Pdf {
 }
 
 #[test]
+fn a_filtered_existing_store_is_extended_by_its_decoded_manifests() {
+    use asset_io::testing::c2pa_store;
+
+    let first = c2pa_store(&[b"m1"]);
+    let full = c2pa_store(&[b"m1", b"m2"]);
+    for filter in ["/Filter /FlateDecode", "/Filter /Crypt", "/Filter [/Crypt]"] {
+        let stored = if filter.contains("Flate") {
+            deflate(&first)
+        } else {
+            first.clone()
+        };
+        let mut pdf = writable_pdf();
+        pdf.stream(
+            5,
+            &format!("/Type /EmbeddedFile /Length {} {filter}", stored.len()),
+            &stored,
+        );
+        pdf.finish("/Root 1 0 R");
+        let mut asset = Asset::from_source(Cursor::new(&pdf.bytes)).unwrap();
+        assert_eq!(asset.jumbf().unwrap().unwrap(), first);
+        let mut output = Cursor::new(Vec::new());
+        let predicted = asset
+            .write(&mut output, &Updates::new().set_c2pa(full.clone()))
+            .unwrap();
+        // The original encoded bytes are untouched, so earlier hashes stay valid.
+        assert!(output.get_ref().starts_with(&pdf.bytes), "{filter}");
+        let mut reparsed = Asset::from_source(output).unwrap();
+        same_layout(&predicted, reparsed.structure());
+        assert_eq!(reparsed.jumbf().unwrap().unwrap(), full, "{filter}");
+
+        // Repeating the decoded store adds nothing, and is refused.
+        assert!(matches!(
+            asset.write(&mut Vec::new(), &Updates::new().set_c2pa(first.clone())),
+            Err(Error::UnsupportedFeature(_))
+        ));
+    }
+}
+
+#[test]
 fn incremental_write_combinations_preserve_prefix_and_predict_exact_layout() {
     for xmp in 0..3 {
         for jumbf in 0..3 {
