@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/contentauth/asset-io/compare/v0.5.0...v0.6.0) - 2026-11-13
+
+### Added
+
+- *(pdf)* [**breaking**] write only the new manifests when adding to a PDF's C2PA store ([#40](https://github.com/contentauth/asset-io/pull/40))
+
 ### Fixed
 
 - Read PDF metadata with a single Identity Crypt filter, including C2PA streams
