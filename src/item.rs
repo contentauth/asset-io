@@ -30,6 +30,8 @@ pub enum ItemKind {
     /// where the container carries JUMBF of any type (JPEG APP11), the superbox type
     /// tells. Other JUMBF is [`Other`](Self::Other) with [`Encoding::Jumbf`].
     C2pa,
+    /// C2PA Merkle proofs for hashed media blocks, not a manifest store.
+    C2paMerkle,
     /// A self-contained file stored inside the asset, or a reference to one.
     EmbeddedAsset,
     /// Anything else the container exposes; see its [encoding](Item::encoding)
@@ -38,13 +40,14 @@ pub enum ItemKind {
 }
 
 impl ItemKind {
-    /// A string for this kind: `"xmp"`, `"exif"`, `"c2pa"`, `"embedded_asset"`,
-    /// `"other"`.
+    /// A string for this kind: `"xmp"`, `"exif"`, `"c2pa"`, `"c2pa_merkle"`,
+    /// `"embedded_asset"`, `"other"`.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Xmp => "xmp",
             Self::Exif => "exif",
             Self::C2pa => "c2pa",
+            Self::C2paMerkle => "c2pa_merkle",
             Self::EmbeddedAsset => "embedded_asset",
             Self::Other => "other",
         }
@@ -53,7 +56,7 @@ impl ItemKind {
     /// Whether items of this kind are metadata or assets.
     pub fn category(&self) -> ItemCategory {
         match self {
-            Self::Xmp | Self::Exif | Self::C2pa => ItemCategory::Metadata,
+            Self::Xmp | Self::Exif | Self::C2pa | Self::C2paMerkle => ItemCategory::Metadata,
             Self::EmbeddedAsset => ItemCategory::Asset,
             Self::Other => ItemCategory::Other,
         }
@@ -459,6 +462,8 @@ mod tests {
         assert_eq!(ItemKind::Xmp.category(), ItemCategory::Metadata);
         assert_eq!(ItemKind::C2pa.category(), ItemCategory::Metadata);
         assert_eq!(ItemKind::C2pa.as_str(), "c2pa");
+        assert_eq!(ItemKind::C2paMerkle.category(), ItemCategory::Metadata);
+        assert_eq!(ItemKind::C2paMerkle.as_str(), "c2pa_merkle");
         assert_eq!(ItemInfo::c2pa().encoding, Encoding::Jumbf);
         assert_eq!(ItemKind::Exif.category(), ItemCategory::Metadata);
         assert_eq!(ItemKind::EmbeddedAsset.category(), ItemCategory::Asset);

@@ -205,6 +205,16 @@ fn compose_rejects_what_it_cannot_encode() {
             "{format} {kind}"
         );
     }
+    // Merkle proofs are only supported by BMFF.
+    for format in ["jpg", "png", "gif", "svg", "tif", "mp3", "webp", "c2pa"] {
+        assert!(
+            reg.handler(format)
+                .unwrap()
+                .compose(ItemKind::C2paMerkle, b"x")
+                .is_err(),
+            "{format}"
+        );
+    }
     assert!(reg.handler("xyz").is_none());
 }
 

@@ -162,7 +162,8 @@ only one container understands go through `Updates::set_extension` and
 `Updates::extension`.
 
 `compose(kind, data)` returns the container's native encoding of an item for
-callers that insert it themselves.
+callers that insert it themselves. BMFF Merkle proof boxes have their own kind,
+`ItemKind::C2paMerkle`.
 
 ## Box naming
 

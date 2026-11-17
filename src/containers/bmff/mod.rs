@@ -26,7 +26,7 @@
 //! `manifest`, `original` and `update` boxes are [`ItemKind::C2pa`] items
 //! labelled with their purpose, whose payload is the manifest store itself (the
 //! purpose string and the merkle offset field belong to the header). `merkle` boxes
-//! are [`ItemKind::Other`] items labelled `merkle`. An XMP `uuid` box is an
+//! are [`ItemKind::C2paMerkle`] items labelled `merkle`. An XMP `uuid` box is an
 //! [`ItemKind::Xmp`] item.
 //!
 //! HEIF items found through a file-level `meta` box are items too, with their item
@@ -75,7 +75,14 @@
 //! new manifest only if they are also set or removed, since they belong with the
 //! manifest that describes them. The boxes can be written as placeholders of their
 //! final size and filled in with `Structure::patch_exact` once the media has been
-//! hashed during the write.
+//! hashed during the write. For callers that place a box themselves,
+//! [`ContainerHandler::compose`] with [`ItemKind::C2paMerkle`] gives its bytes.
+//!
+//! Every new `manifest` and `original` box records the absolute file offset of the
+//! first `merkle` box in the output, or 0 if there is none, as C2PA requires. Boxes
+//! copied from the source are corrected when the write moves or changes merkle
+//! boxes, and otherwise kept as they are; the field lies inside the C2PA box,
+//! which a C2PA hash excludes.
 //!
 //! `set_c2pa(store).as_update()` is the same as `set_c2pa` unless the new store begins
 //! with the manifests already in the file, byte for byte. Then those stay as they
@@ -150,7 +157,7 @@ pub trait BmffUpdates: Sized {
     /// the write. Write zeroed payloads of the final length, hash the media through
     /// the [`Sink`](crate::Sink) during the write, then fill each box in place with
     /// [`Structure::patch_exact`](crate::Structure::patch_exact). The boxes are the
-    /// items labelled [`MERKLE`] of kind [`ItemKind::Other`].
+    /// items of kind [`ItemKind::C2paMerkle`], labelled [`MERKLE`].
     ///
     /// A file that has merkle boxes cannot take a new manifest unless the boxes are
     /// also set or removed, and an update manifest cannot change them.
@@ -294,10 +301,14 @@ impl ContainerHandler for BmffHandler {
         })
     }
 
+    /// A C2PA store is a `manifest` box; [`ItemKind::C2paMerkle`] is a `merkle`
+    /// box, whose payload is written as given: padding a tree's payloads to one
+    /// length, as C2PA requires, is the caller's.
     fn compose(&self, kind: ItemKind, data: &[u8]) -> Result<Vec<u8>> {
         let op = match kind {
             ItemKind::C2pa => new_c2pa(data)?,
             ItemKind::Xmp => new_xmp(data)?,
+            ItemKind::C2paMerkle => new_merkle(data)?,
             _ => return Err(Error::UnsupportedFormat),
         };
         let Op::New {
@@ -560,7 +571,7 @@ impl BoxItem {
     fn info(self) -> ItemInfo {
         match self {
             BoxItem::C2pa(MERKLE) => {
-                ItemInfo::new(ItemKind::Other, Encoding::Unknown).label(MERKLE)
+                ItemInfo::new(ItemKind::C2paMerkle, Encoding::Unknown).label(MERKLE)
             }
             BoxItem::C2pa(label) => ItemInfo::c2pa().label(label),
             BoxItem::Xmp => ItemInfo::xmp(),
@@ -577,7 +588,7 @@ impl BoxItem {
             item.label().and_then(|l| purpose_label(l.as_bytes())),
             item.kind(),
         ) {
-            (Some(label), ItemKind::C2pa | ItemKind::Other) => Some(BoxItem::C2pa(label)),
+            (Some(label), ItemKind::C2pa | ItemKind::C2paMerkle) => Some(BoxItem::C2pa(label)),
             (None, ItemKind::Xmp) => Some(BoxItem::Xmp),
             _ => None,
         }
@@ -1212,8 +1223,9 @@ fn box_header(ty: &[u8; 4], prefix: &[u8], payload_len: u64) -> Result<Vec<u8>> 
     Ok(h)
 }
 
-/// Header of a C2PA box up to the manifest store: the merkle offset is written
-/// as 0, as merkle boxes are not produced.
+/// Header of a C2PA box up to the manifest store. The first-merkle offset is
+/// written as 0; a write sets it once the output is laid out (see
+/// [`set_merkle_offsets`]).
 fn c2pa_box_header(purpose: &str, payload_len: u64) -> Result<Vec<u8>> {
     let mut prefix = C2PA_UUID.to_vec();
     prefix.extend_from_slice(&[0u8; 4]); // version and flags
@@ -1232,11 +1244,14 @@ enum Op<'a> {
     Copy(SegmentId),
     /// Copy a source segment, rewriting the offsets inside it.
     Scan(SegmentId),
-    /// Copy a C2PA box with its purpose changed to another of the same length.
+    /// Copy a C2PA store box (`manifest` or `original`), writing its purpose as
+    /// `to` (which may be `from`, unchanged) and, if given, its first-merkle
+    /// offset.
     Relabel {
         id: SegmentId,
         from: &'static str,
         to: &'static str,
+        merkle_offset: Option<u64>,
     },
     /// Emit a new box holding `item`.
     New {
@@ -1312,6 +1327,65 @@ async fn read_item(src: &Structure, io: &mut Io, item: &Item) -> Result<Vec<u8>>
         out.extend(io.read_vec(r.offset(), r.len() as usize).await?);
     }
     Ok(out)
+}
+
+/// Point the `manifest` and `original` boxes of the output at the first `merkle`
+/// box, by absolute file offset, or 0 if there is none (C2PA 2.5, A.5.1). New
+/// boxes always get it. Boxes copied from the source get it when `moves`, as
+/// merkle boxes may have been set, removed or moved; the whole C2PA box is
+/// excluded from a C2PA hash, so rewriting the field does not affect it.
+fn set_merkle_offsets(
+    src: &Structure,
+    labels: &[Option<&'static str>],
+    ops: &mut [Op<'_>],
+    moves: bool,
+) -> Result<()> {
+    let is_merkle = |op: &Op<'_>| match op {
+        Op::Copy(id) | Op::Scan(id) => labels[id.index()] == Some(MERKLE),
+        Op::New { item, .. } => *item == BoxItem::C2pa(MERKLE),
+        Op::Relabel { .. } => false,
+    };
+    let mut at = 0u64;
+    let mut first = 0u64;
+    for op in ops.iter() {
+        if is_merkle(op) {
+            first = at;
+            break;
+        }
+        at = at
+            .checked_add(op_len(op, src)?)
+            .ok_or(Error::LimitExceeded {
+                what: "output size",
+                limit: u64::MAX,
+            })?;
+    }
+    for op in ops.iter_mut() {
+        match op {
+            Op::Copy(id) | Op::Scan(id) if moves => {
+                if let Some(label @ (MANIFEST | ORIGINAL)) = labels[id.index()] {
+                    *op = Op::Relabel {
+                        id: *id,
+                        from: label,
+                        to: label,
+                        merkle_offset: Some(first),
+                    };
+                }
+            }
+            Op::Copy(_) | Op::Scan(_) => {}
+            Op::Relabel { merkle_offset, .. } if moves => *merkle_offset = Some(first),
+            Op::Relabel { .. } => {}
+            Op::New {
+                item: BoxItem::C2pa(MANIFEST | ORIGINAL),
+                header,
+                ..
+            } => {
+                let field = header.len() - 8;
+                header[field..].copy_from_slice(&first.to_be_bytes());
+            }
+            Op::New { .. } => {}
+        }
+    }
+    Ok(())
 }
 
 fn op_len(op: &Op<'_>, src: &Structure) -> Result<u64> {
@@ -1410,6 +1484,7 @@ async fn plan<'a>(
                 id,
                 from: MANIFEST,
                 to: ORIGINAL,
+                merkle_offset: None,
             }),
             Some(ORIGINAL) if update_mode => ops.push(Op::Copy(id)),
             // Later updates replace the update store: it holds all of them.
@@ -1492,6 +1567,11 @@ async fn plan<'a>(
             "BMFF has no ftyp box to insert metadata after".into(),
         ));
     }
+
+    // Copied store boxes keep their field unless this write moves or changes
+    // merkle boxes, so a write that changes nothing reproduces the source.
+    let moves = !map.is_identity() || !merkle_kept;
+    set_merkle_offsets(src, &labels, &mut ops, moves)?;
 
     // Now that every edit is known, mark the boxes whose offsets must move.
     if !map.is_identity() {
@@ -1598,7 +1678,12 @@ async fn assemble<'a>(
                 }
                 (id, boxes[sid.index()])
             }
-            Op::Relabel { id: sid, from, to } => {
+            Op::Relabel {
+                id: sid,
+                from,
+                to,
+                merkle_offset,
+            } => {
                 let seg = src.segment(sid)?;
                 let id = b.shape_like(sid)?;
                 if with_steps {
@@ -1621,6 +1706,10 @@ async fn assemble<'a>(
                         ));
                     }
                     h[at..at + to.len()].copy_from_slice(to.as_bytes());
+                    if let Some(offset) = merkle_offset {
+                        let field = h.len() - 8;
+                        h[field..].copy_from_slice(&offset.to_be_bytes());
+                    }
                     if let Some((_, size)) = open_ended.filter(|(open, _)| *open == sid) {
                         h[..4].copy_from_slice(&size.to_be_bytes());
                     }
@@ -2059,7 +2148,7 @@ mod tests {
         assert!(rewrite(&f, &Updates::new().set_c2pa(b"B".to_vec())).is_err());
         let removed = rewrite(&f, &Updates::new().set_c2pa(b"B".to_vec()).remove_merkle()).unwrap();
         let s = parse(&mut Cursor::new(&removed)).unwrap();
-        assert_eq!(s.items_labelled(ItemKind::Other, MERKLE).count(), 0);
+        assert_eq!(s.items_of(ItemKind::C2paMerkle).count(), 0);
 
         // An update manifest leaves the merkle boxes alone, and cannot change them.
         let extended = c2pa_store(&[&m1, &m2]);
@@ -2074,7 +2163,7 @@ mod tests {
     }
 
     fn merkle_payloads(s: &Structure, data: &[u8]) -> Vec<Vec<u8>> {
-        s.items_labelled(ItemKind::Other, MERKLE)
+        s.items_of(ItemKind::C2paMerkle)
             .map(|e| s.read_item(&mut Cursor::new(data), e).unwrap())
             .collect()
     }
@@ -2088,7 +2177,7 @@ mod tests {
         // Three boxes directly after mdat, before the trailing box; nothing before
         // them moved.
         let (mdat_at, mdat_len, _) = find(&out, "/mdat");
-        let first = s.items_labelled(ItemKind::Other, MERKLE).next().unwrap();
+        let first = s.items_of(ItemKind::C2paMerkle).next().unwrap();
         let seg = s
             .segment(first.extents().next().unwrap().segment())
             .unwrap();
@@ -2099,7 +2188,7 @@ mod tests {
 
         // Fill each box in place, as after hashing the media.
         let mut cur = Cursor::new(out.clone());
-        for (i, e) in s.items_labelled(ItemKind::Other, MERKLE).enumerate() {
+        for (i, e) in s.items_of(ItemKind::C2paMerkle).enumerate() {
             s.patch_exact(&mut cur, e, &[i as u8 + 1; 12]).unwrap();
         }
         let filled = cur.into_inner();
@@ -2122,6 +2211,138 @@ mod tests {
         );
         // Keep is the default.
         assert_eq!(rewrite(&filled, &Updates::new()).unwrap(), filled);
+    }
+
+    /// The first-merkle offset recorded in the header of the `label` store box.
+    fn recorded_merkle_offset(bytes: &[u8], label: &str) -> u64 {
+        let s = parse(&mut Cursor::new(bytes)).unwrap();
+        let item = s.items_labelled(ItemKind::C2pa, label).next().unwrap();
+        let header = s
+            .segment(item.extents().next().unwrap().segment())
+            .unwrap()
+            .header();
+        let end = header.end() as usize;
+        u64::from_be_bytes(bytes[end - 8..end].try_into().unwrap())
+    }
+
+    /// Where the first merkle box is, or 0 without one.
+    fn first_merkle_at(bytes: &[u8]) -> u64 {
+        let s = parse(&mut Cursor::new(bytes)).unwrap();
+        let at = s.items_of(ItemKind::C2paMerkle).next().map_or(0, |e| {
+            s.segment(e.extents().next().unwrap().segment())
+                .unwrap()
+                .range()
+                .offset()
+        });
+        at
+    }
+
+    #[test]
+    fn store_boxes_record_the_first_merkle_box() {
+        let (f, _) = media_file(&[], &[boxed(b"free", b"zz")], None);
+        let store = || b"STORE".to_vec();
+
+        let plain = rewrite(&f, &Updates::new().set_c2pa(store())).unwrap();
+        assert_eq!(recorded_merkle_offset(&plain, MANIFEST), 0);
+
+        let with = rewrite(
+            &f,
+            &Updates::new()
+                .set_c2pa(store())
+                .set_merkle(vec![vec![0u8; 12]; 2]),
+        )
+        .unwrap();
+        assert_ne!(first_merkle_at(&with), 0);
+        assert_eq!(
+            recorded_merkle_offset(&with, MANIFEST),
+            first_merkle_at(&with)
+        );
+
+        // A copied store box is corrected when merkle boxes are added, moved or
+        // removed.
+        let added = rewrite(&plain, &Updates::new().set_merkle(vec![vec![0u8; 4]])).unwrap();
+        assert_eq!(
+            recorded_merkle_offset(&added, MANIFEST),
+            first_merkle_at(&added)
+        );
+        let moved = rewrite(&with, &Updates::new().set_xmp(b"<x/>".to_vec())).unwrap();
+        assert!(first_merkle_at(&moved) > first_merkle_at(&with));
+        assert_eq!(
+            recorded_merkle_offset(&moved, MANIFEST),
+            first_merkle_at(&moved)
+        );
+        let removed = rewrite(&with, &Updates::new().remove_merkle()).unwrap();
+        assert_eq!(recorded_merkle_offset(&removed, MANIFEST), 0);
+
+        // Otherwise it is copied as it is, even when wrong, and patching the store
+        // leaves it alone.
+        let mut stale = with.clone();
+        let s = parse(&mut Cursor::new(&stale)).unwrap();
+        let item = s.items_labelled(ItemKind::C2pa, MANIFEST).next().unwrap();
+        let end = s
+            .segment(item.extents().next().unwrap().segment())
+            .unwrap()
+            .header()
+            .end() as usize;
+        stale[end - 8..end].fill(0);
+        assert_eq!(rewrite(&stale, &Updates::new()).unwrap(), stale);
+        let mut cur = Cursor::new(with.clone());
+        s.patch_exact(&mut cur, item, b"STOR2").unwrap();
+        let patched = cur.into_inner();
+        assert_eq!(
+            recorded_merkle_offset(&patched, MANIFEST),
+            first_merkle_at(&with)
+        );
+    }
+
+    #[test]
+    fn an_update_keeps_the_original_store_box_header() {
+        let first = c2pa_store(&[b"m1: 1"]);
+        let (f, _) = media_file(
+            &[c2pa_box(MANIFEST, &first)],
+            &[c2pa_box(MERKLE, b"D")],
+            None,
+        );
+        let extended = c2pa_store(&[b"m1: 1", b"m2: 2"]);
+        let out = rewrite(&f, &Updates::new().set_c2pa(extended).as_update()).unwrap();
+        // The source's (non-conforming) zero is kept: nothing moved.
+        assert_eq!(recorded_merkle_offset(&out, ORIGINAL), 0);
+    }
+
+    #[test]
+    fn a_composed_merkle_box_is_the_box_a_write_produces() {
+        let (f, _) = media_file(&[], &[], None);
+        let out = rewrite(&f, &Updates::new().set_merkle(vec![b"PROOF".to_vec()])).unwrap();
+        let s = parse(&mut Cursor::new(&out)).unwrap();
+        let item = s.require_item(ItemKind::C2paMerkle).unwrap();
+        assert_eq!(item.label(), Some(MERKLE));
+        assert_eq!(item.encoding(), Encoding::Unknown);
+        assert!(s.items_of(ItemKind::Other).next().is_none());
+        let range = s
+            .segment(item.extents().next().unwrap().segment())
+            .unwrap()
+            .range();
+        let composed = handler().compose(ItemKind::C2paMerkle, b"PROOF").unwrap();
+        assert_eq!(
+            &out[range.offset() as usize..range.end() as usize],
+            composed
+        );
+        assert_eq!(composed, c2pa_box(MERKLE, b"PROOF"));
+        let composed_structure = parse(&mut Cursor::new(&composed)).unwrap();
+        let proof = composed_structure
+            .require_item(ItemKind::C2paMerkle)
+            .unwrap();
+        assert_eq!(
+            composed_structure
+                .read_item(&mut Cursor::new(&composed), proof)
+                .unwrap(),
+            b"PROOF"
+        );
+
+        let h = handler();
+        for kind in [ItemKind::Other, ItemKind::Exif, ItemKind::EmbeddedAsset] {
+            assert!(h.compose(kind, b"S").is_err(), "{kind:?}");
+        }
     }
 
     /// The intended flow: placeholders of final size, media hashed (here: summed)
@@ -2169,7 +2390,7 @@ mod tests {
         assert_eq!(sink.seen, 5);
         assert_eq!(sink.sum, b"MEDIA".iter().map(|&b| b as u64).sum::<u64>());
 
-        let e = dest.items_labelled(ItemKind::Other, MERKLE).next().unwrap();
+        let e = dest.items_of(ItemKind::C2paMerkle).next().unwrap();
         dest.patch_exact(&mut out, e, &sink.sum.to_be_bytes())
             .unwrap();
         let bytes = out.into_inner();

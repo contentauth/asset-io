@@ -153,9 +153,10 @@ offsets and sizes in its MPF index. The edit fails rather than writing a stale
 or ambiguous index. A first-image size recorded short of the image, as in Pixel
 Ultra HDR files, is corrected.
 
-`ContainerHandler::compose(kind, data)` returns a container's native encoding of
-an item (JPEG APP11 segments, a PNG `caBX` chunk, a BMFF C2PA box) for callers that
-insert it themselves. Resolve the handler with `registry.handler(format)` or
+`ContainerHandler::compose(kind, data)` returns a container's native
+encoding of an item (JPEG APP11 segments, a PNG `caBX` chunk, a BMFF C2PA box, or
+an `ItemKind::C2paMerkle` BMFF Merkle box) for callers that insert it themselves.
+Resolve the handler with `registry.handler(format)` or
 `container_api::handler(&structure)`. Callers using `write` don't need it.
 
 ## C2PA support
@@ -170,6 +171,10 @@ identifies it while parsing: from the element the container reserves for it, or,
 where the container carries JUMBF of any type (JPEG APP11), from the superbox
 type. Other JUMBF is an `ItemKind::Other` item with `Encoding::Jumbf` and its
 `jumbf_type()`.
+
+BMFF Merkle proof boxes are `ItemKind::C2paMerkle` metadata items, not manifest
+stores. Find them with `items_of(ItemKind::C2paMerkle)`; their label remains
+`merkle`. Compose them with `compose(ItemKind::C2paMerkle, data)`.
 
 `c2pa_item()` returns the store item; it reads nothing, so it also works on
 planned structures before the output exists. `c2pa_store()` returns its content
