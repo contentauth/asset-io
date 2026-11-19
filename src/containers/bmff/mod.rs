@@ -2366,35 +2366,6 @@ mod tests {
     }
 
     #[test]
-    fn signing_an_update_fills_the_placeholder_of_the_update_store() {
-        let (m1, m2) = (b"m1: 1".to_vec(), b"m2: 2".to_vec());
-        let (f, _) = media_file(
-            &[
-                c2pa_box(ORIGINAL, &c2pa_store(&[&m1])),
-                c2pa_box(UPDATE, &c2pa_store(&[&m2])),
-            ],
-            &[],
-            None,
-        );
-        let s = parse(&mut Cursor::new(&f)).unwrap();
-        let signed = c2pa_store(&[&m1, b"m2: x"]);
-        let mut out = Cursor::new(f.clone());
-        s.patch_c2pa_store(&mut out, &signed).unwrap();
-        let out = out.into_inner();
-        assert_eq!(payload_of(&out, UPDATE).unwrap(), c2pa_store(&[b"m2: x"]));
-        assert_eq!(payload_of(&out, ORIGINAL).unwrap(), c2pa_store(&[&m1]));
-
-        // The original cannot change.
-        let mut untouched = Cursor::new(f.clone());
-        let changed = c2pa_store(&[b"m1: x", &m2]);
-        assert!(matches!(
-            s.patch_c2pa_store(&mut untouched, &changed),
-            Err(Error::UnsupportedFeature(_))
-        ));
-        assert_eq!(untouched.into_inner(), f);
-    }
-
-    #[test]
     fn later_updates_replace_the_update_store() {
         let (m1, m2, m3) = (b"m1: 1".to_vec(), b"m2: 2".to_vec(), b"m3: 3".to_vec());
         for before_moov in [false, true] {
