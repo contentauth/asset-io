@@ -253,6 +253,12 @@ impl<S: Read + Write + Seek> Asset<S> {
     pub fn patch_exact(&self, item: &Item, data: &[u8]) -> Result<()> {
         self.structure.patch_exact(&mut *self.src()?, item, data)
     }
+
+    /// Fill the C2PA store's placeholder in the source with the whole store; see
+    /// [`Structure::patch_c2pa_store`]. The structure is unchanged.
+    pub fn patch_c2pa_store(&self, store: &[u8]) -> Result<()> {
+        self.structure.patch_c2pa_store(&mut *self.src()?, store)
+    }
 }
 
 impl<S> Deref for Asset<S> {
