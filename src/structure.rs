@@ -686,6 +686,103 @@ impl Structure {
         }
     }
 
+    /// Fill the C2PA store's placeholder in place: the counterpart of
+    /// [`c2pa_store`](Self::c2pa_store) for [`patch_exact`](Self::patch_exact).
+    ///
+    /// `store` is the whole store, as a reader sees it and as
+    /// [`Updates::set_c2pa`](crate::Updates::set_c2pa) takes it. Where the file holds
+    /// that store in parts (an ISO BMFF `original` and `update`, the stores of a PDF's
+    /// revisions), only the active part is patched, with what `store` adds to the
+    /// parts before it. Those must be unchanged, byte for byte: a patch cannot
+    /// rewrite earlier manifests, so a store that does not extend them is
+    /// [`Error::UnsupportedFeature`]. The patched length must match exactly, as
+    /// for `patch_exact`. `out` must contain the asset starting at offset 0.
+    pub fn patch_c2pa_store<W: Read + Write + Seek>(
+        &self,
+        out: &mut W,
+        store: &[u8],
+    ) -> Result<()> {
+        self.prepare_c2pa_patch(out, store)?.apply(out)
+    }
+
+    /// Check a [`patch_c2pa_store`](Self::patch_c2pa_store) against the asset in
+    /// `src`, without writing, and return it ready to apply to a copy of `src`.
+    ///
+    /// For a caller that writes its output to another stream: if this fails, the
+    /// store does not fit the placeholder, so the asset must be written instead.
+    pub fn prepare_c2pa_patch<R: Read + Seek>(
+        &self,
+        src: &mut R,
+        store: &[u8],
+    ) -> Result<C2paPatch<'_>> {
+        let (item, data) = block_on(self.total_size, src, |mut io| async move {
+            self.c2pa_patch_async(&mut io, store).await
+        })?;
+        let stored = item.transfer().encode(&data)?.into_owned();
+        // The container's refusal comes before a complaint about the length.
+        self.handler.check_patch(self, item, stored.len())?;
+        if stored.len() as u64 != item.len() {
+            return Err(Error::InvalidFormat(format!(
+                "replacement is {} bytes, the placeholder is {}",
+                stored.len(),
+                item.len()
+            )));
+        }
+        Ok(C2paPatch {
+            structure: self,
+            item,
+            stored,
+        })
+    }
+
+    /// The item [`patch_c2pa_store`](Self::patch_c2pa_store) writes, and what it
+    /// writes there.
+    async fn c2pa_patch_async<'s, 'd>(
+        &'s self,
+        io: &mut Io,
+        store: &'d [u8],
+    ) -> Result<(&'s Item, Cow<'d, [u8]>)> {
+        use crate::segment::labels::{ORIGINAL, SUPERSEDED, UPDATE};
+        let item = self.c2pa_item()?.ok_or(Error::NotFound {
+            what: "C2PA manifest store",
+        })?;
+        let not_extended = || {
+            Error::UnsupportedFeature(
+                "a patched C2PA store must keep the manifests stored before the active part",
+            )
+        };
+        if item.label() == Some(ORIGINAL) {
+            if let Some(update) = self.items_labelled(ItemKind::C2pa, UPDATE).next() {
+                let original = self.read_content_async(io, item).await?;
+                let addition =
+                    crate::jumbf::addition_to(&original, store)?.ok_or_else(not_extended)?;
+                return Ok((update, Cow::Owned(addition)));
+            }
+        }
+        let mut earlier: Option<Vec<u8>> = None;
+        for superseded in self.items_labelled(ItemKind::C2pa, SUPERSEDED) {
+            let next = self.read_content_async(io, superseded).await?;
+            earlier = Some(match earlier {
+                None => next,
+                Some(earlier) => crate::jumbf::combine_revisions(&earlier, &next)?,
+            });
+        }
+        let Some(earlier) = earlier else {
+            return Ok((item, Cow::Borrowed(store)));
+        };
+        // A latest store that a reader takes as a whole store, not an addition to the
+        // earlier ones, is patched with the whole store, as it is read.
+        let latest = self.read_content_async(io, item).await?;
+        let stands_alone = earlier == latest
+            || matches!(crate::jumbf::addition_to(&earlier, &latest), Ok(Some(_)))
+            || crate::jumbf::extend(&earlier, &latest).is_err();
+        if stands_alone {
+            return Ok((item, Cow::Borrowed(store)));
+        }
+        let addition = crate::jumbf::addition_to(&earlier, store)?.ok_or_else(not_extended)?;
+        Ok((item, Cow::Owned(addition)))
+    }
+
     /// The boxes a C2PA box hash (`c2pa.hash.boxes`, C2PA 18.7) lists:
     /// [`complete_boxes`](Self::complete_boxes) with the C2PA manifest store as one
     /// box named `C2PA` and bytes after the structure as one named `c2pa.after`.
@@ -1026,6 +1123,24 @@ impl Structure {
     fn fix_trailer<W: Read + Write + Seek>(&self, out: &mut W, id: SegmentId) -> Result<()> {
         let out: &mut dyn ReadWriteSeek = out;
         self.handler.fix_trailer(out, self, id)
+    }
+}
+
+/// A C2PA store patch checked against an asset by
+/// [`Structure::prepare_c2pa_patch`], ready to write.
+#[derive(Debug)]
+pub struct C2paPatch<'s> {
+    structure: &'s Structure,
+    item: &'s Item,
+    /// What the item holds after the patch, transfer-encoded.
+    stored: Vec<u8>,
+}
+
+impl C2paPatch<'_> {
+    /// Write the patch into `out`, which must hold the asset the patch was
+    /// prepared from, starting at offset 0.
+    pub fn apply<W: Read + Write + Seek>(&self, out: &mut W) -> Result<()> {
+        self.structure.patch(out, self.item, &self.stored)
     }
 }
 
