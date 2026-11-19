@@ -219,7 +219,7 @@ pub use range::ByteRange;
 pub use registry::HandlerRegistry;
 pub use segment::{labels, Name, Role, Segment, SegmentKind};
 pub use sink::{Chunk, NullSink, Sink};
-pub use structure::{BoxInfo, Region, SegmentId, Structure, SubAsset};
+pub use structure::{BoxInfo, C2paPatch, Region, SegmentId, Structure, SubAsset};
 pub use thumbnail::Thumbnail;
 #[cfg(feature = "exif")]
 pub use tiff::ExifInfo;

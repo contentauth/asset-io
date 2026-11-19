@@ -175,6 +175,12 @@ payload bytes. No zero-padding, PDF signature creation, manifest generation,
 or C2PA cryptographic validation is performed. A real manifest must come from
 the caller; arbitrary placeholder bytes are not a valid C2PA manifest.
 
+To fill a C2PA placeholder, use `Structure::patch_c2pa_store` with the whole store,
+the same store `set_c2pa` took. It patches the latest revision's store with what the
+whole store adds to the earlier revisions' stores, which must be unchanged; a store
+that alters them is refused. `patch_exact` takes the bytes of one item, the active
+revision's addition alone.
+
 Removal is **logical, not secure erasure**: historical metadata and attachments
 remain in the original prefix. Page/object-level associations are not edited.
 
