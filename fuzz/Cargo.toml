@@ -51,3 +51,10 @@ path = "fuzz_targets/fuzz_conform.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_item_cursor"
+path = "fuzz_targets/fuzz_item_cursor.rs"
+test = false
+doc = false
+bench = false

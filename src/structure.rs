@@ -24,6 +24,7 @@ use crate::{
     handler::{ContainerHandler, ReadSeek, ReadWriteSeek},
     io::Io,
     item::{Extent, Item, ItemInfo, ItemKind},
+    item_cursor::{ItemCursor, ItemReader, ReadAt},
     range::ByteRange,
     segment::{Name, Role, Segment, SegmentKind, DEFAULT_CHUNK_SIZE, MAX_SEGMENT_SIZE},
     sink::{Chunk, Sink},
@@ -900,6 +901,107 @@ impl Structure {
             src.read_exact(&mut buf[..n])?;
             f(&buf[..n])?;
             remaining -= n as u64;
+        }
+        Ok(())
+    }
+
+    /// A cursor over an item's stored bytes, at the start: the sans-I/O core of
+    /// [`item_reader`](Self::item_reader), [`stream_item`](Self::stream_item) and
+    /// [`stream_item_async`](Self::stream_item_async), for a caller that makes the
+    /// reads itself.
+    ///
+    /// Every extent is checked against the size of the asset, so the reads the
+    /// cursor asks for lie inside the stream this structure was parsed from. The
+    /// cursor does not borrow the structure.
+    pub fn item_cursor(&self, item: &Item) -> Result<ItemCursor> {
+        for extent in item.extents() {
+            self.check_readable(extent.range)?;
+        }
+        ItemCursor::new(item.extents().map(|extent| extent.range))
+    }
+
+    /// An item's stored bytes (those [`read_item`](Self::read_item) returns) as a
+    /// [`Read`] + [`Seek`] stream over `src`, in memory that does not depend on the
+    /// size of the item. See [`ItemReader`].
+    ///
+    /// `src` must be the stream this structure was parsed from. Its bytes are not
+    /// [transfer-decoded](Item::transfer).
+    pub fn item_reader<'a, R: Read + Seek + ?Sized>(
+        &self,
+        src: &'a mut R,
+        item: &Item,
+    ) -> Result<ItemReader<'a, R>> {
+        Ok(ItemReader::new(src, self.item_cursor(item)?))
+    }
+
+    /// Stream an item's stored bytes through a caller-owned buffer: `f` is called
+    /// with each chunk in order, a chunk being at most `buf.len()` bytes within one
+    /// extent. Nothing is allocated, and an item of any size is read in the memory
+    /// of `buf`. Like [`stream_range`](Self::stream_range), for an item that may
+    /// have several extents.
+    ///
+    /// The bytes are the stored bytes, as for [`read_item`](Self::read_item). A
+    /// source that ends before the item does is an error.
+    pub fn stream_item<R, F>(
+        &self,
+        src: &mut R,
+        item: &Item,
+        buf: &mut [u8],
+        mut f: F,
+    ) -> Result<()>
+    where
+        R: Read + Seek + ?Sized,
+        F: FnMut(&[u8]) -> Result<()>,
+    {
+        if buf.is_empty() {
+            return Err(Error::InvalidFormat("empty stream buffer".into()));
+        }
+        let mut cursor = self.item_cursor(item)?;
+        // Where the source is, so that a chunk that continues the last does not seek.
+        let mut at: Option<u64> = None;
+        while let Some(ReadAt { offset, len }) = cursor.next_read(buf.len()) {
+            if at != Some(offset) {
+                src.seek(SeekFrom::Start(offset))?;
+            }
+            let chunk = buf
+                .get_mut(..len)
+                .ok_or_else(|| Error::InvalidFormat("chunk longer than the buffer".into()))?;
+            src.read_exact(chunk)?;
+            at = offset.checked_add(len as u64);
+            f(&*chunk)?;
+            cursor.advance(len);
+        }
+        Ok(())
+    }
+
+    /// [`stream_item`](Self::stream_item), reading through `io`, so that it runs
+    /// under [`Task`](crate::task::Task), [`block_on`] or any async driver. The
+    /// chunks are at most `window` bytes (at least 1, and no more than
+    /// `MAX_SEGMENT_SIZE`) and borrow the `Io`'s one window: nothing is copied, and
+    /// the memory held is `window` bytes whatever the size of the item.
+    pub async fn stream_item_async<F>(
+        &self,
+        io: &mut Io,
+        item: &Item,
+        window: usize,
+        mut f: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&[u8]) -> Result<()>,
+    {
+        if window == 0 {
+            return Err(Error::InvalidFormat("empty stream window".into()));
+        }
+        let window = window.min(MAX_SEGMENT_SIZE as usize);
+        let mut cursor = self.item_cursor(item)?;
+        while let Some(ReadAt { offset, len }) = cursor.next_read(window) {
+            // A window of exactly the chunk: nothing past the extent is read.
+            let bytes = io.fetch_with(offset, len, len).await?;
+            let chunk = bytes
+                .get(..len)
+                .ok_or_else(|| Error::invalid_segment(offset, "short read"))?;
+            f(chunk)?;
+            cursor.advance(len);
         }
         Ok(())
     }

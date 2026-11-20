@@ -171,6 +171,16 @@ impl<S: Read + Seek> Asset<S> {
             .stream_range(&mut *self.src()?, range, buf, f)
     }
 
+    /// See [`Structure::stream_item`]. For a [`Read`] + [`Seek`] view of an item, take
+    /// [`Structure::item_cursor`] and build an [`ItemReader`](crate::ItemReader) over
+    /// [`source_mut`](Self::source_mut).
+    pub fn stream_item<F>(&self, item: &Item, buf: &mut [u8], f: F) -> Result<()>
+    where
+        F: FnMut(&[u8]) -> Result<()>,
+    {
+        self.structure.stream_item(&mut *self.src()?, item, buf, f)
+    }
+
     /// See [`Structure::read`].
     pub fn read(&self, sink: &mut dyn Sink) -> Result<()> {
         self.structure.read(&mut *self.src()?, sink)

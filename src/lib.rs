@@ -184,6 +184,7 @@ pub mod execute;
 mod handler;
 pub mod io;
 mod item;
+mod item_cursor;
 pub mod jumbf;
 #[cfg(feature = "memory-mapped")]
 mod mapped;
@@ -213,6 +214,7 @@ pub use asset::Asset;
 pub use embedded::{EmbeddedAsset, EmbeddedReader, ScanLimits};
 pub use error::{Error, Result};
 pub use item::{Encoding, Extent, Item, ItemCategory, ItemKind, Relation, RelationKind};
+pub use item_cursor::{ItemCursor, ItemReader, ReadAt};
 #[cfg(feature = "memory-mapped")]
 pub use mapped::MappedFile;
 pub use range::ByteRange;

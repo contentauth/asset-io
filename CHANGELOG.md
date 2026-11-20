@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Read an item in bounded memory: `ItemCursor` (sans-I/O) maps an item's bytes onto
+  its extents, with drivers `ItemReader` (`Read + Seek`), `Structure::item_reader`,
+  `Structure::stream_item` and `Structure::stream_item_async`. `EmbeddedReader` is
+  now built on it, and no longer seeks the source for a read that continues the last.
+
 ## [0.7.0](https://github.com/contentauth/asset-io/compare/v0.6.0...v0.7.0) - 2026-11-19
 
 ### Added

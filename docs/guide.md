@@ -112,6 +112,33 @@ for item in asset.items() {
 overwrites. `read_content` undoes the transfer encoding and returns
 `UnsupportedFeature` if its decoder (`flate` or `brotli`) is not enabled.
 
+### Reading large items
+
+Both return a `Vec`, capped at `MAX_SEGMENT_SIZE` (256 MiB). To read an item of any
+size in bounded memory, such as an embedded asset, stream its stored bytes:
+
+```rust,ignore
+// A callback for each chunk, through a buffer you own.
+let mut buf = [0u8; 64 * 1024];
+asset.stream_item(item, &mut buf, |chunk| {
+    hasher.update(chunk);
+    Ok(())
+})?;
+
+// Or a `Read + Seek` over the item. Taking the cursor first ends the borrow of
+// the structure, so the source can be borrowed next.
+let cursor = asset.structure().item_cursor(item)?;
+let mut reader = asset_io::ItemReader::new(asset.source_mut(), cursor);
+```
+
+`Structure::item_reader` and `Structure::stream_item` take the source directly.
+`Structure::stream_item_async` reads through an `Io`, so it runs under `Task`,
+`block_on` or any async driver. All of them are loops around `ItemCursor`, which
+does no I/O: `next_read(max)` names the next span of the source to read and
+`advance(n)` moves on. Use it directly to drive reads from your own I/O. A read
+never leaves an extent, so only the item's bytes are seen, in logical order. The
+bytes are the stored bytes; they are not transfer-decoded.
+
 ## Updating metadata
 
 `Updates` describes XMP and C2PA manifest store changes; `write` streams a new

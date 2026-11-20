@@ -95,7 +95,7 @@ fuzz-conform:
 
 # Replay the saved crash artifacts against the current code.
 fuzz-regress:
-	@set -e; for t in fuzz_parse fuzz_write fuzz_xmp fuzz_mpf fuzz_conform; do \
+	@set -e; for t in fuzz_parse fuzz_write fuzz_xmp fuzz_mpf fuzz_conform fuzz_item_cursor; do \
 		for f in fuzz/artifacts/$$t/*; do \
 			if [ -f "$$f" ]; then cargo +nightly fuzz run $$t "$$f"; fi; \
 		done; \

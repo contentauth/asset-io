@@ -8,6 +8,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 
 use crate::{
     container_api::{ReadSeek, DETECT_LEN},
+    item_cursor::{ItemCursor, ItemReader},
     ByteRange, Encoding, Error, HandlerRegistry, Item, ItemKind, Result, Structure,
     TransferEncoding,
 };
@@ -73,69 +74,30 @@ impl EmbeddedAsset {
 /// A seekable, payload-only view of an embedded file's possibly disjoint extents.
 /// Reads and seeks are relative to the embedded file. Seeking beyond EOF is
 /// allowed, like a normal file, but reading never escapes its extents.
+///
+/// A driver of an [`ItemCursor`], like [`ItemReader`], which gives the same view
+/// of an [`Item`] of the structure being read.
 pub struct EmbeddedReader<'a, R: ?Sized> {
-    src: &'a mut R,
-    ranges: &'a [ByteRange],
-    starts: Vec<u64>,
-    len: u64,
-    pos: u64,
+    inner: ItemReader<'a, R>,
 }
 
 impl<'a, R: Read + Seek + ?Sized> EmbeddedReader<'a, R> {
-    fn new(src: &'a mut R, ranges: &'a [ByteRange]) -> Result<Self> {
-        let mut starts = Vec::with_capacity(ranges.len());
-        let mut len = 0u64;
-        for range in ranges {
-            starts.push(len);
-            len = len.checked_add(range.len()).ok_or(Error::LimitExceeded {
-                what: "embedded asset length",
-                limit: u64::MAX,
-            })?;
-        }
+    fn new(src: &'a mut R, ranges: &[ByteRange]) -> Result<Self> {
         Ok(Self {
-            src,
-            ranges,
-            starts,
-            len,
-            pos: 0,
+            inner: ItemReader::new(src, ItemCursor::new(ranges.iter().copied())?),
         })
     }
 }
 
 impl<R: Read + Seek + ?Sized> Read for EmbeddedReader<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.pos >= self.len || buf.is_empty() {
-            return Ok(0);
-        }
-        let i = self.starts.partition_point(|&start| start <= self.pos) - 1;
-        let range = self.ranges[i];
-        let relative = self.pos - self.starts[i];
-        let n = (range.len() - relative).min(buf.len() as u64) as usize;
-        self.src.seek(SeekFrom::Start(range.offset() + relative))?;
-        let n = self.src.read(&mut buf[..n])?;
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "embedded extent ended before its declared length",
-            ));
-        }
-        self.pos += n as u64;
-        Ok(n)
+        self.inner.read(buf)
     }
 }
 
 impl<R: Read + Seek + ?Sized> Seek for EmbeddedReader<'_, R> {
     fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
-        let pos = match from {
-            SeekFrom::Start(p) => p as i128,
-            SeekFrom::Current(d) => self.pos as i128 + d as i128,
-            SeekFrom::End(d) => self.len as i128 + d as i128,
-        };
-        if !(0..=u64::MAX as i128).contains(&pos) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek overflow"));
-        }
-        self.pos = pos as u64;
-        Ok(self.pos)
+        self.inner.seek(from)
     }
 }
 
