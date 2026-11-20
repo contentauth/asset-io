@@ -206,6 +206,27 @@ pub trait ContainerHandler: std::fmt::Debug + Send + Sync {
         block_on(total, src, |io| self.parse_async(io))
     }
 
+    /// Parse only as much of an asset as its metadata needs: enough to read its
+    /// XMP, EXIF, C2PA store and other items, not to write it.
+    ///
+    /// A container may describe its media data as one opaque segment, without
+    /// reading it; JPEG stops at the primary image's first scan, so metadata after
+    /// it is not seen. A result from a container that does this is
+    /// [metadata only](Structure::is_metadata_only) and is refused for writing,
+    /// planning, patching and hash exclusions. The default parses the whole asset
+    /// with [`parse_async`](Self::parse_async).
+    fn parse_metadata_async(self: Arc<Self>, io: Io) -> BoxFuture<'static, Result<Structure>> {
+        self.parse_async(io)
+    }
+
+    /// [`parse_metadata_async`](Self::parse_metadata_async) with blocking reads
+    /// from a stream. There is no need to implement it.
+    fn parse_metadata(self: Arc<Self>, src: &mut dyn ReadSeek) -> Result<Structure> {
+        let total = src.seek(SeekFrom::End(0))?;
+        src.seek(SeekFrom::Start(0))?;
+        block_on(total, src, |io| self.parse_metadata_async(io))
+    }
+
     /// Describe the write of the asset with `updates` applied: the structure of the
     /// output and the steps that produce it. Nothing is written. The source is
     /// read through `io`, which holds the stream `src_structure` was parsed from.

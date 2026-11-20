@@ -133,6 +133,17 @@ Attach container-private state with `StructureBuilder::attach`. Hooks read it
 with `container_api::attachment::<T>(&structure)`; `handler(&structure)` and
 `item_info(&item)` give the retained handler and an item's descriptive fields.
 
+### Metadata-only parsing
+
+`parse_metadata_async` returns a structure for reading items only. The default is
+the full parse. Override it only when the format places its metadata before media
+data that is costly to walk: JPEG stops at the primary image's first scan and
+covers the rest of the stream with one opaque segment, so a reader never scans
+entropy-coded data. Call `StructureBuilder::metadata_only()`; the structure then
+refuses writes, plans, patches and hash exclusions. Containers that skip media
+by length fields, or whose metadata may follow the media or span files or
+revisions, keep the default.
+
 ## Planning writes
 
 Implement `write_plan_async(&self, structure, io, updates)` to support writing.

@@ -90,8 +90,10 @@ const XMP_EXT_SIGNATURE: &[u8] = b"http://ns.adobe.com/xmp/extension/\0";
 const EXIF_SIGNATURE: &[u8] = b"Exif\0\0";
 /// Common identifier of a JUMBF APP11 packet, and the box type of a JUMBF superbox.
 const JP: [u8; 2] = *b"JP";
-/// Read size when scanning entropy-coded data for markers.
-const SCAN_BUF: usize = 32 * 1024;
+/// Read size when scanning entropy-coded data for markers. On a 290 MB JPEG
+/// (Apple M-series, warm cache) a full parse took 56 ms at 32 KiB and 50 ms from
+/// 128 KiB up; this matches the write buffer.
+const SCAN_BUF: usize = 256 * 1024;
 const JUMB: [u8; 4] = *b"jumb";
 
 const XMP_SIG_LEN: usize = XMP_SIGNATURE.len();
@@ -217,7 +219,11 @@ impl ContainerHandler for JpegHandler {
     }
 
     fn parse_async(self: Arc<Self>, io: Io) -> BoxFuture<'static, Result<Structure>> {
-        Box::pin(parse_with(self, io))
+        Box::pin(parse_with(self, io, false))
+    }
+
+    fn parse_metadata_async(self: Arc<Self>, io: Io) -> BoxFuture<'static, Result<Structure>> {
+        Box::pin(parse_with(self, io, true))
     }
 
     fn write_plan_async<'f, 'a: 'f>(
@@ -248,7 +254,14 @@ fn parse<R: Read + Seek>(src: &mut R) -> Result<Structure> {
     handler().parse(src)
 }
 
-async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<Structure> {
+/// Parse a JPEG into a validated structure. With `metadata_only`, stop at the
+/// primary image's first scan: everything from there on is one opaque segment, so
+/// no entropy-coded data is read.
+async fn parse_with(
+    handler: Arc<dyn ContainerHandler>,
+    mut io: Io,
+    metadata_only: bool,
+) -> Result<Structure> {
     let total = io.len();
     if total < 4 {
         return Err(Error::InvalidFormat("JPEG too small".into()));
@@ -264,10 +277,14 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<St
 
     // Only the first image carries the asset's metadata.
     let mut meta = Meta::default();
-    let mut offset = scan_image(&mut io, &mut b, total, 2, true, &mut meta).await?;
+    let mut offset = scan_image(&mut io, &mut b, total, 2, true, metadata_only, &mut meta).await?;
     // The first image's markers are the structure. Everything after its EOI, later
     // images and trailing data alike, is data beyond the end of it.
-    b.end_boxes()?;
+    if metadata_only {
+        b.metadata_only();
+    } else {
+        b.end_boxes()?;
+    }
     if let Some(ids) = meta.xmp_open.take() {
         b.item_of_segments(ItemInfo::xmp(), &ids)?;
     }
@@ -295,9 +312,19 @@ async fn parse_with(handler: Arc<dyn ContainerHandler>, mut io: Io) -> Result<St
     // image but are not one are trailing data, as they are in a single-image file:
     // the structure is rolled back to the end of the last good image.
     let mut multi = false;
-    while total - offset >= 4 && next_is_image(&mut io, offset).await? {
+    while !metadata_only && total - offset >= 4 && next_is_image(&mut io, offset).await? {
         b.begin_subasset(Some("image/jpeg".into()))?;
-        match scan_image(&mut io, &mut b, total, offset, false, &mut Meta::default()).await {
+        match scan_image(
+            &mut io,
+            &mut b,
+            total,
+            offset,
+            false,
+            false,
+            &mut Meta::default(),
+        )
+        .await
+        {
             Ok(end) => {
                 offset = end;
                 multi = true;
@@ -343,13 +370,16 @@ struct Meta {
 }
 
 /// List the markers of one image, from `offset` through its `EOI`, and return the
-/// offset after it. Only the primary image's metadata is interpreted.
+/// offset after it. Only the primary image's metadata is interpreted. With
+/// `stop_at_scan`, the first scan and everything after it become one segment and
+/// the end of the stream is returned.
 async fn scan_image(
     io: &mut Io,
     b: &mut StructureBuilder,
     total: u64,
     mut offset: u64,
     primary: bool,
+    stop_at_scan: bool,
     meta: &mut Meta,
 ) -> Result<u64> {
     let Meta {
@@ -421,6 +451,16 @@ async fn scan_image(
 
         if marker == SOS {
             let data_start = mstart + seg_total;
+            if stop_at_scan {
+                b.push_span(
+                    SegmentKind::MediaData,
+                    Name::Marker(SOS),
+                    seg_total as u32,
+                    total - data_start,
+                    0,
+                )?;
+                return Ok(total);
+            }
             // The entropy-coded data is read in large windows, straight from the
             // window of `io`, and scanned in place.
             let mut entropy = Entropy::default();
@@ -2069,6 +2109,55 @@ mod tests {
         assert!(dest
             .patch(&mut Cursor::new(vec![0u8; 10]), &e, &vec![1u8; 150_001])
             .is_err());
+    }
+
+    #[test]
+    fn metadata_parse_reads_items_without_scanning_image_data() {
+        let xmp = vec![b'x'; 70_000];
+        let store = c2pa_store_of_len(150_000);
+        let updates = Updates::new().set_xmp(xmp.clone()).set_c2pa(store.clone());
+        let (mut out, _) = rewrite(handler(), &sample_jpeg(), &updates).unwrap();
+        // Entropy data with no end: only a parse that scans it fails.
+        out.truncate(out.len() - 2);
+        out.extend(std::iter::repeat_n(0x55, 1 << 20));
+        assert!(parse(&mut Cursor::new(out.clone())).is_err());
+
+        let s = handler()
+            .parse_metadata(&mut Cursor::new(out.clone()))
+            .unwrap();
+        assert!(s.is_metadata_only());
+        assert_eq!(s.total_size(), out.len() as u64);
+        assert_eq!(s.xmp(&mut Cursor::new(out.clone())).unwrap(), Some(xmp));
+        assert_eq!(
+            s.c2pa_store(&mut Cursor::new(out.clone())).unwrap(),
+            Some(store.clone())
+        );
+
+        let refused = |r: Result<()>| assert!(matches!(r, Err(Error::UnsupportedFeature(_))));
+        let mut src = Cursor::new(out.clone());
+        refused(
+            s.write(&mut src, &mut Vec::new(), &updates, &mut NullSink)
+                .map(drop),
+        );
+        refused(s.plan(&mut src, &updates).map(drop));
+        let item = s.c2pa_item().unwrap().unwrap();
+        refused(s.c2pa_data_hash_exclusions(item).map(drop));
+        refused(s.patch_exact(&mut src, item, &store));
+        refused(s.prepare_c2pa_patch(&mut src, &store).map(drop));
+    }
+
+    #[test]
+    fn metadata_parse_of_a_file_without_a_scan_is_complete_in_coverage() {
+        let mut j = vec![0xff, SOI];
+        j.extend(marker(0xe0, b"JFIF\0"));
+        j.extend_from_slice(&[0xff, EOI]);
+        j.extend_from_slice(b"trailing");
+        let s = handler()
+            .parse_metadata(&mut Cursor::new(j.clone()))
+            .unwrap();
+        assert!(s.is_metadata_only());
+        assert_eq!(s.total_size(), j.len() as u64);
+        assert_eq!(s.c2pa_store(&mut Cursor::new(j)).unwrap(), None);
     }
 
     #[test]

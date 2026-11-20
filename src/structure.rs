@@ -167,6 +167,8 @@ pub struct Structure {
     /// Where the elements of [subdividing](Segment::subdivides) segments start
     /// after the first, in file order; see [`StructureBuilder::split`].
     splits: Vec<Split>,
+    /// See [`is_metadata_only`](Self::is_metadata_only).
+    metadata_only: bool,
 }
 
 /// A boundary inside a subdividing segment: an element starts here.
@@ -207,6 +209,24 @@ impl Structure {
     /// How many leading segments are the container's own structure.
     pub(crate) fn box_count(&self) -> usize {
         self.boxes
+    }
+
+    /// Whether this structure came from
+    /// [`ContainerHandler::parse_metadata`](crate::container_api::ContainerHandler::parse_metadata)
+    /// and may describe media data as one opaque segment. Its metadata items can
+    /// be read, but writing, planning, patching and computing hash exclusions are
+    /// refused with [`Error::UnsupportedFeature`]: parse the whole asset for those.
+    pub fn is_metadata_only(&self) -> bool {
+        self.metadata_only
+    }
+
+    fn check_complete(&self) -> Result<()> {
+        if self.metadata_only {
+            return Err(Error::UnsupportedFeature(
+                "operation needs a complete structure, not a metadata-only parse",
+            ));
+        }
+        Ok(())
     }
 
     /// The sub-assets of the asset, in file order: contiguous, non-overlapping, and
@@ -503,6 +523,7 @@ impl Structure {
     /// Containers whose C2PA embedding uses another binding (ISO BMFF, PDF) return
     /// [`Error::UnsupportedFeature`].
     pub fn c2pa_data_hash_exclusions(&self, item: &Item) -> Result<Vec<ByteRange>> {
+        self.check_complete()?;
         if item.kind() != ItemKind::C2pa || !self.items.iter().any(|e| std::ptr::eq(e, item)) {
             return Err(Error::InvalidFormat(
                 "C2PA data-hash exclusions require a C2PA item from this structure".into(),
@@ -715,6 +736,7 @@ impl Structure {
         src: &mut R,
         store: &[u8],
     ) -> Result<C2paPatch<'_>> {
+        self.check_complete()?;
         let (item, data) = block_on(self.total_size, src, |mut io| async move {
             self.c2pa_patch_async(&mut io, store).await
         })?;
@@ -1032,6 +1054,7 @@ impl Structure {
         item: &Item,
         data: &[u8],
     ) -> Result<()> {
+        self.check_complete()?;
         self.handler.check_patch(self, item, data.len())?;
         let capacity = item.len();
         if data.len() as u64 > capacity {
@@ -1072,6 +1095,7 @@ impl Structure {
         updates: &crate::Updates,
         sink: &mut dyn crate::sink::Sink,
     ) -> Result<Structure> {
+        self.check_complete()?;
         self.handler.write(self, src, out, updates, sink)
     }
 
@@ -1083,6 +1107,7 @@ impl Structure {
     /// manifest will go (and size a hash exclusion for it) before producing any
     /// output. A container that cannot plan reports [`Error::UnsupportedFormat`].
     pub fn plan(&self, src: &mut dyn ReadSeek, updates: &crate::Updates) -> Result<Structure> {
+        self.check_complete()?;
         self.handler.plan(self, src, updates)
     }
 
@@ -1107,6 +1132,7 @@ impl Structure {
         item: &Item,
         data: &[u8],
     ) -> Result<()> {
+        self.check_complete()?;
         let stored = item.transfer().encode(data)?;
         // The container's refusal comes before a complaint about the length.
         self.handler.check_patch(self, item, stored.len())?;
@@ -1169,6 +1195,7 @@ pub struct StructureBuilder {
     boxes: Option<usize>,
     attachment: Option<Arc<dyn Attached>>,
     splits: Vec<Split>,
+    metadata_only: bool,
 }
 
 impl StructureBuilder {
@@ -1189,7 +1216,15 @@ impl StructureBuilder {
             boxes: None,
             attachment: None,
             splits: Vec::new(),
+            metadata_only: false,
         }
+    }
+
+    /// Mark the structure as built by a
+    /// [metadata-only parse](crate::container_api::ContainerHandler::parse_metadata),
+    /// so it cannot be written, planned, patched or used for hash exclusions.
+    pub fn metadata_only(&mut self) {
+        self.metadata_only = true;
     }
 
     /// Keep `value` with the structure, for the container's own use later (read it
@@ -1514,6 +1549,7 @@ impl StructureBuilder {
             boxes,
             attachment: self.attachment,
             splits: self.splits,
+            metadata_only: self.metadata_only,
         })
     }
 }
