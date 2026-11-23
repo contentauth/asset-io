@@ -101,15 +101,22 @@ impl PdfState {
 }
 
 impl ContainerHandler for PdfHandler {
-    // PDF's C2PA embedding rules for incremental updates are not implemented.
+    /// The payload of the active revision's store stream. The stores of earlier
+    /// revisions are part of the document as it was signed then, so they stay
+    /// hashed, and only the active store can be excluded.
     fn c2pa_data_hash_exclusions(
         &self,
-        _structure: &Structure,
-        _item: &crate::Item,
+        structure: &Structure,
+        item: &crate::Item,
     ) -> Result<Vec<crate::ByteRange>> {
-        Err(Error::UnsupportedFeature(
-            "C2PA data-hash exclusions for PDF",
-        ))
+        if item.label() == Some(labels::SUPERSEDED) {
+            return Err(invalid(
+                "only the active PDF revision's C2PA store is excluded from a data hash",
+            ));
+        }
+        item.extents()
+            .map(|extent| Ok(structure.segment(extent.segment())?.range()))
+            .collect()
     }
 
     fn id(&self) -> &'static str {
