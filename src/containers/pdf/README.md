@@ -184,8 +184,12 @@ revision's addition alone.
 Removal is **logical, not secure erasure**: historical metadata and attachments
 remain in the original prefix. Page/object-level associations are not edited.
 
-Generic hashing/exclusion APIs remain byte-range utilities, **not PDF C2PA
-validation**. PDF-specific revision/signature hashing rules are not implemented.
+A C2PA data hash excludes the payload of the active revision's store stream, which
+`Structure::c2pa_data_hash_exclusions` returns for the `c2pa_item`. The stores of
+earlier revisions are ordinary bytes of the document they were signed with, so they
+stay hashed; asking for a superseded store's exclusions is an error. Excluding the
+`/Contents` of a PDF signature applied after C2PA signing is left to the caller.
+These are byte ranges, **not PDF C2PA validation**.
 
 ## Tests and Benchmark
 

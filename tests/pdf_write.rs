@@ -993,6 +993,45 @@ mod update_manifests {
         assert_eq!(earlier(&kept), 1);
     }
 
+    #[test]
+    fn a_data_hash_excludes_only_the_active_store() {
+        let first = write(
+            &document(b"<< /Type /Catalog >>", ""),
+            &Updates::new().set_c2pa(c2pa_store(&[b"m1"])),
+        );
+        let updates = Updates::new().set_c2pa(c2pa_store(&[b"m1", b"m2"]));
+        let mut asset = Asset::from_source(Cursor::new(first.as_slice())).unwrap();
+        let mut output = Cursor::new(Vec::new());
+        let written = asset.write(&mut output, &updates).unwrap();
+        let second = output.into_inner();
+        let parsed = open(&second);
+
+        let mut expected = None;
+        for structure in [&written, &parsed.structure] {
+            let item = structure.c2pa_item().unwrap().unwrap();
+            let segment = structure
+                .segment(item.extents().next().unwrap().segment())
+                .unwrap();
+            let exclusions = structure.c2pa_data_hash_exclusions(item).unwrap();
+            assert_eq!(exclusions, [segment.range()]);
+            assert_eq!(
+                &second[segment.range().offset() as usize..segment.range().end() as usize],
+                c2pa_store(&[b"m2"]).as_slice()
+            );
+            // The earlier revision's store is part of the hashed prefix.
+            assert!(exclusions[0].offset() >= first.len() as u64);
+            let earlier = structure
+                .items_labelled(ItemKind::C2pa, labels::SUPERSEDED)
+                .next()
+                .unwrap();
+            assert!(matches!(
+                structure.c2pa_data_hash_exclusions(earlier),
+                Err(asset_io::Error::InvalidFormat(_))
+            ));
+            assert_eq!(*expected.get_or_insert(exclusions.clone()), exclusions);
+        }
+    }
+
     /// Patch the store of `bytes` in place with the whole store `store`.
     fn patch(bytes: &[u8], store: &[u8]) -> asset_io::Result<Vec<u8>> {
         let mut asset = Asset::from_source(Cursor::new(bytes.to_vec())).unwrap();

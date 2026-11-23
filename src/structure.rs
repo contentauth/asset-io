@@ -500,7 +500,7 @@ impl Structure {
     ///
     /// The item must be a C2PA item of this structure, usually its
     /// [`c2pa_item`](Self::c2pa_item). This neither interprets the manifest nor computes a hash.
-    /// Containers whose C2PA embedding uses another binding (ISO BMFF, PDF) return
+    /// Containers whose C2PA embedding uses another binding (ISO BMFF) return
     /// [`Error::UnsupportedFeature`].
     pub fn c2pa_data_hash_exclusions(&self, item: &Item) -> Result<Vec<ByteRange>> {
         if item.kind() != ItemKind::C2pa || !self.items.iter().any(|e| std::ptr::eq(e, item)) {
