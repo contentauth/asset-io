@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/contentauth/asset-io/compare/v0.7.0...v0.8.0) - 2026-11-23
+
+### Added
+
+- *(pdf)* exclude the active C2PA store from data hashes ([#51](https://github.com/contentauth/asset-io/pull/51))
+
 ## [0.7.0](https://github.com/contentauth/asset-io/compare/v0.6.0...v0.7.0) - 2026-11-19
 
 ### Added
