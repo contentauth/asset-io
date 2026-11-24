@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/contentauth/asset-io/compare/v0.8.0...v0.8.1) - 2026-11-24
+
+### Fixed
+
+- c2pa goes before moof in fragments. ([#54](https://github.com/contentauth/asset-io/pull/54))
+
 ## [0.8.0](https://github.com/contentauth/asset-io/compare/v0.7.0...v0.8.0) - 2026-11-23
 
 ### Added
