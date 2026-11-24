@@ -71,7 +71,9 @@
 //! when the XMP `uuid` box is set or removed).
 //!
 //! [`BmffUpdates::set_merkle`] replaces the `merkle` boxes with new ones, placed right
-//! after the last `mdat`; `remove_merkle` drops them. A file that has them takes a
+//! after the last `mdat`, or, in a fragmented file (one with `moof` boxes), one
+//! immediately before each `moof`, as C2PA requires of a fragment file and of a flat
+//! fragmented file; `remove_merkle` drops them. A file that has them takes a
 //! new manifest only if they are also set or removed, since they belong with the
 //! manifest that describes them. The boxes can be written as placeholders of their
 //! final size and filled in with `Structure::patch_exact` once the media has been
@@ -143,7 +145,9 @@ pub trait BmffUpdates: Sized {
     /// Replace the file's merkle boxes with one box per payload.
     ///
     /// The boxes are written immediately after the last `mdat`, and any existing
-    /// merkle boxes are dropped. All payloads are usually the same length (the C2PA
+    /// merkle boxes are dropped. In a fragmented file, one with `moof` boxes, there
+    /// must be one payload per `moof`, and each box is written immediately before
+    /// its `moof`. All payloads are usually the same length (the C2PA
     /// specification pads them to one length).
     ///
     /// The content usually depends on hashes of the media, which exist only after
@@ -214,6 +218,7 @@ const FULL_BOXES: &[[u8; 4]] = &[
 
 const UUID: [u8; 4] = *b"uuid";
 const MDAT: [u8; 4] = *b"mdat";
+const MOOF: [u8; 4] = *b"moof";
 const FTYP: [u8; 4] = *b"ftyp";
 const META: [u8; 4] = *b"meta";
 const HDLR: [u8; 4] = *b"hdlr";
@@ -1381,12 +1386,30 @@ async fn plan<'a>(
             "a file with merkle boxes needs them set or removed to take a new manifest".into(),
         ));
     }
-    // Merkle boxes go right after the last mdat.
+    // Merkle boxes go right after the last mdat, or in a fragmented file right
+    // before each moof.
     let last_mdat = segs.iter().rposition(|s| s.name() == Name::FourCC(MDAT));
-    if matches!(updates.merkle(), MerkleUpdate::Set(_)) && last_mdat.is_none() {
-        return Err(Error::InvalidFormat(
-            "BMFF has no mdat box to place merkle boxes after".into(),
-        ));
+    let moofs: Vec<usize> = segs
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.name() == Name::FourCC(MOOF))
+        .map(|(i, _)| i)
+        .collect();
+    let fragmented = !moofs.is_empty();
+    if let MerkleUpdate::Set(boxes) = updates.merkle() {
+        if fragmented {
+            if boxes.len() != moofs.len() {
+                return Err(Error::InvalidFormat(format!(
+                    "{} merkle boxes for {} moof boxes: one goes before each",
+                    boxes.len(),
+                    moofs.len()
+                )));
+            }
+        } else if last_mdat.is_none() {
+            return Err(Error::InvalidFormat(
+                "BMFF has no mdat box to place merkle boxes after".into(),
+            ));
+        }
     }
 
     let total = src.total_size();
@@ -1399,6 +1422,14 @@ async fn plan<'a>(
     for (i, seg) in segs.iter().enumerate() {
         let id = SegmentId::from_index(i)?;
         let (old_len, end) = (seg.range().len(), seg.range().end());
+        // A fragmented file's merkle box goes in front of its moof.
+        if let (true, MerkleUpdate::Set(boxes)) = (fragmented, updates.merkle()) {
+            if let Some(n) = moofs.iter().position(|&moof| moof == i) {
+                let op = new_merkle(&boxes[n])?;
+                note(&mut map, total, seg.range().offset(), op_len(&op, src)?, 0)?;
+                ops.push(op);
+            }
+        }
         match labels[i] {
             Some(MERKLE) => match updates.merkle() {
                 MerkleUpdate::Keep => ops.push(Op::Copy(id)),
@@ -1465,7 +1496,9 @@ async fn plan<'a>(
                 }
             }
         }
-        if let (Some(i2), MerkleUpdate::Set(boxes)) = (last_mdat, updates.merkle()) {
+        if let (false, Some(i2), MerkleUpdate::Set(boxes)) =
+            (fragmented, last_mdat, updates.merkle())
+        {
             if i2 == i {
                 let mut added = 0u64;
                 for d in boxes {
@@ -3047,5 +3080,134 @@ mod tests {
         assert_eq!(b, moof_at);
         let (off, _, hl) = find(&out, "/mfra/tfra");
         assert_eq!(be32(&out, off + hl as u64 + 4 + 12 + 4) as u64, moof_at);
+    }
+
+    fn moof_at(base: u64) -> Vec<u8> {
+        let mut tfhd = 1u32.to_be_bytes().to_vec();
+        tfhd.extend_from_slice(&base.to_be_bytes());
+        boxed(b"moof", &boxed(b"traf", &full(b"tfhd", 0, 1, &tfhd)))
+    }
+
+    /// A flat fragmented file of two `moof`/`mdat` pairs, each `moof` recording its
+    /// own offset.
+    fn two_fragments() -> Vec<u8> {
+        let pair = moof_at(0).len() as u64 + boxed(b"mdat", b"MEDIA").len() as u64;
+        file(&[
+            ftyp(),
+            moof_at(FRAGMENT_BASE),
+            boxed(b"mdat", b"MEDIA"),
+            moof_at(FRAGMENT_BASE + pair),
+            boxed(b"mdat", b"MEDIA"),
+        ])
+    }
+
+    /// The end of each merkle box, the offset of each `moof` and the base data
+    /// offset each `moof`'s `tfhd` records.
+    fn merkle_ends_moofs_and_bases(out: &[u8]) -> (Vec<u64>, Vec<u64>, Vec<u64>) {
+        let s = parse(&mut Cursor::new(out)).unwrap();
+        let ends = s
+            .items_labelled(ItemKind::Other, MERKLE)
+            .map(|e| {
+                s.segment(e.extents().next().unwrap().segment())
+                    .unwrap()
+                    .range()
+                    .end()
+            })
+            .collect();
+        let walked = walk_paths(&s, out);
+        let at = |path: &str| -> Vec<u64> {
+            walked
+                .iter()
+                .filter(|(p, _, _)| p == path)
+                .map(|&(_, offset, _)| offset)
+                .collect()
+        };
+        let bases = at("/moof/traf/tfhd")
+            .into_iter()
+            .map(|off| u64::from_be_bytes(out[(off + 16) as usize..][..8].try_into().unwrap()))
+            .collect();
+        (ends, at("/moof"), bases)
+    }
+
+    #[test]
+    fn a_merkle_box_precedes_the_moof_of_a_fragment() {
+        let out = rewrite(
+            &fragmented(),
+            &Updates::new().set_merkle(vec![vec![7u8; 6]]),
+        )
+        .unwrap();
+        let s = parse(&mut Cursor::new(&out)).unwrap();
+        assert_eq!(merkle_payloads(&s, &out), vec![vec![7u8; 6]]);
+        let (ends, moofs, bases) = merkle_ends_moofs_and_bases(&out);
+        // Right before the moof, which has moved, as everything that records it.
+        assert_eq!(ends, moofs);
+        assert!(moofs[0] > FRAGMENT_BASE);
+        assert_eq!(bases, moofs);
+        let (off, _, hl) = find(&out, "/mfra/tfra");
+        assert_eq!(be32(&out, off + hl as u64 + 4 + 12 + 4) as u64, moofs[0]);
+    }
+
+    #[test]
+    fn a_merkle_box_precedes_each_moof_of_a_flat_fragmented_file() {
+        let out = rewrite(
+            &two_fragments(),
+            &Updates::new().set_merkle(vec![vec![1u8; 4], vec![2u8; 4]]),
+        )
+        .unwrap();
+        let s = parse(&mut Cursor::new(&out)).unwrap();
+        assert_eq!(merkle_payloads(&s, &out), vec![vec![1u8; 4], vec![2u8; 4]]);
+        let (ends, moofs, bases) = merkle_ends_moofs_and_bases(&out);
+        assert_eq!(ends, moofs);
+        assert_eq!(moofs.len(), 2);
+        assert_eq!(bases, moofs);
+    }
+
+    #[test]
+    fn fragmented_merkle_boxes_need_one_payload_per_moof() {
+        for payloads in [vec![], vec![vec![0u8; 4]], vec![vec![0u8; 4]; 3]] {
+            let n = payloads.len();
+            let result = rewrite(&two_fragments(), &Updates::new().set_merkle(payloads));
+            assert!(result.is_err(), "{n} payloads for two moof boxes");
+        }
+    }
+
+    #[test]
+    fn fragmented_merkle_boxes_are_replaced_and_removed_in_place() {
+        let first = rewrite(
+            &two_fragments(),
+            &Updates::new().set_merkle(vec![vec![1u8; 4], vec![2u8; 4]]),
+        )
+        .unwrap();
+        // A new set replaces the old, of a different size, and stays in front.
+        let second = rewrite(
+            &first,
+            &Updates::new().set_merkle(vec![vec![3u8; 9], vec![4u8; 9]]),
+        )
+        .unwrap();
+        let s = parse(&mut Cursor::new(&second)).unwrap();
+        assert_eq!(
+            merkle_payloads(&s, &second),
+            vec![vec![3u8; 9], vec![4u8; 9]]
+        );
+        let (ends, moofs, bases) = merkle_ends_moofs_and_bases(&second);
+        assert_eq!((&ends, &bases), (&moofs, &moofs));
+
+        let removed = rewrite(&second, &Updates::new().remove_merkle()).unwrap();
+        assert_eq!(removed, two_fragments());
+    }
+
+    #[test]
+    fn a_manifest_and_fragment_merkle_boxes_keep_offsets_right() {
+        let out = rewrite(
+            &two_fragments(),
+            &Updates::new()
+                .set_c2pa(b"STORE".to_vec())
+                .set_merkle(vec![vec![1u8; 4], vec![2u8; 4]]),
+        )
+        .unwrap();
+        let (ends, moofs, bases) = merkle_ends_moofs_and_bases(&out);
+        assert_eq!((&ends, &bases), (&moofs, &moofs));
+        let s = parse(&mut Cursor::new(&out)).unwrap();
+        assert!(s.c2pa_item().unwrap().is_some());
     }
 }
