@@ -18,6 +18,31 @@ for how they apply to handlers.
    dependency. Prefer a few lines of code to a new crate; any new dependency
    must be small, pure Rust, optional behind a feature, and justified in the PR.
 
+## Resource and platform constraints
+
+The crate runs on 32-bit and embedded targets, wasm32/WASI, mobile and servers.
+Design for the weakest of them: correct means correct under those limits, not
+only on a desktop.
+
+- Memory is a function of metadata size, never asset size. Stream, hash
+  incrementally, and buffer only metadata, under a cap.
+- Treat every length, count and offset from the file as hostile. Check it
+  against the remaining input and a cap before allocating, use checked
+  arithmetic, keep values `u64` until they are known to fit `usize`, and
+  allocate with `try_reserve`, mapping failure to an error.
+- Enforce caps centrally, not only at each call site. Prefer configurable
+  limits with conservative defaults to fixed platform assumptions.
+- Bound work as well as memory: nesting, counts, decode expansion, reference
+  cycles.
+- Fail closed: return errors; never panic or abort on input. Catch panics at FFI
+  boundaries.
+- Don't assume a filesystem, threads, clock, network or entropy source without a
+  feature gate.
+- Hoist per-asset costs that don't depend on the asset when callers process many
+  files, and measure aggregate batch time, not per-call time.
+- Test the weakest target: 32-bit, wasm32 and memory-capped runs. Fuzz with caps
+  on, including adversarial I/O drivers for the sans-io paths.
+
 ## Commit messages and PR titles
 
 PRs are squash-merged: the PR title becomes the commit message and the
